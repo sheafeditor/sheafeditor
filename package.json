@@ -1,0 +1,161 @@
+{
+  "name": "sheafeditor",
+  "displayName": "Sheaf Editor — WYSIWYG Markdown",
+  "description": "WYSIWYG editing for Markdown files, powered by CodeMirror 6. Renders as you type; double-click any element to edit its raw Markdown.",
+  "version": "0.0.1",
+  "publisher": "sheafeditor",
+  "license": "MIT",
+  "icon": "media/icon.png",
+  "galleryBanner": {
+    "color": "#2E3757",
+    "theme": "dark"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/sheafeditor/sheafeditor.git"
+  },
+  "bugs": {
+    "url": "https://github.com/sheafeditor/sheafeditor/issues"
+  },
+  "homepage": "https://github.com/sheafeditor/sheafeditor#readme",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Visualization",
+    "Other"
+  ],
+  "keywords": [
+    "markdown",
+    "sheaf",
+    "wysiwyg",
+    "editor",
+    "codemirror",
+    "live preview"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "customEditors": [
+      {
+        "viewType": "sheaf.wysiwyg",
+        "displayName": "Sheaf (WYSIWYG)",
+        "selector": [
+          {
+            "filenamePattern": "*.md"
+          },
+          {
+            "filenamePattern": "*.markdown"
+          }
+        ],
+        "priority": "default"
+      }
+    ],
+    "commands": [
+      {
+        "command": "sheaf.openWithWysiwyg",
+        "title": "Open in Sheaf",
+        "category": "Sheaf"
+      },
+      {
+        "command": "sheaf.openAsText",
+        "title": "Open as Raw Markdown (Text)",
+        "category": "Sheaf"
+      },
+      {
+        "command": "sheaf.toggleSourceMode",
+        "title": "Toggle Whole-Document Source Mode",
+        "category": "Sheaf"
+      }
+    ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "sheaf.openAsText",
+          "when": "activeCustomEditorId == sheaf.wysiwyg",
+          "group": "navigation"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "sheaf.openWithWysiwyg",
+          "when": "resourceExtname =~ /^\\.(md|markdown)$/i",
+          "group": "navigation@10"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Sheaf",
+      "properties": {
+        "sheaf.useAsDefaultMarkdownEditor": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Open `.md` and `.markdown` files in Sheaf automatically. Turn this off to have Markdown open in VS Code's plain text editor instead; you can still open individual files in Sheaf with **Open in Sheaf**. Changing this updates `#workbench.editorAssociations#` and takes effect for files you open afterwards.",
+          "scope": "window"
+        },
+        "sheaf.contentWidth": {
+          "type": "string",
+          "default": "708px",
+          "description": "Width of the centered text column. Use a CSS length, e.g. '708px' or '90ch'."
+        },
+        "sheaf.autoSave": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically save the file a short moment after you stop typing, the way a notes app does. When off, edits still update the document but you save manually (or via VS Code's files.autoSave)."
+        },
+        "sheaf.revealSyntaxOnLine": {
+          "type": "boolean",
+          "default": false,
+          "description": "Reveal raw Markdown syntax markers for the block the cursor is currently on, so the block you are writing in shows its syntax while the rest of the document stays rendered. When off, a block shows its raw Markdown only while Edit Markdown (Cmd+Alt+E, or Ctrl+Alt+E on Windows and Linux) has it open."
+        },
+        "sheaf.doubleClickToEditSource": {
+          "type": "boolean",
+          "default": false,
+          "description": "Double-clicking a rendered element reveals and lets you edit its raw Markdown. Off by default, so double-clicking selects a word as it does elsewhere; Edit Markdown (Cmd+Alt+E, or Ctrl+Alt+E on Windows and Linux) reveals the Markdown either way."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run build",
+    "build": "node esbuild.mjs --production",
+    "watch": "node esbuild.mjs --watch",
+    "check-types": "tsc --noEmit",
+    "gen:corpus": "node scripts/gen-corpus.mjs",
+    "gen:icons": "node scripts/build-icons.mjs",
+    "check-corpus": "node scripts/gen-corpus.mjs --check",
+    "fetch:wild": "node scripts/fetch-wild-corpus.mjs",
+    "gen:wren4": "node scripts/gen-wren4.mjs",
+    "check-icons": "node scripts/build-icons.mjs --check",
+    "pretest": "esbuild test/engine.entry.ts --bundle --format=cjs --platform=browser --outfile=test/bundle.cjs --log-level=warning && esbuild test/tables.entry.ts --bundle --format=cjs --platform=browser --outfile=test/tables.bundle.cjs --log-level=warning && esbuild test/sync.entry.ts --bundle --format=cjs --platform=node --outfile=test/textSync.bundle.cjs --log-level=warning && esbuild test/hostEntry.ts --bundle --format=cjs --platform=node --external:vscode --outfile=test/host.bundle.cjs --log-level=warning && esbuild test/prose.entry.ts --bundle --format=cjs --platform=browser --outfile=test/prose.bundle.cjs --log-level=warning",
+    "test": "node test/engine.test.mjs && node test/tables.test.mjs && node test/textSync.test.mjs && node test/host.test.mjs && node test/prose.test.mjs",
+    "package": "vsce package --no-dependencies",
+    "publish": "vsce publish --no-dependencies",
+    "publish:ovsx": "ovsx publish --no-dependencies"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/vscode": "^1.90.0",
+    "@vscode/vsce": "^3.9.2",
+    "esbuild": "^0.24.0",
+    "jsdom": "^25.0.0",
+    "ovsx": "^1.1.1",
+    "typescript": "^5.6.0"
+  },
+  "dependencies": {
+    "@codemirror/commands": "^6.7.1",
+    "@codemirror/lang-markdown": "^6.3.1",
+    "@codemirror/language": "^6.10.8",
+    "@codemirror/language-data": "^6.5.1",
+    "@codemirror/search": "^6.7.2",
+    "@codemirror/state": "^6.5.0",
+    "@codemirror/view": "^6.36.1",
+    "@lezer/common": "^1.2.3",
+    "@lezer/highlight": "^1.2.1",
+    "@lezer/markdown": "^1.4.2",
+    "crelt": "^1.0.6"
+  }
+}

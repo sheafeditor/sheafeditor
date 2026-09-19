@@ -1,0 +1,139 @@
+name: Release
+
+# Fires on a version tag, which only a person can push. Nothing here runs on an
+# ordinary commit, so cutting a release stays a deliberate act.
+#
+# The point of building here rather than on a laptop: an extension registry
+# ships a bundled esbuild artifact, not source, so reading the repo tells you
+# nothing about what is actually inside the extension you installed. A CI build
+# with an attestation ties the published .vsix back to a specific commit and
+# workflow, which anyone can check with `gh attestation verify`.
+on:
+  push:
+    tags: ['v*']
+  # Dry run: builds and attests, but creates no release and publishes nothing.
+  workflow_dispatch:
+
+permissions:
+  contents: write # create the GitHub Release and upload the .vsix
+  id-token: write # mint the OIDC token the attestation is signed against
+  attestations: write # record the provenance attestation
+
+jobs:
+  release:
+    name: Build, attest, publish
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      # A tag that disagrees with package.json publishes a version nobody asked
+      # for, and leaves the attestation naming a release that does not exist.
+      - name: Check the tag matches package.json
+        if: github.ref_type == 'tag'
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg="$(node -p 'require("./package.json").version')"
+          if [ "$tag" != "$pkg" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match package.json version $pkg" >&2
+            exit 1
+          fi
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Publishing is gated on both of these passing.
+      - name: Type-check
+        run: npm run check-types
+
+      - name: Test
+        run: npm test
+
+      - name: Package extension
+        run: npm run package
+
+      - name: Locate the VSIX
+        id: vsix
+        run: echo "path=$(ls sheafeditor-*.vsix)" >> "$GITHUB_OUTPUT"
+
+      - name: Attest build provenance
+        id: attest
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: ${{ steps.vsix.outputs.path }}
+
+      # The attestation is stored by GitHub and `gh attestation verify` finds it
+      # without this file. It is attached anyway so the release is verifiable
+      # offline, and by anyone who would rather not hand GitHub the query.
+      - name: Create the GitHub Release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            "${{ steps.vsix.outputs.path }}" \
+            "${{ steps.attest.outputs.bundle-path }}#provenance.sigstore.json" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes
+
+      # The `secrets` context cannot be read from a step `if:`, so the presence
+      # of the token becomes a step output the condition below can see. This
+      # keeps the secret scoped to the two steps that need it rather than
+      # putting it in the job environment.
+      - name: Check for a Marketplace token
+        id: pat
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        run: |
+          if [ -n "$VSCE_PAT" ]; then
+            echo 'present=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'No VSCE_PAT secret set; skipping the Marketplace publish.'
+          fi
+
+      # --packagePath publishes the exact file that was attested above. Letting
+      # vsce repackage here would upload a second, unattested build and undo the
+      # whole point of this workflow.
+      #
+      # Inert until the VSCE_PAT secret exists, so the workflow can be exercised
+      # end to end before anything reaches the Marketplace.
+      - name: Publish to the Marketplace
+        if: github.ref_type == 'tag' && steps.pat.outputs.present == 'true'
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        run: npx vsce publish --no-dependencies --packagePath "${{ steps.vsix.outputs.path }}"
+
+      # Editors built on Code OSS cannot reach the Marketplace, so a release
+      # that stops there reaches VS Code and nothing else. Open VSX is the
+      # registry Kiro, Cursor, Windsurf and VSCodium query instead.
+      #
+      # Same secrets-context dance as above, for the same reason.
+      - name: Check for an Open VSX token
+        id: ovsx_pat
+        env:
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}
+        run: |
+          if [ -n "$OVSX_PAT" ]; then
+            echo 'present=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'No OVSX_PAT secret set; skipping the Open VSX publish.'
+          fi
+
+      # --packagePath again: both registries get the byte-identical file the
+      # attestation above was issued against, so one `gh attestation verify`
+      # covers a download from either.
+      #
+      # This needs the `sheafeditor` namespace to already exist on Open VSX.
+      # Claiming it is a one-time manual step (`npx ovsx create-namespace
+      # sheafeditor`) and it requires a signed Eclipse Publisher Agreement, so
+      # the token cannot be created without a person doing that first.
+      - name: Publish to Open VSX
+        if: github.ref_type == 'tag' && steps.ovsx_pat.outputs.present == 'true'
+        env:
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}
+        run: npx ovsx publish --packagePath "${{ steps.vsix.outputs.path }}"

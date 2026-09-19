@@ -1,0 +1,224 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 700 386" width="700" height="386" font-family="system-ui, sans-serif" font-size="12">
+<title>Signal detections by band and month, 2244</title>
+<text x="10" y="20" font-size="14" font-weight="600" fill="#8a8f98">Signal detections by band and month, 2244</text>
+<text x="191.66666666666666" y="376" text-anchor="middle" fill="#8a8f98">J</text>
+<text x="235" y="376" text-anchor="middle" fill="#8a8f98">F</text>
+<text x="278.33333333333337" y="376" text-anchor="middle" fill="#8a8f98">M</text>
+<text x="321.6666666666667" y="376" text-anchor="middle" fill="#8a8f98">A</text>
+<text x="365" y="376" text-anchor="middle" fill="#8a8f98">M</text>
+<text x="408.33333333333337" y="376" text-anchor="middle" fill="#8a8f98">J</text>
+<text x="451.6666666666667" y="376" text-anchor="middle" fill="#8a8f98">J</text>
+<text x="495" y="376" text-anchor="middle" fill="#8a8f98">A</text>
+<text x="538.3333333333334" y="376" text-anchor="middle" fill="#8a8f98">S</text>
+<text x="581.6666666666667" y="376" text-anchor="middle" fill="#8a8f98">O</text>
+<text x="625" y="376" text-anchor="middle" fill="#8a8f98">N</text>
+<text x="668.3333333333334" y="376" text-anchor="middle" fill="#8a8f98">D</text>
+<text x="162" y="50" text-anchor="end" fill="#8a8f98">Hydrogen line, 1420 MHz</text>
+<rect x="170" y="36" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.06"><title>Hydrogen line, 1420 MHz, J: 0</title></rect>
+<rect x="213.3" y="36" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.06"><title>Hydrogen line, 1420 MHz, F: 0</title></rect>
+<rect x="256.7" y="36" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.18"><title>Hydrogen line, 1420 MHz, M: 2</title></rect>
+<rect x="300" y="36" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.29"><title>Hydrogen line, 1420 MHz, A: 7</title></rect>
+<rect x="343.3" y="36" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.48"><title>Hydrogen line, 1420 MHz, M: 23</title></rect>
+<rect x="386.7" y="36" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.63"><title>Hydrogen line, 1420 MHz, J: 42</title></rect>
+<rect x="430" y="36" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.75"><title>Hydrogen line, 1420 MHz, J: 62</title></rect>
+<rect x="473.3" y="36" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.7"><title>Hydrogen line, 1420 MHz, A: 53</title></rect>
+<rect x="516.7" y="36" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.47"><title>Hydrogen line, 1420 MHz, S: 22</title></rect>
+<rect x="560" y="36" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.32"><title>Hydrogen line, 1420 MHz, O: 9</title></rect>
+<rect x="603.3" y="36" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.18"><title>Hydrogen line, 1420 MHz, N: 2</title></rect>
+<rect x="646.7" y="36" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.06"><title>Hydrogen line, 1420 MHz, D: 0</title></rect>
+<text x="162" y="70" text-anchor="end" fill="#8a8f98">Hydroxyl, 1612 MHz</text>
+<rect x="170" y="56" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.15"><title>Hydroxyl, 1612 MHz, J: 1</title></rect>
+<rect x="213.3" y="56" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.24"><title>Hydroxyl, 1612 MHz, F: 4</title></rect>
+<rect x="256.7" y="56" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.43"><title>Hydroxyl, 1612 MHz, M: 18</title></rect>
+<rect x="300" y="56" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.57"><title>Hydroxyl, 1612 MHz, A: 34</title></rect>
+<rect x="343.3" y="56" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.65"><title>Hydroxyl, 1612 MHz, M: 46</title></rect>
+<rect x="386.7" y="56" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.58"><title>Hydroxyl, 1612 MHz, J: 35</title></rect>
+<rect x="430" y="56" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.41"><title>Hydroxyl, 1612 MHz, J: 16</title></rect>
+<rect x="473.3" y="56" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.24"><title>Hydroxyl, 1612 MHz, A: 4</title></rect>
+<rect x="516.7" y="56" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.15"><title>Hydroxyl, 1612 MHz, S: 1</title></rect>
+<rect x="560" y="56" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.06"><title>Hydroxyl, 1612 MHz, O: 0</title></rect>
+<rect x="603.3" y="56" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.06"><title>Hydroxyl, 1612 MHz, N: 0</title></rect>
+<rect x="646.7" y="56" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.06"><title>Hydroxyl, 1612 MHz, D: 0</title></rect>
+<text x="162" y="90" text-anchor="end" fill="#8a8f98">Hydroxyl, 1667 MHz</text>
+<rect x="170" y="76" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.06"><title>Hydroxyl, 1667 MHz, J: 0</title></rect>
+<rect x="213.3" y="76" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.24"><title>Hydroxyl, 1667 MHz, F: 4</title></rect>
+<rect x="256.7" y="76" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.4"><title>Hydroxyl, 1667 MHz, M: 15</title></rect>
+<rect x="300" y="76" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.49"><title>Hydroxyl, 1667 MHz, A: 24</title></rect>
+<rect x="343.3" y="76" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.56"><title>Hydroxyl, 1667 MHz, M: 33</title></rect>
+<rect x="386.7" y="76" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.52"><title>Hydroxyl, 1667 MHz, J: 28</title></rect>
+<rect x="430" y="76" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.39"><title>Hydroxyl, 1667 MHz, J: 14</title></rect>
+<rect x="473.3" y="76" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.24"><title>Hydroxyl, 1667 MHz, A: 4</title></rect>
+<rect x="516.7" y="76" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.06"><title>Hydroxyl, 1667 MHz, S: 0</title></rect>
+<rect x="560" y="76" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.06"><title>Hydroxyl, 1667 MHz, O: 0</title></rect>
+<rect x="603.3" y="76" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.06"><title>Hydroxyl, 1667 MHz, N: 0</title></rect>
+<rect x="646.7" y="76" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.06"><title>Hydroxyl, 1667 MHz, D: 0</title></rect>
+<text x="162" y="110" text-anchor="end" fill="#8a8f98">Methanol, 6.7 GHz</text>
+<rect x="170" y="96" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.18"><title>Methanol, 6.7 GHz, J: 2</title></rect>
+<rect x="213.3" y="96" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.32"><title>Methanol, 6.7 GHz, F: 9</title></rect>
+<rect x="256.7" y="96" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.56"><title>Methanol, 6.7 GHz, M: 33</title></rect>
+<rect x="300" y="96" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.7"><title>Methanol, 6.7 GHz, A: 53</title></rect>
+<rect x="343.3" y="96" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.79"><title>Methanol, 6.7 GHz, M: 70</title></rect>
+<rect x="386.7" y="96" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.78"><title>Methanol, 6.7 GHz, J: 68</title></rect>
+<rect x="430" y="96" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.59"><title>Methanol, 6.7 GHz, J: 36</title></rect>
+<rect x="473.3" y="96" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.32"><title>Methanol, 6.7 GHz, A: 9</title></rect>
+<rect x="516.7" y="96" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.18"><title>Methanol, 6.7 GHz, S: 2</title></rect>
+<rect x="560" y="96" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.06"><title>Methanol, 6.7 GHz, O: 0</title></rect>
+<rect x="603.3" y="96" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.06"><title>Methanol, 6.7 GHz, N: 0</title></rect>
+<rect x="646.7" y="96" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.06"><title>Methanol, 6.7 GHz, D: 0</title></rect>
+<text x="162" y="130" text-anchor="end" fill="#8a8f98">Water maser, 22 GHz</text>
+<rect x="170" y="116" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.06"><title>Water maser, 22 GHz, J: 0</title></rect>
+<rect x="213.3" y="116" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.21"><title>Water maser, 22 GHz, F: 3</title></rect>
+<rect x="256.7" y="116" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.44"><title>Water maser, 22 GHz, M: 19</title></rect>
+<rect x="300" y="116" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.73"><title>Water maser, 22 GHz, A: 58</title></rect>
+<rect x="343.3" y="116" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.83"><title>Water maser, 22 GHz, M: 78</title></rect>
+<rect x="386.7" y="116" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="1"><title>Water maser, 22 GHz, J: 115</title></rect>
+<rect x="430" y="116" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.93"><title>Water maser, 22 GHz, J: 99</title></rect>
+<rect x="473.3" y="116" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.63"><title>Water maser, 22 GHz, A: 42</title></rect>
+<rect x="516.7" y="116" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.38"><title>Water maser, 22 GHz, S: 13</title></rect>
+<rect x="560" y="116" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.21"><title>Water maser, 22 GHz, O: 3</title></rect>
+<rect x="603.3" y="116" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.06"><title>Water maser, 22 GHz, N: 0</title></rect>
+<rect x="646.7" y="116" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.06"><title>Water maser, 22 GHz, D: 0</title></rect>
+<text x="162" y="150" text-anchor="end" fill="#8a8f98">Station harmonics</text>
+<rect x="170" y="136" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.6"><title>Station harmonics, J: 38</title></rect>
+<rect x="213.3" y="136" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.67"><title>Station harmonics, F: 49</title></rect>
+<rect x="256.7" y="136" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.68"><title>Station harmonics, M: 50</title></rect>
+<rect x="300" y="136" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.69"><title>Station harmonics, A: 51</title></rect>
+<rect x="343.3" y="136" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.7"><title>Station harmonics, M: 53</title></rect>
+<rect x="386.7" y="136" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.63"><title>Station harmonics, J: 43</title></rect>
+<rect x="430" y="136" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.62"><title>Station harmonics, J: 41</title></rect>
+<rect x="473.3" y="136" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.66"><title>Station harmonics, A: 47</title></rect>
+<rect x="516.7" y="136" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.56"><title>Station harmonics, S: 33</title></rect>
+<rect x="560" y="136" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.59"><title>Station harmonics, O: 36</title></rect>
+<rect x="603.3" y="136" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.63"><title>Station harmonics, N: 42</title></rect>
+<rect x="646.7" y="136" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.65"><title>Station harmonics, D: 46</title></rect>
+<text x="162" y="170" text-anchor="end" fill="#8a8f98">Tender telemetry</text>
+<rect x="170" y="156" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.35"><title>Tender telemetry, J: 11</title></rect>
+<rect x="213.3" y="156" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.35"><title>Tender telemetry, F: 11</title></rect>
+<rect x="256.7" y="156" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.39"><title>Tender telemetry, M: 14</title></rect>
+<rect x="300" y="156" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.36"><title>Tender telemetry, A: 12</title></rect>
+<rect x="343.3" y="156" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.34"><title>Tender telemetry, M: 10</title></rect>
+<rect x="386.7" y="156" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.38"><title>Tender telemetry, J: 13</title></rect>
+<rect x="430" y="156" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.35"><title>Tender telemetry, J: 11</title></rect>
+<rect x="473.3" y="156" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.36"><title>Tender telemetry, A: 12</title></rect>
+<rect x="516.7" y="156" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.35"><title>Tender telemetry, S: 11</title></rect>
+<rect x="560" y="156" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.34"><title>Tender telemetry, O: 10</title></rect>
+<rect x="603.3" y="156" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.34"><title>Tender telemetry, N: 10</title></rect>
+<rect x="646.7" y="156" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.38"><title>Tender telemetry, D: 13</title></rect>
+<text x="162" y="190" text-anchor="end" fill="#8a8f98">Ammonia, 23.7 GHz</text>
+<rect x="170" y="176" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.06"><title>Ammonia, 23.7 GHz, J: 0</title></rect>
+<rect x="213.3" y="176" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.06"><title>Ammonia, 23.7 GHz, F: 0</title></rect>
+<rect x="256.7" y="176" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.24"><title>Ammonia, 23.7 GHz, M: 4</title></rect>
+<rect x="300" y="176" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.42"><title>Ammonia, 23.7 GHz, A: 17</title></rect>
+<rect x="343.3" y="176" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.57"><title>Ammonia, 23.7 GHz, M: 34</title></rect>
+<rect x="386.7" y="176" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.61"><title>Ammonia, 23.7 GHz, J: 39</title></rect>
+<rect x="430" y="176" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.52"><title>Ammonia, 23.7 GHz, J: 27</title></rect>
+<rect x="473.3" y="176" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.39"><title>Ammonia, 23.7 GHz, A: 14</title></rect>
+<rect x="516.7" y="176" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.24"><title>Ammonia, 23.7 GHz, S: 4</title></rect>
+<rect x="560" y="176" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.06"><title>Ammonia, 23.7 GHz, O: 0</title></rect>
+<rect x="603.3" y="176" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.06"><title>Ammonia, 23.7 GHz, N: 0</title></rect>
+<rect x="646.7" y="176" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.06"><title>Ammonia, 23.7 GHz, D: 0</title></rect>
+<text x="162" y="210" text-anchor="end" fill="#8a8f98">Pulsar PSR V-17</text>
+<rect x="170" y="196" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.46"><title>Pulsar PSR V-17, J: 21</title></rect>
+<rect x="213.3" y="196" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.42"><title>Pulsar PSR V-17, F: 17</title></rect>
+<rect x="256.7" y="196" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.47"><title>Pulsar PSR V-17, M: 22</title></rect>
+<rect x="300" y="196" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.49"><title>Pulsar PSR V-17, A: 24</title></rect>
+<rect x="343.3" y="196" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.51"><title>Pulsar PSR V-17, M: 26</title></rect>
+<rect x="386.7" y="196" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.48"><title>Pulsar PSR V-17, J: 23</title></rect>
+<rect x="430" y="196" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.49"><title>Pulsar PSR V-17, J: 24</title></rect>
+<rect x="473.3" y="196" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.42"><title>Pulsar PSR V-17, A: 17</title></rect>
+<rect x="516.7" y="196" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.5"><title>Pulsar PSR V-17, S: 25</title></rect>
+<rect x="560" y="196" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.44"><title>Pulsar PSR V-17, O: 19</title></rect>
+<rect x="603.3" y="196" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.41"><title>Pulsar PSR V-17, N: 16</title></rect>
+<rect x="646.7" y="196" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.46"><title>Pulsar PSR V-17, D: 21</title></rect>
+<text x="162" y="230" text-anchor="end" fill="#8a8f98">Jovian-type decametric</text>
+<rect x="170" y="216" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.4"><title>Jovian-type decametric, J: 15</title></rect>
+<rect x="213.3" y="216" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.24"><title>Jovian-type decametric, F: 4</title></rect>
+<rect x="256.7" y="216" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.06"><title>Jovian-type decametric, M: 0</title></rect>
+<rect x="300" y="216" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.06"><title>Jovian-type decametric, A: 0</title></rect>
+<rect x="343.3" y="216" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.06"><title>Jovian-type decametric, M: 0</title></rect>
+<rect x="386.7" y="216" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.06"><title>Jovian-type decametric, J: 0</title></rect>
+<rect x="430" y="216" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.06"><title>Jovian-type decametric, J: 0</title></rect>
+<rect x="473.3" y="216" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.21"><title>Jovian-type decametric, A: 3</title></rect>
+<rect x="516.7" y="216" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.38"><title>Jovian-type decametric, S: 13</title></rect>
+<rect x="560" y="216" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.52"><title>Jovian-type decametric, O: 27</title></rect>
+<rect x="603.3" y="216" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.59"><title>Jovian-type decametric, N: 36</title></rect>
+<rect x="646.7" y="216" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.51"><title>Jovian-type decametric, D: 26</title></rect>
+<text x="162" y="250" text-anchor="end" fill="#8a8f98">Moon Vesna c-II beacon</text>
+<rect x="170" y="236" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.38"><title>Moon Vesna c-II beacon, J: 13</title></rect>
+<rect x="213.3" y="236" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.29"><title>Moon Vesna c-II beacon, F: 7</title></rect>
+<rect x="256.7" y="236" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.18"><title>Moon Vesna c-II beacon, M: 2</title></rect>
+<rect x="300" y="236" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.06"><title>Moon Vesna c-II beacon, A: 0</title></rect>
+<rect x="343.3" y="236" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.06"><title>Moon Vesna c-II beacon, M: 0</title></rect>
+<rect x="386.7" y="236" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.06"><title>Moon Vesna c-II beacon, J: 0</title></rect>
+<rect x="430" y="236" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.06"><title>Moon Vesna c-II beacon, J: 0</title></rect>
+<rect x="473.3" y="236" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.06"><title>Moon Vesna c-II beacon, A: 0</title></rect>
+<rect x="516.7" y="236" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.18"><title>Moon Vesna c-II beacon, S: 2</title></rect>
+<rect x="560" y="236" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.26"><title>Moon Vesna c-II beacon, O: 5</title></rect>
+<rect x="603.3" y="236" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.35"><title>Moon Vesna c-II beacon, N: 11</title></rect>
+<rect x="646.7" y="236" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.4"><title>Moon Vesna c-II beacon, D: 15</title></rect>
+<text x="162" y="270" text-anchor="end" fill="#8a8f98">Belt radar returns</text>
+<rect x="170" y="256" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.27"><title>Belt radar returns, J: 6</title></rect>
+<rect x="213.3" y="256" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.18"><title>Belt radar returns, F: 2</title></rect>
+<rect x="256.7" y="256" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.06"><title>Belt radar returns, M: 0</title></rect>
+<rect x="300" y="256" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.06"><title>Belt radar returns, A: 0</title></rect>
+<rect x="343.3" y="256" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.06"><title>Belt radar returns, M: 0</title></rect>
+<rect x="386.7" y="256" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.06"><title>Belt radar returns, J: 0</title></rect>
+<rect x="430" y="256" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.06"><title>Belt radar returns, J: 0</title></rect>
+<rect x="473.3" y="256" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.18"><title>Belt radar returns, A: 2</title></rect>
+<rect x="516.7" y="256" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.27"><title>Belt radar returns, S: 6</title></rect>
+<rect x="560" y="256" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.38"><title>Belt radar returns, O: 13</title></rect>
+<rect x="603.3" y="256" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.46"><title>Belt radar returns, N: 21</title></rect>
+<rect x="646.7" y="256" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.38"><title>Belt radar returns, D: 13</title></rect>
+<text x="162" y="290" text-anchor="end" fill="#8a8f98">Carbon monoxide, 115 GHz</text>
+<rect x="170" y="276" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.06"><title>Carbon monoxide, 115 GHz, J: 0</title></rect>
+<rect x="213.3" y="276" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.06"><title>Carbon monoxide, 115 GHz, F: 0</title></rect>
+<rect x="256.7" y="276" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.18"><title>Carbon monoxide, 115 GHz, M: 2</title></rect>
+<rect x="300" y="276" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.32"><title>Carbon monoxide, 115 GHz, A: 9</title></rect>
+<rect x="343.3" y="276" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.52"><title>Carbon monoxide, 115 GHz, M: 28</title></rect>
+<rect x="386.7" y="276" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.65"><title>Carbon monoxide, 115 GHz, J: 45</title></rect>
+<rect x="430" y="276" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.86"><title>Carbon monoxide, 115 GHz, J: 83</title></rect>
+<rect x="473.3" y="276" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.77"><title>Carbon monoxide, 115 GHz, A: 66</title></rect>
+<rect x="516.7" y="276" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.56"><title>Carbon monoxide, 115 GHz, S: 33</title></rect>
+<rect x="560" y="276" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.35"><title>Carbon monoxide, 115 GHz, O: 11</title></rect>
+<rect x="603.3" y="276" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.18"><title>Carbon monoxide, 115 GHz, N: 2</title></rect>
+<rect x="646.7" y="276" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.06"><title>Carbon monoxide, 115 GHz, D: 0</title></rect>
+<text x="162" y="310" text-anchor="end" fill="#8a8f98">Unexplained narrowband</text>
+<rect x="170" y="296" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.27"><title>Unexplained narrowband, J: 6</title></rect>
+<rect x="213.3" y="296" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.4"><title>Unexplained narrowband, F: 15</title></rect>
+<rect x="256.7" y="296" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.36"><title>Unexplained narrowband, M: 12</title></rect>
+<rect x="300" y="296" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.36"><title>Unexplained narrowband, A: 12</title></rect>
+<rect x="343.3" y="296" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.4"><title>Unexplained narrowband, M: 15</title></rect>
+<rect x="386.7" y="296" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.48"><title>Unexplained narrowband, J: 23</title></rect>
+<rect x="430" y="296" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.45"><title>Unexplained narrowband, J: 20</title></rect>
+<rect x="473.3" y="296" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.31"><title>Unexplained narrowband, A: 8</title></rect>
+<rect x="516.7" y="296" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.26"><title>Unexplained narrowband, S: 5</title></rect>
+<rect x="560" y="296" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.21"><title>Unexplained narrowband, O: 3</title></rect>
+<rect x="603.3" y="296" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.15"><title>Unexplained narrowband, N: 1</title></rect>
+<rect x="646.7" y="296" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.45"><title>Unexplained narrowband, D: 20</title></rect>
+<text x="162" y="330" text-anchor="end" fill="#8a8f98">Fresnel near a receiver</text>
+<rect x="170" y="316" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.06"><title>Fresnel near a receiver, J: 0</title></rect>
+<rect x="213.3" y="316" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.06"><title>Fresnel near a receiver, F: 0</title></rect>
+<rect x="256.7" y="316" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.06"><title>Fresnel near a receiver, M: 0</title></rect>
+<rect x="300" y="316" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.06"><title>Fresnel near a receiver, A: 0</title></rect>
+<rect x="343.3" y="316" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.06"><title>Fresnel near a receiver, M: 0</title></rect>
+<rect x="386.7" y="316" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.21"><title>Fresnel near a receiver, J: 3</title></rect>
+<rect x="430" y="316" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.26"><title>Fresnel near a receiver, J: 5</title></rect>
+<rect x="473.3" y="316" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.26"><title>Fresnel near a receiver, A: 5</title></rect>
+<rect x="516.7" y="316" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.26"><title>Fresnel near a receiver, S: 5</title></rect>
+<rect x="560" y="316" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.21"><title>Fresnel near a receiver, O: 3</title></rect>
+<rect x="603.3" y="316" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.06"><title>Fresnel near a receiver, N: 0</title></rect>
+<rect x="646.7" y="316" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.06"><title>Fresnel near a receiver, D: 0</title></rect>
+<text x="162" y="350" text-anchor="end" fill="#8a8f98">Aurora of Vesna c</text>
+<rect x="170" y="336" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.35"><title>Aurora of Vesna c, J: 11</title></rect>
+<rect x="213.3" y="336" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.29"><title>Aurora of Vesna c, F: 7</title></rect>
+<rect x="256.7" y="336" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.24"><title>Aurora of Vesna c, M: 4</title></rect>
+<rect x="300" y="336" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.15"><title>Aurora of Vesna c, A: 1</title></rect>
+<rect x="343.3" y="336" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.06"><title>Aurora of Vesna c, M: 0</title></rect>
+<rect x="386.7" y="336" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.06"><title>Aurora of Vesna c, J: 0</title></rect>
+<rect x="430" y="336" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.06"><title>Aurora of Vesna c, J: 0</title></rect>
+<rect x="473.3" y="336" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.06"><title>Aurora of Vesna c, A: 0</title></rect>
+<rect x="516.7" y="336" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.06"><title>Aurora of Vesna c, S: 0</title></rect>
+<rect x="560" y="336" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.15"><title>Aurora of Vesna c, O: 1</title></rect>
+<rect x="603.3" y="336" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.21"><title>Aurora of Vesna c, N: 3</title></rect>
+<rect x="646.7" y="336" width="41.3" height="18" rx="2" fill="#3b7dd8" fill-opacity="0.31"><title>Aurora of Vesna c, D: 8</title></rect>
+</svg>

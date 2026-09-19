@@ -1,0 +1,2 @@
+# Byte-exact test documents: never convert line endings or re-encode.
+sample/edge/bytes/** binary

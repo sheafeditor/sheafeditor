@@ -1,0 +1,204 @@
+{
+  "files": [
+    {
+      "file": "is-plain-obj-readme.md",
+      "size": "short",
+      "license": "MIT",
+      "bytes": 794,
+      "sha256": "16abfe4091c07393710a01f495f985ac857874307aa76d844ee6612a38b83d50",
+      "url": "https://raw.githubusercontent.com/sindresorhus/is-plain-obj/666df7c10035f7e26f27ec214fe5ae3173435f34/readme.md",
+      "source": "https://github.com/sindresorhus/is-plain-obj/blob/666df7c10035f7e26f27ec214fe5ae3173435f34/readme.md",
+      "covers": "A whole npm package README in under a kilobyte: a blockquote tagline, install and usage fences, a few headings."
+    },
+    {
+      "file": "us-digital-services-playbook-play-01.md",
+      "size": "short",
+      "license": "LicenseRef-US-Government-Work",
+      "bytes": 1692,
+      "sha256": "3ae222d51cade3efda62c46775d24ec5055d58ce28796d50b37fd5df4817245e",
+      "url": "https://raw.githubusercontent.com/usds/playbook/f5d71f1939efe87db9f0be414bcfa7c489e01c19/_plays/01.md",
+      "source": "https://github.com/usds/playbook/blob/f5d71f1939efe87db9f0be414bcfa7c489e01c19/_plays/01.md",
+      "covers": "Jekyll front matter over a short checklist page. US federal work, public domain under 17 U.S.C. 105."
+    },
+    {
+      "file": "keep-a-changelog.md",
+      "size": "short",
+      "license": "MIT",
+      "bytes": 11708,
+      "sha256": "663c710db14ea1168045f260b2bd4f9f8944f19fe6ece78bc52e1a46ef3243d9",
+      "url": "https://raw.githubusercontent.com/olivierlacan/keep-a-changelog/08d0df5a7e93b71d902def8be0f0d40025b56289/CHANGELOG.md",
+      "source": "https://github.com/olivierlacan/keep-a-changelog/blob/08d0df5a7e93b71d902def8be0f0d40025b56289/CHANGELOG.md",
+      "covers": "The changelog format most repos copy: version headings, short bullets, reference-style compare links."
+    },
+    {
+      "file": "kubernetes-overview.md",
+      "size": "medium",
+      "license": "CC-BY-4.0",
+      "bytes": 10503,
+      "sha256": "4caf1cd3bfe590d9eb75d513d2024081338dc48523f81f9e06e3208e749f3c8c",
+      "url": "https://raw.githubusercontent.com/kubernetes/website/b290c15b046f36d7b228f3ef5728ca08e86070bc/content/en/docs/concepts/overview/_index.md",
+      "source": "https://github.com/kubernetes/website/blob/b290c15b046f36d7b228f3ef5728ca08e86070bc/content/en/docs/concepts/overview/_index.md",
+      "covers": "Hugo docs page: YAML front matter with a folded description block, reviewer lists, a {{% shortcode %}} inside a heading."
+    },
+    {
+      "file": "mdn-grid-template-columns.md",
+      "size": "medium",
+      "license": "CC-BY-SA-2.5",
+      "bytes": 7959,
+      "sha256": "ce0b3e85d02bc8956821a1a5ee720721a78faefc58c3d4b4b57143852c762c9f",
+      "url": "https://raw.githubusercontent.com/mdn/content/5a81c288fb7213b2ca2180cda687500981ecf9e1/files/en-us/web/css/reference/properties/grid-template-columns/index.md",
+      "source": "https://github.com/mdn/content/blob/5a81c288fb7213b2ca2180cda687500981ecf9e1/files/en-us/web/css/reference/properties/grid-template-columns/index.md",
+      "covers": "MDN reference page: KumaScript {{macro(\"...\")}} calls, many short CSS and HTML fences, definition-list-style dt/dd syntax."
+    },
+    {
+      "file": "mdn-html-table-element.md",
+      "size": "medium",
+      "license": "CC-BY-SA-2.5",
+      "bytes": 40988,
+      "sha256": "dfdcb481c399075bdbc8e4f8482731362774fe8b4cd54480f94a48bfd3989315",
+      "url": "https://raw.githubusercontent.com/mdn/content/5a81c288fb7213b2ca2180cda687500981ecf9e1/files/en-us/web/html/reference/elements/table/index.md",
+      "source": "https://github.com/mdn/content/blob/5a81c288fb7213b2ca2180cda687500981ecf9e1/files/en-us/web/html/reference/elements/table/index.md",
+      "covers": "Long MDN page about tables, full of HTML table examples inside fences and live-sample macros."
+    },
+    {
+      "file": "github-docs-basic-formatting.md",
+      "size": "medium",
+      "license": "CC-BY-4.0",
+      "bytes": 24659,
+      "sha256": "fe4c6aaeffac8eafbc493c49aaa24f8f2fbb24ba03fb36851df33a1c66c6f143",
+      "url": "https://raw.githubusercontent.com/github/docs/27965d1687907bf5f365166999eea249ac88c088/content/get-started/writing-on-github/getting-started-with-writing-and-formatting-on-github/basic-writing-and-formatting-syntax.md",
+      "source": "https://github.com/github/docs/blob/27965d1687907bf5f365166999eea249ac88c088/content/get-started/writing-on-github/getting-started-with-writing-and-formatting-on-github/basic-writing-and-formatting-syntax.md",
+      "covers": "GitHub's own formatting guide: Liquid {% data %} tags, GitHub alert blocks, syntax tables, nested fences."
+    },
+    {
+      "file": "docusaurus-admonitions.md",
+      "size": "medium",
+      "license": "CC-BY-4.0",
+      "bytes": 8901,
+      "sha256": "a70028fb584d5264ef18e1f75c126d39456b8895577d66ace24f700112952d59",
+      "url": "https://raw.githubusercontent.com/facebook/docusaurus/714d743f9c461839b7e7d6101e2b65ac43a37956/website/docs/guides/markdown-features/markdown-features-admonitions.mdx",
+      "source": "https://github.com/facebook/docusaurus/blob/714d743f9c461839b7e7d6101e2b65ac43a37956/website/docs/guides/markdown-features/markdown-features-admonitions.mdx",
+      "covers": "MDX saved as .md: import statements, JSX components, ::: admonition fences, code blocks showing MDX inside MDX."
+    },
+    {
+      "file": "rust-book-ownership.md",
+      "size": "medium",
+      "license": "MIT OR Apache-2.0",
+      "bytes": 25352,
+      "sha256": "873724c6862ad0cc447becf0e818eb39a324c5d4bfa26ef721286aae1941c0ba",
+      "url": "https://raw.githubusercontent.com/rust-lang/book/1500248d8f230566e4ec9f27fcbb8fe9e2898ab1/src/ch04-01-what-is-ownership.md",
+      "source": "https://github.com/rust-lang/book/blob/1500248d8f230566e4ec9f27fcbb8fe9e2898ab1/src/ch04-01-what-is-ownership.md",
+      "covers": "Long tutorial chapter: mdBook {{#include}} fences, fences tagged rust,ignore and console, images, HTML asides."
+    },
+    {
+      "file": "mermaid-flowchart-syntax.md",
+      "size": "medium",
+      "license": "MIT",
+      "bytes": 36849,
+      "sha256": "3af71671eded9283eb70777bdcbfb83722bf7c2ae4863263cc3699939e5a0447",
+      "url": "https://raw.githubusercontent.com/mermaid-js/mermaid/386bbcaad2ce3ed0cbbba88fab75fb31c5b251e6/packages/mermaid/src/docs/syntax/flowchart.md",
+      "source": "https://github.com/mermaid-js/mermaid/blob/386bbcaad2ce3ed0cbbba88fab75fb31c5b251e6/packages/mermaid/src/docs/syntax/flowchart.md",
+      "covers": "Over 100 mermaid fences, warning callouts, a deep heading tree."
+    },
+    {
+      "file": "vscode-docs-codebasics.md",
+      "size": "medium",
+      "license": "CC-BY-3.0-US",
+      "bytes": 37692,
+      "sha256": "0905e578c9e339f5d8d7c36ce1f10985231793ec22fe965321a43f094d10cdeb",
+      "url": "https://raw.githubusercontent.com/microsoft/vscode-docs/2df291fa3c4f97da75e13c4231894b61616f8845/docs/editing/codebasics.md",
+      "source": "https://github.com/microsoft/vscode-docs/blob/2df291fa3c4f97da75e13c4231894b61616f8845/docs/editing/codebasics.md",
+      "covers": "Product docs for the audience Sheaf targets: front matter holding Liquid, 15 images, 40-odd kb() chord macros, tip callouts."
+    },
+    {
+      "file": "awesome.md",
+      "size": "long",
+      "license": "CC0-1.0",
+      "bytes": 78330,
+      "sha256": "465cd781335e44587d238f666800104b63d4fc8ba2395d6422974dcba421c616",
+      "url": "https://raw.githubusercontent.com/sindresorhus/awesome/bc98e517ddca672f55f9857d714fc3ea3c3540b2/readme.md",
+      "source": "https://github.com/sindresorhus/awesome/blob/bc98e517ddca672f55f9857d714fc3ea3c3540b2/readme.md",
+      "covers": "About 870 lines, 600-odd link-list items, and a header built from nested HTML divs and images: link-dense inline decoration load."
+    },
+    {
+      "file": "rust-rfc-2094-nll.md",
+      "size": "long",
+      "license": "MIT OR Apache-2.0",
+      "bytes": 83823,
+      "sha256": "bb7e4770cee4aca69af685382f50a5b24f24713f240ec163ed85c8f4ba81478d",
+      "url": "https://raw.githubusercontent.com/rust-lang/rfcs/51783df9a76c355de7ceebeae101cba47f8ca463/text/2094-nll.md",
+      "source": "https://github.com/rust-lang/rfcs/blob/51783df9a76c355de7ceebeae101cba47f8ca463/text/2094-nll.md",
+      "covers": "A real long design document: about 2,200 lines, 50 footnotes, 50 code blocks, prose-heavy."
+    },
+    {
+      "file": "commonmark-spec.md",
+      "size": "long",
+      "license": "CC-BY-SA-4.0",
+      "bytes": 206108,
+      "sha256": "43fad3e0ac5190a3b0bc6a41f7b1a853201a26ec2e6b74871f5d96239a8c34cf",
+      "url": "https://raw.githubusercontent.com/commonmark/commonmark-spec/3da939428d80f146f270cd1765e4ba462e96bb1b/spec.txt",
+      "source": "https://github.com/commonmark/commonmark-spec/blob/3da939428d80f146f270cd1765e4ba462e96bb1b/spec.txt",
+      "covers": "The CommonMark spec itself, saved as .md: 655 example fences holding every ambiguous construct the grammar defines."
+    },
+    {
+      "file": "gfm-spec.md",
+      "size": "long",
+      "license": "CC-BY-SA-4.0",
+      "bytes": 216680,
+      "sha256": "7d8e5814befec287ac116786d81ff14e0adc9b13295b4494649e995408fd871c",
+      "url": "https://raw.githubusercontent.com/github/cmark-gfm/499789b49373bfa045d0e7547e5ee63444c77bca/test/spec.txt",
+      "source": "https://github.com/github/cmark-gfm/blob/499789b49373bfa045d0e7547e5ee63444c77bca/test/spec.txt",
+      "covers": "The GFM spec: 672 examples, the CommonMark set plus tables, task lists, strikethrough and autolink extensions."
+    },
+    {
+      "file": "public-apis.md",
+      "size": "long",
+      "license": "MIT",
+      "bytes": 262222,
+      "sha256": "3b0281b891e7ff0a4ffeabe10ba7f840407633bcf065956d4a8f6e788eb79e25",
+      "url": "https://raw.githubusercontent.com/public-apis/public-apis/4cfe04f70da070207b032eed62db76a0c82e11b7/README.md",
+      "source": "https://github.com/public-apis/public-apis/blob/4cfe04f70da070207b032eed62db76a0c82e11b7/README.md",
+      "covers": "About 1,900 table rows across 52 pipe tables with links in cells. The real-world datatable stress case."
+    },
+    {
+      "file": "pandoc-manual.md",
+      "size": "long",
+      "license": "GPL-2.0-or-later",
+      "bytes": 307627,
+      "sha256": "78d54c58ff00971294ee2cc89e636e006ac7e9f62bdd0bc853732a3b349d7578",
+      "url": "https://raw.githubusercontent.com/jgm/pandoc/83f180b153add6725743ad43295c193c8c0d9061/MANUAL.txt",
+      "source": "https://github.com/jgm/pandoc/blob/83f180b153add6725743ad43295c193c8c0d9061/MANUAL.txt",
+      "covers": "Pandoc's dialect at full length: 270-odd definition-list items, fenced divs, grid tables, header attributes."
+    },
+    {
+      "file": "node-api-fs.md",
+      "size": "long",
+      "license": "MIT",
+      "bytes": 312155,
+      "sha256": "7269e76d5ca477f1133b6ab89bb48e31cdcb10a81142ef10b9bf0d1a5429f86b",
+      "url": "https://raw.githubusercontent.com/nodejs/node/dd5dfb5250da8d314359c6d285625b014aed2d69/doc/api/fs.md",
+      "source": "https://github.com/nodejs/node/blob/dd5dfb5250da8d314359c6d285625b014aed2d69/doc/api/fs.md",
+      "covers": "A 300 KB API reference: 240-odd YAML blocks inside HTML comments, a deep heading tree, about 95 mjs/cjs fence pairs."
+    },
+    {
+      "file": "node-changelog-v20.md",
+      "size": "long",
+      "license": "MIT",
+      "bytes": 844011,
+      "sha256": "3311ba753b2065aeab039c6f2b53bf695b43ebc4f57f4e9478a5e8359ab7b21f",
+      "url": "https://raw.githubusercontent.com/nodejs/node/dd5dfb5250da8d314359c6d285625b014aed2d69/doc/changelogs/CHANGELOG_V20.md",
+      "source": "https://github.com/nodejs/node/blob/dd5dfb5250da8d314359c6d285625b014aed2d69/doc/changelogs/CHANGELOG_V20.md",
+      "covers": "About 840 KB of release notes: over 4,000 list items with links, and HTML anchors between sections. The largest Markdown file here."
+    },
+    {
+      "file": "pride-and-prejudice.md",
+      "size": "long",
+      "license": "LicenseRef-Public-Domain",
+      "bytes": 772386,
+      "sha256": "3f6bb9d6f78e0293b56acd4714dd68cb7d6d1d293402031ce9d5a216bcaf9d75",
+      "url": "https://www.gutenberg.org/cache/epub/1342/pg1342.txt",
+      "source": "https://www.gutenberg.org/ebooks/1342",
+      "covers": "A whole novel as hard-wrapped plain text: 770 KB of paragraphs and nothing else. Public domain in the US."
+    }
+  ]
+}

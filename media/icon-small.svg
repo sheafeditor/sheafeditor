@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-label="Sheaf">
+  <mask id="sheaf-mark">
+    <rect width="256" height="256" fill="#000"/>
+    <g transform="translate(128 128) scale(1.04) translate(-128 -128) translate(1.1 2.1)">
+      <g stroke="#000" stroke-width="12">
+        <rect x="84" y="71" width="88" height="114" rx="3" transform="translate(-14 -14) rotate(-24 128 128)" fill="none"/>
+        <rect x="84" y="71" width="88" height="114" rx="3" transform="translate(-14 -14) rotate(-24 128 128)" fill="#fff" stroke="none"/>
+        <rect x="84" y="71" width="88" height="114" rx="3" transform="translate(22 16) rotate(10 128 128)" fill="none"/>
+        <rect x="84" y="71" width="88" height="114" rx="3" transform="translate(22 16) rotate(10 128 128)" fill="#fff" stroke="none"/>
+        <rect x="84" y="71" width="88" height="114" rx="3" transform="translate(-6 6) rotate(-4 128 128)" fill="none"/>
+        <rect x="84" y="71" width="88" height="114" rx="3" transform="translate(-6 6) rotate(-4 128 128)" fill="#fff" stroke="none"/>
+      </g>
+      <g transform="translate(-6 6) rotate(-4 128 128)" fill="#000">
+        <path transform="translate(102.768 154.099) scale(0.069320 -0.069320)" d="M619 523Q616 522 613 520Q610 519 607 519Q599 519 590 531Q526 611 464 646Q402 681 336 681Q296 681 268 660Q239 639 239 594Q239 557 262 533Q285 509 322 494Q358 478 396 467Q453 451 508 431Q564 411 609 384Q654 356 681 316Q708 277 708 221Q708 153 674 100Q639 47 574 17Q509 -13 417 -13Q372 -13 332 -2Q293 10 256 28Q248 32 241 32Q232 32 232 22Q232 19 234 11Q237 4 237 -1Q237 -12 220 -12H170Q152 -12 145 2L24 229Q20 237 20 241Q20 252 31 258L75 283Q78 285 81 286Q84 287 87 287Q97 287 104 275Q172 172 254 122Q337 72 423 72Q488 72 523 102Q558 131 558 176Q558 220 536 245Q514 270 468 287Q422 304 350 325Q301 339 253 359Q205 379 166 408Q127 436 104 476Q80 515 80 569Q80 635 114 678Q147 721 204 742Q261 762 333 762Q389 762 428 748Q467 734 488 722Q505 712 511 712Q516 712 516 718Q516 723 514 732Q511 741 511 751Q511 766 529 766H565Q583 766 590 749L660 570Q662 566 663 562Q664 559 664 556Q664 547 653 541Z"/>
+      </g>
+    </g>
+  </mask>
+  <rect width="256" height="256" rx="56" fill="#2E3757"/>
+  <rect width="256" height="256" fill="#F4F1E8" mask="url(#sheaf-mark)"/>
+</svg>

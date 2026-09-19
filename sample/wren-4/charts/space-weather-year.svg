@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 280" width="640" height="280" font-family="system-ui, sans-serif" font-size="12">
+<title>Flares and CME days by month, 2244</title>
+<line x1="48" x2="624" y1="236" y2="236" stroke="#8a8f98" stroke-opacity="0.25"/>
+<text x="42" y="240" text-anchor="end" fill="#8a8f98">0</text>
+<line x1="48" x2="624" y1="199.2" y2="199.2" stroke="#8a8f98" stroke-opacity="0.25"/>
+<text x="42" y="203.2" text-anchor="end" fill="#8a8f98">5</text>
+<line x1="48" x2="624" y1="162.39999999999998" y2="162.39999999999998" stroke="#8a8f98" stroke-opacity="0.25"/>
+<text x="42" y="166.39999999999998" text-anchor="end" fill="#8a8f98">10</text>
+<line x1="48" x2="624" y1="125.60000000000001" y2="125.60000000000001" stroke="#8a8f98" stroke-opacity="0.25"/>
+<text x="42" y="129.60000000000002" text-anchor="end" fill="#8a8f98">15</text>
+<line x1="48" x2="624" y1="88.79999999999998" y2="88.79999999999998" stroke="#8a8f98" stroke-opacity="0.25"/>
+<text x="42" y="92.79999999999998" text-anchor="end" fill="#8a8f98">20</text>
+<line x1="48" x2="624" y1="52" y2="52" stroke="#8a8f98" stroke-opacity="0.25"/>
+<text x="42" y="56" text-anchor="end" fill="#8a8f98">25</text>
+<text x="72" y="252" text-anchor="middle" fill="#8a8f98">Jan</text>
+<text x="120" y="252" text-anchor="middle" fill="#8a8f98">Feb</text>
+<text x="168" y="252" text-anchor="middle" fill="#8a8f98">Mar</text>
+<text x="216" y="252" text-anchor="middle" fill="#8a8f98">Apr</text>
+<text x="264" y="252" text-anchor="middle" fill="#8a8f98">May</text>
+<text x="312" y="252" text-anchor="middle" fill="#8a8f98">Jun</text>
+<text x="360" y="252" text-anchor="middle" fill="#8a8f98">Jul</text>
+<text x="408" y="252" text-anchor="middle" fill="#8a8f98">Aug</text>
+<text x="456" y="252" text-anchor="middle" fill="#8a8f98">Sep</text>
+<text x="504" y="252" text-anchor="middle" fill="#8a8f98">Oct</text>
+<text x="552" y="252" text-anchor="middle" fill="#8a8f98">Nov</text>
+<text x="600" y="252" text-anchor="middle" fill="#8a8f98">Dec</text>
+<rect x="54.7" y="74.1" width="16.3" height="161.9" fill="#3b7dd8"/>
+<rect x="72" y="184.5" width="16.3" height="51.5" fill="#e0803a"/>
+<rect x="102.7" y="96.2" width="16.3" height="139.8" fill="#3b7dd8"/>
+<rect x="120" y="199.2" width="16.3" height="36.8" fill="#e0803a"/>
+<rect x="150.7" y="96.2" width="16.3" height="139.8" fill="#3b7dd8"/>
+<rect x="168" y="199.2" width="16.3" height="36.8" fill="#e0803a"/>
+<rect x="198.7" y="118.2" width="16.3" height="117.8" fill="#3b7dd8"/>
+<rect x="216" y="213.9" width="16.3" height="22.1" fill="#e0803a"/>
+<rect x="246.7" y="140.3" width="16.3" height="95.7" fill="#3b7dd8"/>
+<rect x="264" y="228.6" width="16.3" height="7.4" fill="#e0803a"/>
+<rect x="294.7" y="184.5" width="16.3" height="51.5" fill="#3b7dd8"/>
+<rect x="312" y="228.6" width="16.3" height="7.4" fill="#e0803a"/>
+<rect x="342.7" y="169.8" width="16.3" height="66.2" fill="#3b7dd8"/>
+<rect x="360" y="236" width="16.3" height="0" fill="#e0803a"/>
+<rect x="390.7" y="162.4" width="16.3" height="73.6" fill="#3b7dd8"/>
+<rect x="408" y="236" width="16.3" height="0" fill="#e0803a"/>
+<rect x="438.7" y="177.1" width="16.3" height="58.9" fill="#3b7dd8"/>
+<rect x="456" y="221.3" width="16.3" height="14.7" fill="#e0803a"/>
+<rect x="486.7" y="140.3" width="16.3" height="95.7" fill="#3b7dd8"/>
+<rect x="504" y="228.6" width="16.3" height="7.4" fill="#e0803a"/>
+<rect x="534.7" y="125.6" width="16.3" height="110.4" fill="#3b7dd8"/>
+<rect x="552" y="213.9" width="16.3" height="22.1" fill="#e0803a"/>
+<rect x="582.7" y="110.9" width="16.3" height="125.1" fill="#3b7dd8"/>
+<rect x="600" y="206.6" width="16.3" height="29.4" fill="#e0803a"/>
+<text x="48" y="20" font-size="14" font-weight="600" fill="#8a8f98">Flares and CME days by month, 2244</text>
+<rect x="48" y="28" width="10" height="10" fill="#3b7dd8"/><text x="64" y="37" fill="#8a8f98">Flares</text>
+<rect x="158" y="28" width="10" height="10" fill="#e0803a"/><text x="174" y="37" fill="#8a8f98">CME days</text>
+</svg>

@@ -1,0 +1,21 @@
+node_modules/
+dist/
+media/webview.js
+media/webview.js.map
+*.vsix
+.DS_Store
+*.log
+.vscode-test/
+
+# test bundles
+test/bundle.cjs
+test/tables.bundle.cjs
+test/textSync.bundle.cjs
+test/host.bundle.cjs
+test/prose.bundle.cjs
+
+# Real-world corpus, downloaded on demand by scripts/fetch-wild-corpus.mjs.
+sample/wild/files/
+
+# Sub-agent worktrees created by the harness. Whole nested checkouts, never committed.
+.claude/worktrees/

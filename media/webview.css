@@ -1,0 +1,1357 @@
+/*
+ * Sheaf webview styles — Notion-inspired reading/editing surface layered on
+ * top of CodeMirror 6, themed with VS Code theme variables so it blends into
+ * whatever color theme the user runs.
+ */
+
+:root {
+  /* Notion's live text column is ~708px; react-notion-x uses 720px. */
+  --md-content-width: 708px;
+  /* Notion frames that column in fixed ~96px side gutters; scale down on
+     narrow panes so there's always a visible page margin. */
+  --md-gutter: clamp(24px, 8vw, 96px);
+  --md-font: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial,
+    'Apple Color Emoji', 'Segoe UI Emoji', sans-serif;
+  /* Notion code/inline-code stack. */
+  --md-mono: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, Courier, monospace;
+  --md-text: var(--vscode-editor-foreground);
+  --md-muted: var(--vscode-descriptionForeground, #8a8f98);
+  --md-faint: color-mix(in srgb, var(--md-text) 45%, transparent);
+  --md-rule: var(--vscode-widget-border, color-mix(in srgb, var(--md-text) 15%, transparent));
+  --md-code-bg: var(--vscode-textCodeBlock-background,
+    color-mix(in srgb, var(--md-text) 6%, transparent));
+  /* Inline code takes the colors VS Code gives code spans in rendered Markdown,
+     so each theme sets a pair it has already checked for contrast. The fallbacks
+     are Sheaf's own chip, for a theme that defines neither. */
+  --md-code-text: var(--vscode-textPreformat-foreground, #eb5757);
+  --md-code-chip: var(--vscode-textPreformat-background, var(--md-code-bg));
+  --md-link: var(--vscode-textLink-foreground, #2f81f7);
+  --md-selection: var(--vscode-editor-selectionBackground);
+  /* High contrast themes paint the selection in a color ordinary text cannot be
+     read against, and supply a foreground to draw selected text in. Themes that
+     leave it unset fall back to currentColor, so every other theme keeps the
+     colors it gives links, code and headings while they are selected. */
+  --md-selection-text: var(--vscode-editor-selectionForeground, currentColor);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: var(--vscode-editor-background);
+  color: var(--md-text);
+}
+
+/* App shell: fixed toolbar on top, scrollable editor filling the rest. */
+.sheaf-app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+.sheaf-root {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+
+/* ---- Formatting toolbar -------------------------------------------------- */
+
+.sheaf-toolbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--md-rule);
+  background: var(--vscode-editor-background);
+  /* Sit above CodeMirror's own stacking so tooltips/hover never clip under it. */
+  position: relative;
+  z-index: 2;
+  user-select: none;
+  /* A narrow window wraps the buttons onto a second row; nothing scrolls out of
+     reach and the dropdown menus are never clipped by the bar. */
+  flex-wrap: wrap;
+  row-gap: 2px;
+}
+
+.sheaf-tb-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  height: 28px;
+  padding: 0 6px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--md-text);
+  font-family: var(--md-font);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.sheaf-tb-btn:hover {
+  background: color-mix(in srgb, var(--md-text) 10%, transparent);
+}
+.sheaf-tb-btn:active {
+  background: color-mix(in srgb, var(--md-text) 18%, transparent);
+}
+.sheaf-tb-btn:focus-visible {
+  outline: 1px solid var(--md-link);
+  outline-offset: -1px;
+}
+/* Toggled-on state for view toggles (e.g. line numbers). */
+.sheaf-tb-btn.is-active {
+  background: color-mix(in srgb, var(--md-link) 18%, transparent);
+  color: var(--md-link);
+}
+.sheaf-tb-btn.is-active:hover {
+  background: color-mix(in srgb, var(--md-link) 26%, transparent);
+}
+
+/* Inline SVG icons inherit the button's themed text color via currentColor. */
+.sheaf-tb-icon {
+  width: 16px;
+  height: 16px;
+  display: block;
+  pointer-events: none;
+}
+.sheaf-tb-caret {
+  width: 12px;
+  height: 12px;
+  margin-left: -1px;
+  opacity: 0.55;
+}
+
+.sheaf-tb-sep {
+  width: 1px;
+  align-self: stretch;
+  margin: 4px 5px;
+  background: var(--md-rule);
+}
+
+/* Flex spacer that pushes the trailing action buttons to the right edge. */
+.sheaf-tb-spacer {
+  flex: 1 1 auto;
+}
+
+/* ---- Heading dropdown ---------------------------------------------------- */
+
+.sheaf-tb-dropdown {
+  position: relative;
+  display: inline-flex;
+}
+.sheaf-tb-dd-trigger {
+  padding: 0 4px;
+}
+
+.sheaf-tb-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 6;
+  min-width: 184px;
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  border: 1px solid var(--md-rule);
+  border-radius: 8px;
+  background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+  box-shadow: 0 8px 28px color-mix(in srgb, #000 35%, transparent);
+}
+.sheaf-tb-menu[hidden] {
+  display: none;
+}
+.sheaf-tb-menu-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--md-text);
+  font-family: var(--md-font);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.sheaf-tb-menu-item:hover {
+  background: color-mix(in srgb, var(--md-text) 10%, transparent);
+}
+.sheaf-tb-menu-key {
+  flex: 0 0 auto;
+  font-family: var(--md-mono);
+  font-size: 11px;
+  color: var(--md-muted);
+}
+
+/* ---- Rendered tables (pipe + CSV) --------------------------------------- */
+
+/*
+ * A pipe table / ```csv block is replaced by a block widget holding this grid.
+ * Double-clicking it reveals the raw source (handled in tables.ts). Colors ride
+ * the shared theme vars so it blends with the active VS Code theme.
+ */
+.sheaf-table {
+  position: relative;
+  /* Padding, not margin: CodeMirror measures a block widget with offsetHeight,
+     which leaves margins out, and a height map short by the margins sends
+     vertical caret motion near the table to the wrong line. */
+  padding: 0.5em 0;
+}
+.sheaf-table-grid {
+  overflow-x: auto;
+  /* Contribute no intrinsic width to the editor: a table wider than the text
+     column scrolls inside its own frame instead of widening the whole editor. */
+  contain: inline-size;
+}
+.sheaf-table table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 0.92em;
+  line-height: 1.5;
+}
+.sheaf-table th,
+.sheaf-table td {
+  border: 1px solid var(--md-rule);
+  padding: 0;
+  text-align: left;
+  vertical-align: top;
+  cursor: text;
+}
+/* Padding lives on cell content so the edit input can fill the cell exactly. */
+.sheaf-table th,
+.sheaf-table td {
+  padding: 6px 12px;
+}
+/*
+ * Wrap cell text at word boundaries only. The editor's line wrapping allows a
+ * break anywhere, which let a squeezed column shrink to one character a line
+ * ("Reg / ion"). A table too wide for the column scrolls sideways instead.
+ */
+.sheaf-table th,
+.sheaf-table td {
+  overflow-wrap: normal;
+  word-break: normal;
+}
+.sheaf-table th {
+  font-weight: 600;
+  background: color-mix(in srgb, var(--md-text) 5%, transparent);
+}
+.sheaf-table tbody tr:nth-child(even) td {
+  background: color-mix(in srgb, var(--md-text) 3%, transparent);
+}
+.sheaf-table th:hover,
+.sheaf-table td:hover {
+  background: color-mix(in srgb, var(--md-link) 8%, transparent);
+}
+
+/* A CSV field's own line breaks show as line breaks. */
+.sheaf-table.is-csv td,
+.sheaf-table.is-csv th {
+  white-space: pre-line;
+}
+.sheaf-table-input.is-multiline {
+  display: block;
+  resize: none;
+  line-height: inherit;
+  white-space: pre-wrap;
+}
+
+/* A row an outside edit (an agent, a pull, another editor) just changed: a brief
+   tint that fades on its own, so it reads as "this moved" and never lingers. */
+.sheaf-table tr.is-changed td,
+.sheaf-table tr.is-changed th {
+  animation: sheaf-row-changed 2.4s ease-out;
+}
+@keyframes sheaf-row-changed {
+  from {
+    background: color-mix(in srgb, var(--md-link) 30%, transparent);
+  }
+  to {
+    background: transparent;
+  }
+}
+
+/* Grid focus holder: the keyboard and clipboard target. With a selection, the
+   active cell's ring shows where the keyboard is. With none (after Escape), the
+   grid outlines itself, so the table still visibly has the keyboard. */
+.sheaf-table-grid:focus {
+  outline: none;
+}
+.sheaf-table-grid:focus:not(.has-selection) {
+  outline: 2px solid var(--md-link);
+  outline-offset: -2px;
+}
+
+/* Row-number gutter and top-left corner double as row/column/all selectors. */
+.sheaf-table-gutter,
+.sheaf-table-corner {
+  width: 1px;
+  padding: 4px 8px;
+  text-align: center;
+  color: var(--md-muted);
+  background: color-mix(in srgb, var(--md-text) 7%, transparent);
+  font-size: 0.8em;
+  cursor: pointer;
+  user-select: none;
+}
+/* A row number can be dragged to move its row. The selector outranks the text
+   cursor every table cell gets. */
+.sheaf-table td.sheaf-table-gutter {
+  cursor: grab;
+}
+.sheaf-table tr.is-row-dragging td {
+  opacity: 0.45;
+}
+/* A column being dragged by its header, and the column it will land beside. */
+.sheaf-table .is-col-dragging {
+  opacity: 0.45;
+}
+.sheaf-table .is-col-drop-before {
+  box-shadow: inset 2px 0 0 var(--md-link);
+}
+.sheaf-table .is-col-drop-after {
+  box-shadow: inset -2px 0 0 var(--md-link);
+}
+.sheaf-table tr.is-drop-before td {
+  box-shadow: inset 0 2px 0 var(--md-link);
+}
+.sheaf-table tr.is-drop-after td {
+  box-shadow: inset 0 -2px 0 var(--md-link);
+}
+.sheaf-table-gutter:hover,
+.sheaf-table-corner:hover {
+  background: color-mix(in srgb, var(--md-link) 20%, transparent);
+  color: var(--md-link);
+}
+
+/* Cell selection: rectangle tint + focused-cell ring. */
+.sheaf-table td.is-sel,
+.sheaf-table th.is-sel {
+  background: color-mix(in srgb, var(--md-link) 22%, transparent);
+}
+.sheaf-table td.is-focus,
+.sheaf-table th.is-focus {
+  outline: 2px solid var(--md-link);
+  outline-offset: -2px;
+}
+
+/* In-cell edit field: fills the cell, borderless, inherits table typography. */
+.sheaf-table-input {
+  width: 100%;
+  margin: -6px -12px;
+  padding: 6px 12px;
+  border: none;
+  outline: 2px solid var(--md-link);
+  outline-offset: -2px;
+  border-radius: 2px;
+  background: var(--vscode-editor-background);
+  color: var(--md-text);
+  font: inherit;
+  box-sizing: content-box;
+}
+
+/* Controls appear on hover / while editing; reserve height to avoid jump. */
+.sheaf-table-controls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 26px;
+  margin-bottom: 3px;
+  opacity: 0;
+  transition: opacity 0.1s ease;
+}
+.sheaf-table:hover .sheaf-table-controls,
+.sheaf-table:focus-within .sheaf-table-controls {
+  opacity: 1;
+}
+.sheaf-table-ctrl {
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--md-rule);
+  border-radius: 5px;
+  background: var(--vscode-editorWidget-background, transparent);
+  color: var(--md-muted);
+  font-family: var(--md-font);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+.sheaf-table-ctrl:hover {
+  color: var(--md-text);
+  background: color-mix(in srgb, var(--md-text) 10%, transparent);
+}
+
+/* On touch screens the table controls and menu items are big enough to hit with a finger. */
+@media (pointer: coarse) {
+  .sheaf-table-controls {
+    height: 44px;
+  }
+  .sheaf-table-ctrl {
+    height: 40px;
+    min-width: 44px;
+    padding: 0 12px;
+    font-size: 13px;
+  }
+  .sheaf-ctx-item {
+    min-height: 40px;
+  }
+}
+
+/* Small "CSV"/"TSV" badge in the controls row of a data-block table. */
+.sheaf-table-badge {
+  margin-right: 2px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--md-link) 18%, transparent);
+  color: var(--md-link);
+  font-family: var(--md-mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+}
+
+/* ---- Right-click context menu ------------------------------------------- */
+
+.sheaf-ctx-menu {
+  position: fixed;
+  z-index: 12;
+  min-width: 180px;
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  border: 1px solid var(--md-rule);
+  border-radius: 8px;
+  background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+  box-shadow: 0 8px 28px color-mix(in srgb, #000 35%, transparent);
+}
+.sheaf-ctx-menu[hidden] {
+  display: none;
+}
+.sheaf-ctx-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--md-text);
+  font-family: var(--md-font);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.sheaf-ctx-item:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--md-text) 10%, transparent);
+}
+.sheaf-ctx-item:disabled {
+  color: var(--md-muted);
+  cursor: default;
+}
+.sheaf-ctx-key {
+  flex: 0 0 auto;
+  font-family: var(--md-mono);
+  font-size: 11px;
+  color: var(--md-muted);
+}
+.sheaf-ctx-sep {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--md-rule);
+}
+
+/* ---- Keyboard-shortcuts overlay ----------------------------------------- */
+
+.sheaf-sc-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: color-mix(in srgb, #000 45%, transparent);
+}
+.sheaf-sc-backdrop[hidden] {
+  display: none;
+}
+
+.sheaf-sc-panel {
+  width: min(720px, 100%);
+  max-height: 100%;
+  overflow: auto;
+  padding: 20px 24px 24px;
+  border: 1px solid var(--md-rule);
+  border-radius: 10px;
+  background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+  color: var(--md-text);
+  font-family: var(--md-font);
+  box-shadow: 0 12px 40px color-mix(in srgb, #000 40%, transparent);
+}
+
+.sheaf-sc-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+.sheaf-sc-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+.sheaf-sc-close {
+  border: none;
+  background: transparent;
+  color: var(--md-muted);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: 5px;
+}
+.sheaf-sc-close:hover {
+  background: color-mix(in srgb, var(--md-text) 10%, transparent);
+  color: var(--md-text);
+}
+
+.sheaf-sc-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 8px 28px;
+}
+.sheaf-sc-group-title {
+  margin: 8px 0 6px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--md-muted);
+}
+.sheaf-sc-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 4px 0;
+  font-size: 13px;
+}
+.sheaf-sc-label {
+  color: var(--md-text);
+}
+.sheaf-sc-keys {
+  flex: 0 0 auto;
+  font-family: var(--md-mono);
+  font-size: 12px;
+  color: var(--md-muted);
+  background: var(--md-code-bg);
+  border: 1px solid var(--md-rule);
+  border-radius: 5px;
+  padding: 2px 7px;
+  white-space: nowrap;
+}
+
+/* ---- CodeMirror shell ---------------------------------------------------- */
+
+/*
+ * NOTE: font-family, base line-height, scroller padding, and the centered
+ * writing column (max-width / margin / gutter padding) are set in
+ * src/webview/theme.ts via EditorView.theme — NOT here. CodeMirror injects its
+ * own baseTheme after this stylesheet, so equal-specificity rules here get
+ * overridden. Only put styles here that CM's baseTheme does not also set.
+ */
+.cm-editor {
+  height: 100%;
+  color: var(--md-text);
+  background: transparent;
+}
+
+.cm-editor.cm-focused {
+  outline: none;
+}
+
+.cm-line {
+  padding: 1px 0;
+}
+
+.cm-cursor {
+  border-left-color: var(--md-text);
+}
+
+.cm-selectionBackground,
+.cm-content ::selection {
+  background: var(--md-selection) !important;
+  color: var(--md-selection-text);
+}
+
+/* NOTE: the line-number gutter is added/removed at runtime via a CodeMirror
+   compartment (see main.ts). Its appearance is themed in src/webview/theme.ts,
+   not here, since CM's baseTheme overrides equal-specificity .cm-gutters rules
+   in this stylesheet. */
+
+/* ---- Block typography (Notion-ish scale) --------------------------------- */
+
+/*
+ * Notion headings: semibold (600, not 700), line-height 1.3, and the signature
+ * asymmetric rhythm — a large top pad, a tiny bottom pad. Airiness comes
+ * from the gap ABOVE a heading, not from paragraph spacing. Top padding is
+ * self-relative (em of the heading's own size), tuned so every level lands
+ * ~32–40px above regardless of size, matching the live editor. Padding, not
+ * margin — see the note on the .tok-h* rules below.
+ */
+.tok-heading {
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--md-text);
+}
+/* NOTE: spacing here is `padding`, never `margin`. These classes decorate the
+   `.cm-line` element, and CodeMirror's height map reads each line's offsetHeight
+   — which includes padding but NOT margin. Vertical margins add space CM can't
+   see, drifting posAtCoords so clicks land on the wrong line/element. */
+.tok-h1 { font-size: 1.875em; padding: 1.2em 0 0.2em; }
+.tok-h2 { font-size: 1.5em; padding: 1.4em 0 0.15em; }
+.tok-h3 { font-size: 1.25em; padding: 1.5em 0 0.1em; }
+.tok-h4 { font-size: 1.1em; padding: 1.4em 0 0.1em; }
+.tok-h5 { font-size: 1em; padding: 1.4em 0 0.1em; }
+.tok-h6 { font-size: 0.9em; padding: 1.4em 0 0.1em; color: var(--md-muted); }
+
+.tok-strong { font-weight: 700; }
+.tok-em { font-style: italic; }
+.tok-strike { text-decoration: line-through; opacity: 0.75; }
+.tok-highlight { background: color-mix(in srgb, #ffd43b 38%, transparent); border-radius: 2px; padding: 0 1px; }
+
+/* Notion inline code: tinted chip, contrasting text, 85% size, 3px radius. */
+.tok-inline-code {
+  font-family: var(--md-mono);
+  font-size: 0.85em;
+  background: var(--md-code-chip);
+  border-radius: 3px;
+  padding: 0.2em 0.4em;
+  color: var(--md-code-text);
+}
+
+.tok-link {
+  color: var(--md-link);
+  text-decoration: none;
+  cursor: pointer;
+  border-bottom: 1px solid color-mix(in srgb, var(--md-link) 40%, transparent);
+}
+.tok-link:hover {
+  border-bottom-color: var(--md-link);
+}
+
+/* Blockquote — left rule like Notion callout/quote. */
+.tok-quote {
+  border-left: 3px solid var(--md-rule);
+  padding-left: 0.9em;
+  color: var(--md-text);
+}
+
+/* Dim the raw Markdown markers when they are shown alongside rendered text. */
+.tok-mark {
+  color: var(--md-faint);
+}
+
+/* List bullet/number rendered marker. */
+.tok-bullet {
+  color: var(--md-muted);
+}
+
+/* Fenced code block. */
+.tok-code-block {
+  background: var(--md-code-bg);
+  font-family: var(--md-mono);
+  font-size: 0.88em;
+}
+.tok-code-fence {
+  color: var(--md-faint);
+  font-family: var(--md-mono);
+  font-size: 0.85em;
+}
+
+/* YAML front matter: metadata for other tools, drawn as quiet monospaced text. */
+.tok-frontmatter {
+  font-family: var(--md-mono);
+  font-size: 0.85em;
+  color: var(--md-muted);
+}
+
+/* Horizontal rule widget. */
+.md-hr {
+  display: inline-block;
+  width: 100%;
+  border: none;
+  border-top: 1px solid var(--md-rule);
+  padding: 0.3em 0;
+  vertical-align: middle;
+}
+
+/* ---- Rendered image widget ---------------------------------------------- */
+
+/* Block wrapper; width shrinks to the image so alignment margins take effect. */
+.md-img-wrap {
+  display: block;
+  position: relative;
+  width: fit-content;
+  max-width: 100%;
+  margin: 0.3em 0;
+}
+.md-img-align-center { margin-left: auto; margin-right: auto; }
+.md-img-align-right { margin-left: auto; margin-right: 0; }
+.md-img-align-left { margin-left: 0; margin-right: auto; }
+
+/* An icon or badge written inside a sentence sits in the line, instead of
+   breaking the words before and after it onto their own lines. */
+.md-img-wrap.md-img-inline {
+  display: inline-block;
+  vertical-align: middle;
+  margin: 0;
+}
+
+.md-img-fig {
+  display: block;
+  position: relative;
+}
+
+.md-img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  border-radius: 6px;
+}
+.md-img-align-center .md-figcaption { text-align: center; }
+
+.md-figcaption {
+  display: block;
+  margin-top: 0.4em;
+  color: var(--md-muted);
+  font-size: 0.85em;
+  line-height: 1.4;
+}
+
+/* Broken / missing local image. */
+.md-img-wrap.is-broken .md-img-fig::after {
+  content: '⚠ image not found';
+  display: block;
+  padding: 1em;
+  border: 1px dashed var(--md-rule);
+  border-radius: 6px;
+  color: var(--md-muted);
+  font-family: var(--md-mono);
+  font-size: 0.85em;
+}
+.md-img-wrap.is-broken .md-img { display: none; }
+
+/* Resize handle (bottom-right); shown on hover. */
+.md-img-handle {
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  background: var(--md-link);
+  border: 2px solid var(--vscode-editor-background);
+  cursor: nwse-resize;
+  opacity: 0;
+  transition: opacity 0.1s ease;
+}
+.md-img-wrap:hover .md-img-handle { opacity: 0.9; }
+
+/* Floating control strip (top-left); shown on hover. */
+.md-img-toolbar {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  padding: 3px;
+  border-radius: 7px;
+  background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+  border: 1px solid var(--md-rule);
+  box-shadow: 0 4px 14px color-mix(in srgb, #000 35%, transparent);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.1s ease;
+}
+.md-img-wrap:hover .md-img-toolbar,
+.md-img-wrap:focus-within .md-img-toolbar {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.md-img-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  height: 24px;
+  padding: 0 5px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--md-text);
+  font-family: var(--md-font);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+.md-img-btn:hover { background: color-mix(in srgb, var(--md-text) 12%, transparent); }
+.md-img-btn.is-active { background: color-mix(in srgb, var(--md-link) 22%, transparent); color: var(--md-link); }
+.md-img-icon { width: 14px; height: 14px; display: block; }
+.md-img-sep { width: 1px; align-self: stretch; margin: 2px 3px; background: var(--md-rule); }
+
+/* Inline alt/caption editor that replaces the toolbar while editing. */
+.md-img-editing {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  z-index: 4;
+}
+.md-img-input {
+  width: 240px;
+  max-width: 60vw;
+  padding: 5px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--md-link);
+  background: var(--vscode-input-background, var(--vscode-editor-background));
+  color: var(--vscode-input-foreground, var(--md-text));
+  font-family: var(--md-font);
+  font-size: 13px;
+}
+.md-img-input:focus { outline: none; }
+
+/* Task list checkbox. */
+.md-task {
+  margin-right: 0.4em;
+  vertical-align: middle;
+  accent-color: var(--md-link);
+}
+
+/* Source-mode: whole document shown as raw monospace markdown. Set the vars the
+   CM theme reads (theme.ts) so these win despite the theme's higher precedence. */
+.sheaf-root.source-mode {
+  --sheaf-font: var(--md-mono);
+  --sheaf-font-size: 13.5px;
+  --sheaf-line-height: 1.6;
+}
+
+/* ---- Find and replace ---- */
+
+/*
+ * The find panel sits in CodeMirror's top panel slot. CodeMirror's base theme
+ * styles `.cm-panels` at two-class specificity and is injected after this
+ * stylesheet, so these rules carry one class more.
+ */
+.cm-editor .cm-panels.cm-panels-top {
+  background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+  color: var(--vscode-editorWidget-foreground, var(--md-text));
+  border-bottom: 1px solid var(--vscode-editorWidget-border, var(--md-rule));
+  box-shadow: 0 2px 8px var(--vscode-widget-shadow, transparent);
+}
+
+.sheaf-find {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+  max-width: calc(var(--md-content-width) + 2 * var(--md-gutter));
+  margin: 0 auto;
+  padding: 6px 12px;
+  font-family: var(--md-font);
+  font-size: 13px;
+}
+.sheaf-find-rows {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.sheaf-find-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px;
+}
+.sheaf-find-row[hidden] {
+  display: none;
+}
+
+/* An input with its option toggles drawn inside the field, as in the workbench's find widget. */
+.sheaf-find-field {
+  flex: 1 1 200px;
+  min-width: 140px;
+  max-width: 420px;
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  height: 26px;
+  padding: 0 2px 0 0;
+  border: 1px solid var(--vscode-input-border, var(--md-rule));
+  border-radius: 4px;
+  background: var(--vscode-input-background, transparent);
+  color: var(--vscode-input-foreground, var(--md-text));
+}
+.sheaf-find-field:focus-within {
+  border-color: var(--vscode-focusBorder, var(--md-link));
+}
+.sheaf-find.is-invalid .sheaf-find-row:first-child .sheaf-find-field {
+  border-color: var(--vscode-inputValidation-errorBorder, var(--vscode-errorForeground, #e5534b));
+}
+.sheaf-find-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 100%;
+  padding: 0 6px;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+}
+.sheaf-find-input::placeholder {
+  color: var(--vscode-input-placeholderForeground, var(--md-faint));
+}
+
+.sheaf-find-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  height: 22px;
+  min-width: 22px;
+  padding: 0 4px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.sheaf-find-btn:hover {
+  background: var(--vscode-toolbar-hoverBackground, color-mix(in srgb, var(--md-text) 10%, transparent));
+}
+.sheaf-find-btn:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder, var(--md-link));
+  outline-offset: -1px;
+}
+.sheaf-find-icon svg {
+  width: 16px;
+  height: 16px;
+  display: block;
+  pointer-events: none;
+}
+.sheaf-find-icon[name='close'] {
+  margin-left: 2px;
+}
+
+.sheaf-find-toggle {
+  height: 20px;
+  min-width: 20px;
+  padding: 0 3px;
+  font-family: var(--md-mono);
+  font-size: 11px;
+  color: var(--md-muted);
+}
+.sheaf-find-toggle[name='word'] {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.sheaf-find-toggle[aria-pressed='true'] {
+  color: var(--vscode-inputOption-activeForeground, var(--md-text));
+  background: var(--vscode-inputOption-activeBackground, color-mix(in srgb, var(--md-link) 20%, transparent));
+  border-color: var(--vscode-inputOption-activeBorder, var(--md-link));
+}
+
+.sheaf-find-text {
+  height: 26px;
+  padding: 0 10px;
+  margin-left: 4px;
+  border-color: var(--vscode-button-secondaryBackground, var(--md-rule));
+  background: var(--vscode-button-secondaryBackground, transparent);
+  color: var(--vscode-button-secondaryForeground, var(--md-text));
+}
+.sheaf-find-text:hover {
+  background: var(--vscode-button-secondaryHoverBackground, color-mix(in srgb, var(--md-text) 10%, transparent));
+}
+
+.sheaf-find-count {
+  flex: 0 0 auto;
+  min-width: 64px;
+  padding: 0 6px;
+  color: var(--md-muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.sheaf-find.is-empty-result .sheaf-find-count,
+.sheaf-find.is-invalid .sheaf-find-count {
+  color: var(--vscode-errorForeground, var(--md-muted));
+}
+
+/* The chevron that shows the replace row points down once the row is open. */
+.sheaf-find-expand {
+  height: 26px;
+  margin-top: 0;
+}
+.sheaf-find-expand svg {
+  transition: transform 120ms ease;
+}
+.sheaf-find.is-replacing .sheaf-find-expand svg {
+  transform: rotate(90deg);
+}
+
+/* Matches use the workbench's own find colours, so they read the same as in a text editor. */
+.cm-editor .cm-content .cm-searchMatch {
+  background-color: var(--vscode-editor-findMatchHighlightBackground, rgba(234, 92, 0, 0.33));
+  border-radius: 2px;
+}
+.cm-editor .cm-content .cm-searchMatch-selected {
+  background-color: var(--vscode-editor-findMatchBackground, rgba(81, 92, 106, 0.6));
+  outline: 1px solid var(--vscode-editor-findMatchBorder, transparent);
+}
+
+/* ---- Toolbar state and context menu ---- */
+
+.sheaf-tb-btn:disabled {
+  color: var(--md-faint);
+  cursor: default;
+}
+.sheaf-tb-btn:disabled:hover {
+  background: transparent;
+}
+
+/* The text style picker names the current block ("Text", "H2") instead of showing an icon. */
+.sheaf-tb-dd-label {
+  display: inline-block;
+  min-width: 30px;
+  padding: 0 2px;
+  font-size: 12px;
+  font-weight: 600;
+  text-align: left;
+}
+
+/* Menu items that show a current choice carry a check in a leading column. */
+.sheaf-tb-menu-item[role='menuitemradio'] {
+  position: relative;
+  padding-left: 26px;
+}
+.sheaf-tb-menu-item.is-checked::before {
+  content: '';
+  position: absolute;
+  left: 10px;
+  top: 50%;
+  width: 4px;
+  height: 8px;
+  margin-top: -6px;
+  border: solid currentColor;
+  border-width: 0 1.5px 1.5px 0;
+  transform: rotate(45deg);
+}
+.sheaf-tb-menu-item:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder, var(--md-link));
+  outline-offset: -1px;
+}
+
+@media (max-width: 560px) {
+  .sheaf-toolbar {
+    padding: 3px 4px;
+  }
+  .sheaf-tb-btn {
+    min-width: 26px;
+    height: 26px;
+    padding: 0 4px;
+  }
+  .sheaf-tb-sep {
+    margin: 4px 2px;
+  }
+  .sheaf-find {
+    padding: 6px;
+  }
+  .sheaf-find-field {
+    max-width: none;
+  }
+}
+
+/* The prose menu marks formatting that is on, and the current block kind, with a check. */
+.sheaf-ctx-menu.has-checks .sheaf-ctx-item {
+  position: relative;
+  padding-left: 26px;
+}
+.sheaf-ctx-item.is-checked::before {
+  content: '';
+  position: absolute;
+  left: 10px;
+  top: 50%;
+  width: 4px;
+  height: 8px;
+  margin-top: -6px;
+  border: solid currentColor;
+  border-width: 0 1.5px 1.5px 0;
+  transform: rotate(45deg);
+}
+.sheaf-ctx-item:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder, var(--md-link));
+  outline-offset: -1px;
+}
+.sheaf-ctx-item:focus:not(:disabled) {
+  background: color-mix(in srgb, var(--md-text) 10%, transparent);
+}
+
+/* A long menu in a short window scrolls instead of running off the bottom. */
+.sheaf-ctx-menu {
+  max-height: calc(100vh - 8px);
+  overflow-y: auto;
+}
+.sheaf-ctx-submenu {
+  z-index: 13;
+}
+.sheaf-ctx-arrow {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  margin-right: 2px;
+  border: solid var(--md-muted);
+  border-width: 0 1.5px 1.5px 0;
+  transform: rotate(-45deg);
+}
+.sheaf-ctx-has-sub[aria-expanded='true'] {
+  background: color-mix(in srgb, var(--md-text) 10%, transparent);
+}
+
+/* ---- Selection toolbar and link popover ---- */
+
+/* Both are CodeMirror tooltips; the extra classes outrank CodeMirror's tooltip theme. */
+.cm-editor .cm-tooltip.sheaf-seltb,
+.cm-editor .cm-tooltip.sheaf-linkpop {
+  z-index: 8;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px;
+  max-width: calc(100vw - 16px);
+  padding: 3px;
+  border: 1px solid var(--md-rule);
+  border-radius: 8px;
+  background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+  color: var(--md-text);
+  box-shadow: 0 6px 20px color-mix(in srgb, #000 30%, transparent);
+  font-family: var(--md-font);
+  font-size: 13px;
+  line-height: 1;
+  user-select: none;
+}
+
+.sheaf-seltb .sheaf-tb-sep {
+  margin: 4px 3px;
+}
+
+.sheaf-seltb-trigger {
+  gap: 2px;
+  padding: 0 4px 0 8px;
+}
+.sheaf-seltb-menu.is-up {
+  top: auto;
+  bottom: calc(100% + 4px);
+}
+.sheaf-seltb-menu.is-end {
+  left: auto;
+  right: 0;
+}
+.sheaf-seltb .sheaf-tb-menu-item:focus-visible {
+  outline: 1px solid var(--md-link);
+  outline-offset: -1px;
+}
+.sheaf-seltb .sheaf-tb-menu-item[aria-checked='true'] {
+  color: var(--md-link);
+}
+
+.sheaf-linkpop-url {
+  flex: 1 1 240px;
+  min-width: 0;
+  height: 26px;
+  margin: 0 2px;
+  padding: 0 8px;
+  border: 1px solid var(--vscode-input-border, var(--md-rule));
+  border-radius: 5px;
+  background: var(--vscode-input-background, transparent);
+  color: var(--vscode-input-foreground, var(--md-text));
+  font-family: var(--md-font);
+  font-size: 12.5px;
+  user-select: text;
+}
+.sheaf-linkpop-url::placeholder {
+  color: var(--vscode-input-placeholderForeground, var(--md-muted));
+}
+.sheaf-linkpop-url:focus {
+  outline: 1px solid var(--vscode-focusBorder, var(--md-link));
+  outline-offset: -1px;
+}
+
+/* ---- Block editing: handle, block selection, slash menu ---- */
+
+/* The `+` and grip that appear in the margin beside the hovered block. */
+.sheaf-block-handle {
+  position: absolute;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  height: 24px;
+}
+.sheaf-block-handle[hidden] {
+  display: none;
+}
+.sheaf-block-add,
+.sheaf-block-grip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--md-faint);
+  cursor: pointer;
+}
+.sheaf-block-grip {
+  width: 18px;
+  cursor: grab;
+}
+.sheaf-block-add:hover,
+.sheaf-block-grip:hover {
+  background: color-mix(in srgb, var(--md-text) 10%, transparent);
+  color: var(--md-muted);
+}
+.sheaf-block-drag-active,
+.sheaf-block-drag-active .sheaf-block-grip {
+  cursor: grabbing;
+}
+
+/* Where a dragged block will land, and the block itself while it is carried. */
+.sheaf-block-drop {
+  position: absolute;
+  z-index: 3;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--md-link);
+  pointer-events: none;
+}
+.sheaf-block-drop[hidden] {
+  display: none;
+}
+.cm-line.sheaf-block-dragging {
+  opacity: 0.4;
+}
+
+/* Block selection mode: the selected lines read as one highlighted block, and the
+   text selection underneath it is not drawn a second time. */
+.cm-line.sheaf-block-selected {
+  background: color-mix(in srgb, var(--md-link) 14%, transparent);
+}
+.sheaf-block-mode .cm-selectionBackground,
+.sheaf-block-mode .cm-content ::selection {
+  background: transparent !important;
+  /* The block's own tint is the highlight here, so selected text keeps its
+     ordinary color rather than the selection foreground. */
+  color: inherit;
+}
+
+/* Block menu (from the grip) and its Turn into submenu. */
+.sheaf-block-menu,
+.sheaf-slash-menu {
+  position: fixed;
+  z-index: 12;
+  min-width: 200px;
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  border: 1px solid var(--md-rule);
+  border-radius: 8px;
+  background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+  box-shadow: 0 8px 28px color-mix(in srgb, #000 35%, transparent);
+}
+.sheaf-block-menu-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--md-text);
+  font-family: var(--md-font);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.sheaf-block-menu-item:hover:not(:disabled),
+.sheaf-block-menu-item:focus-visible {
+  background: color-mix(in srgb, var(--md-text) 10%, transparent);
+  outline: none;
+}
+.sheaf-block-menu-item:disabled {
+  color: var(--md-muted);
+  cursor: default;
+}
+.sheaf-block-menu-item.is-current {
+  color: var(--md-link);
+}
+.sheaf-block-menu-key {
+  flex: 0 0 auto;
+  font-family: var(--md-mono);
+  font-size: 11px;
+  color: var(--md-muted);
+}
+.sheaf-block-menu-sep {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--md-rule);
+}
+
+/* Slash menu, opened at the caret. */
+.sheaf-slash-menu {
+  max-height: min(320px, 50vh);
+  overflow-y: auto;
+}
+.sheaf-slash-item {
+  padding: 6px 8px;
+  border-radius: 5px;
+  color: var(--md-text);
+  font-family: var(--md-font);
+  font-size: 13px;
+  cursor: pointer;
+}
+.sheaf-slash-item:hover {
+  background: color-mix(in srgb, var(--md-text) 7%, transparent);
+}
+.sheaf-slash-item.is-selected {
+  background: color-mix(in srgb, var(--md-text) 12%, transparent);
+}
+
+@media (pointer: coarse) {
+  .sheaf-block-add,
+  .sheaf-block-grip {
+    width: 32px;
+    height: 32px;
+  }
+  .sheaf-block-menu-item,
+  .sheaf-slash-item {
+    min-height: 40px;
+  }
+}
