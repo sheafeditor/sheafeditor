@@ -85,6 +85,8 @@ orbit,date,enter,exit,minutes,charge_at_exit_pct
 > [!WARNING]
 > On 2244-11-17 the storm-shelter heaters and the eclipse overlapped. Charge fell to 32%, and it took three days of sunlit orbits to climb back above 60%. Do not run the shelter heaters during an eclipse unless someone is in the shelter.
 
+<div align="center"><figure><img src="tour/power.svg" alt="Six cells on bus A, cell five at 39 percent" width="560"><figcaption>Bus A on the morning of the 18th. Cell five has not come back.</figcaption></figure></div>
+
 ## Power budget
 
 | Load | Sunlight (W) | Eclipse (W) | Storm (W) |

@@ -51,6 +51,24 @@ const baseTheme = EditorView.theme({
       backgroundColor: 'var(--md-selection)',
       color: 'var(--md-selection-text)',
     },
+  // drawSelection()'s own boxes run from the content's edges, out into the page
+  // gutters; selectionHighlight.ts draws the selection over the text instead.
+  '.cm-selectionLayer': {
+    display: 'none',
+  },
+  // How deep that replacement sits. CodeMirror gives a below-layer its z-index
+  // from the order the layers were registered in, which is no basis for another
+  // rule to aim at, so it is pinned here: one step under the content, and one
+  // step above the fenced-code background (z-index -2, webview.css), which is
+  // what makes a selection inside a code block visible. `!important` is what
+  // beats the inline style the layer writes on itself.
+  '.sheaf-selectionLayer': {
+    zIndex: '-1 !important',
+  },
+  // No tint on the line holding the caret. This can only reach the line's own
+  // background, which is why a fenced code block paints its tint from a
+  // pseudo-element instead. This rule is a theme rule and so stronger than the
+  // stylesheet, and it used to strip the background from one line of the block.
   '.cm-activeLine': {
     backgroundColor: 'transparent',
   },
@@ -68,10 +86,15 @@ const baseTheme = EditorView.theme({
   // layout. That keeps the centered writing column in exactly the same place
   // whether numbers are on or off — the numbers overlay the existing left page
   // margin instead of pushing the text over. (Both lengths are `em` on this same
-  // element, so they always resolve to the identical pixel width.)
+  // element, so they always resolve to the identical pixel width.) The width
+  // holds a four-digit number, right-aligned, with a few pixels to spare on its
+  // left, so no number touches the edge of the pane.
   '.cm-gutters': {
-    width: '3em',
-    marginRight: '-3em',
+    width: '3.5em',
+    marginRight: '-3.5em',
+    // The column of numbers is only as wide as its widest number; pushed to the right
+    // end, the room left over sits between the numbers and the pane's edge.
+    justifyContent: 'flex-end',
     backgroundColor: 'transparent',
     border: 'none',
     color: 'var(--md-faint)',
@@ -131,3 +154,45 @@ const codeHighlight = HighlightStyle.define([
 ]);
 
 export const notionTheme: Extension = [baseTheme, syntaxHighlighting(codeHighlight)];
+
+/** The width of the text column when the setting does not name a usable one. */
+export const DEFAULT_CONTENT_WIDTH = '708px';
+
+/**
+ * A positive CSS length: a number and a unit, `708px` or `90ch` or `60%`.
+ *
+ * The units are CSS's own absolute, font-relative and viewport-relative ones, plus the
+ * percentage, which sizes the column against the pane. A bare number is not a length
+ * and neither is a keyword, so neither is taken.
+ */
+const LENGTH =
+  /^\s*(\d*\.?\d+)(px|pt|pc|in|cm|mm|q|em|rem|ex|ch|cap|ic|lh|rlh|vw|vh|vi|vb|vmin|vmax|svw|svh|lvw|lvh|dvw|dvh|%)\s*$/i;
+
+/** Widths already refused, so one mistake in the setting is reported once. */
+const refused = new Set<string>();
+
+/**
+ * The width to give the text column: the configured one when it is a CSS length, and
+ * the default when it is not.
+ *
+ * `--md-content-width` is a custom property, and a custom property holds whatever text
+ * it is given. A value that is not a length therefore fails nowhere near the setting:
+ * it fails inside the `calc()` above that sizes the column, and a `calc()` that does
+ * not parse makes the whole `max-width` invalid. The column then has no bound at all
+ * and the text runs the full width of the editor pane, which reads as the centred
+ * column having been removed rather than as a value having been mistyped. So the value
+ * is read here, where a refusal can be said out loud.
+ */
+export function contentWidth(configured: string): string {
+  const match = LENGTH.exec(configured);
+  if (match && Number(match[1]) > 0) return match[1] + match[2];
+  if (!refused.has(configured)) {
+    refused.add(configured);
+    console.warn(
+      `Sheaf cannot read "${configured}" as a width for the text column, so the column is ` +
+        `${DEFAULT_CONTENT_WIDTH} wide instead. sheaf.contentWidth takes one positive CSS ` +
+        'length, such as "708px", "90ch" or "60%".'
+    );
+  }
+  return DEFAULT_CONTENT_WIDTH;
+}

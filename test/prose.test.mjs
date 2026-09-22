@@ -1,5 +1,12 @@
 import { JSDOM } from 'jsdom';
 import { createRequire } from 'node:module';
+import { readFileSync } from 'node:fs';
+
+// The webview's stylesheet, handed over whole. jsdom neither loads nor lays it
+// out, and the bundle is built for the browser, so a scenario cannot open it:
+// what a table looks like is judged in a real window, and what the scenarios
+// hold is what the file says.
+globalThis.sheafWebviewCss = readFileSync(new URL('../media/webview.css', import.meta.url), 'utf8');
 
 const dom = new JSDOM('<!doctype html><html><body></body></html>', { pretendToBeVisual: true });
 const { window } = dom;

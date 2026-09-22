@@ -1,7 +1,8 @@
 import { EditorState } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
-import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
+import { markdown } from '@codemirror/lang-markdown';
 import { languages } from '@codemirror/language-data';
+import { sheafMarkdownLanguage } from '../src/webview/markdownDialect';
 import { livePreview } from '../src/webview/livePreview';
 import { notionTheme } from '../src/webview/theme';
 
@@ -14,7 +15,7 @@ export function run(text: string) {
     state: EditorState.create({
       doc: text,
       extensions: [
-        markdown({ base: markdownLanguage, codeLanguages: languages }),
+        markdown({ base: sheafMarkdownLanguage, codeLanguages: languages }),
         livePreview,
         notionTheme,
         EditorView.lineWrapping,

@@ -1,0 +1,11 @@
+# Findings that are not secrets. One fingerprint per line, as printed by
+# gitleaks: <commit>:<path>:<rule>:<line>.
+#
+# The fingerprint pins an exception to one line of one commit, so it cannot
+# quietly widen later. A real secret introduced on the next line of the same
+# file still fails the push.
+
+# An Idempotency-Key header in the sample corpus: a literal UUID in a curl
+# example against api.ferry.invalid, a fictional API in a fixture document.
+# generic-api-key fires on the entropy of any `Key: value` pair.
+50b9c14b841fe27d280955bbf8b96d1e4530e9f8:sample/docs/api-reference.md:generic-api-key:82

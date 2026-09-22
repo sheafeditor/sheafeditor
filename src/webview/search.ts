@@ -8,9 +8,10 @@
  *
  * Two kinds of match sit where the document's own text is not what is drawn:
  *   - Inside a table drawn as a grid. The cells already show the matched text, so
- *     the table stays a grid and the match is read where it sits. What a grid
- *     cannot draw is the selection over it, so such a match is found, counted and
- *     stepped through without being outlined.
+ *     the table stays a grid and the match is read where it sits. A grid cannot
+ *     draw the selection over it, so it tints each cell holding a match instead,
+ *     the current match's cell more strongly, and stepping onto a match makes its
+ *     cell the grid's active one (see `markTableMatches` in tables.ts).
  *   - Inside syntax the live preview hides (a link's URL, a heading's `#`). Moving
  *     to such a match reveals the raw Markdown of its lines, the same reveal Edit
  *     Markdown gives, which collapses once the caret leaves them.
@@ -21,10 +22,11 @@
  */
 
 import { Extension, StateEffect } from '@codemirror/state';
-import { EditorView, KeyBinding, Panel, ViewUpdate, keymap, runScopeHandlers } from '@codemirror/view';
+import { EditorView, KeyBinding, Panel, ViewPlugin, ViewUpdate, keymap, runScopeHandlers } from '@codemirror/view';
 import {
   SearchQuery,
   search,
+  searchPanelOpen,
   getSearchQuery,
   setSearchQuery,
   openSearchPanel,
@@ -35,7 +37,7 @@ import {
   replaceAll,
 } from '@codemirror/search';
 import { setReveal } from './livePreview';
-import { tableGridCovers } from './tables';
+import { tableGridCovers, markTableMatches, followTableMatch } from './tables';
 import { hint, registerShortcutGroup } from './shortcuts';
 
 /* ---- Commands ------------------------------------------------------------ */
@@ -75,9 +77,34 @@ const thenReveal =
   (command: (view: EditorView) => boolean) =>
   (view: EditorView): boolean => {
     const ran = command(view);
-    if (ran) revealMatch(view);
+    // A match inside a grid is shown by making its cell the active one; any other
+    // is shown by revealing whatever hides it.
+    if (ran && !followTableMatch(view)) revealMatch(view);
     return ran;
   };
+
+/*
+ * The grids' share of the find bar's marks. CodeMirror marks the matches in the
+ * text it draws, and a grid draws its cells itself, so each grid is told which
+ * query is showing and marks the cells holding a match. That is asked again only
+ * when the query, the document, the selection or whether the bar is open changes,
+ * after the editor has drawn the change, so a grid rebuilt by it is the one marked.
+ */
+const tableMatchMarks = ViewPlugin.define((view) => {
+  const key = {};
+  const sync = (): void =>
+    view.requestMeasure({
+      key,
+      read: () => null,
+      write: () => markTableMatches(view, searchPanelOpen(view.state) ? getSearchQuery(view.state) : null),
+    });
+  return {
+    update(u: ViewUpdate): void {
+      const queried = u.transactions.some((tr) => tr.effects.some((e) => e.is(setSearchQuery)));
+      if (queried || u.docChanged || u.selectionSet || searchPanelOpen(u.state) !== searchPanelOpen(u.startState)) sync();
+    },
+  };
+});
 
 export const findNextMatch = thenReveal(findNext);
 export const findPreviousMatch = thenReveal(findPrevious);
@@ -354,4 +381,5 @@ export const searchSupport: Extension = [
   // `literal` makes the query seeded from a selection match that text as written.
   search({ top: true, literal: true, createPanel: (view) => new FindPanel(view) }),
   keymap.of(searchKeys),
+  tableMatchMarks,
 ];

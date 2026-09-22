@@ -24,6 +24,10 @@ pie showData
     "Unidentified" : 2
 ```
 
+<img src="tour/panorama.svg" alt="The approach lane, Wren-4 at station keeping" width="1200">
+
+This is the view from the lane, which is what a ship sees for about forty minutes on its way past.
+
 ## Where they were bound
 
 ```mermaid
@@ -71,6 +75,8 @@ Farside Depot,Trailing cluster,2
 | 29 | 9 | 3 | 2 | · | · | · | 14 |
 | 30 | 9 | 1 | 2 | · | · | · | 12 |
 
+<div align="center"><figure><img src="tour/cupola.svg" alt="The cupola, with the nav lock readout" width="420"><figcaption>The cupola. Every ship below is a number that appeared on that readout first.</figcaption></figure></div>
+
 ## Regulars
 
 | Ship | Class | From | To | Remarks |
@@ -79,4 +85,12 @@ Farside Depot,Trailing cluster,2
 | *Ormond Drift* | Tanker | Harrow Yard | Farside Depot | Called us during the storm |
 | *Pick of the Belt* | Ore hauler | Rock 2231-QK | Oriel Ring | Leaves at shift change, back by next |
 | *Tern* | Survey | Farside Depot | Trailing cluster | Counts rocks. Brought biscuits. |
+| *鹮* | Liner | Wan-Ho Ring | Vesna c-II | Named for a bird nobody aboard has seen |
+| *한빛* | Tender | Sejong Station | Oriel Ring | Brings the oranges ⭐ |
+| *نسيم* | Survey | Qasr Depot | Trailing cluster | Works the cluster edge and reports nothing |
+| *נחשון* | Ore hauler | Beit Marr | Oriel Ring | First through the lane after a storm, always |
+| *Zéphyr* | Liner | Harrow Yard | Farside Depot | Odd days only, and never late |
+| *Renée* | Survey | Harrow Yard | Rock 2231-QK | Quill's first posting was aboard her |
 | *Unregistered, no transponder* | Unidentified | ? | ? | Twice this month, no lights, no reply |
+
+Names are kept as the registering port writes them, so the first column runs in five scripts and two directions. The yard's manifest software cannot line them up either.

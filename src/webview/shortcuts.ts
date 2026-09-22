@@ -35,8 +35,9 @@ const isMac = navigator.platform.toLowerCase().includes('mac');
 
 /** Render a CodeMirror key spec (e.g. `Mod-Shift-x`) as a display string (`⌘⇧X`). */
 export function hint(key: string): string {
+  // Split on the dashes between parts, so the minus key itself (`Mod-Alt--`) stays a part.
   return key
-    .split('-')
+    .split(/-(?=.)/)
     .map((part) => {
       switch (part) {
         case 'Mod':
@@ -101,6 +102,12 @@ interface Shortcut {
   label: string;
   /** The command to run; omitted for reference-only rows. */
   run?: (view: EditorView) => boolean;
+  /**
+   * What to print in the key column instead of a chord. A command with no binding of
+   * its own still belongs in this list, and where it is reached is the useful thing to
+   * say about it.
+   */
+  display?: string;
 }
 
 interface Group {
@@ -151,13 +158,30 @@ const GROUPS: Group[] = [
       { key: 'Mod-/', label: 'Show keyboard shortcuts' },
     ],
   },
+  {
+    title: 'View',
+    items: [
+      // No chord: every free-looking one already belongs to VS Code. The command is
+      // in the Command Palette, and anyone who wants a key can bind it there.
+      { key: null, label: 'Toggle table of contents', display: 'Sheaf: Toggle Table of Contents' },
+    ],
+  },
+  {
+    title: 'Sharing',
+    items: [
+      // Bound in the manifest, not here: these keys belong to the window, and the
+      // commands that answer them run in the extension host, outside this webview.
+      { key: 'Mod-Shift-Alt-r', label: 'Copy a reference to the selection' },
+      { key: 'Mod-Shift-Alt-t', label: 'Send the selected lines to the terminal' },
+    ],
+  },
 ];
 
 /** Shortcut groups other modules add for the overlay; each module binds its own keys. */
 const extraGroups: Group[] = [];
 
 /** List a group of shortcuts in the overlay. Call at module load, before the overlay is created. */
-export function registerShortcutGroup(group: { title: string; items: { key: string | null; label: string }[] }): void {
+export function registerShortcutGroup(group: { title: string; items: { key: string | null; label: string; display?: string }[] }): void {
   extraGroups.push(group);
 }
 
@@ -246,7 +270,7 @@ export function createShortcutsOverlay(parent: HTMLElement): ShortcutsOverlay {
       name.textContent = item.label;
       const keys = document.createElement('span');
       keys.className = 'sheaf-sc-keys';
-      keys.textContent = item.key ? hint(item.key) : 'Enter';
+      keys.textContent = item.display ?? (item.key ? hint(item.key) : 'Enter');
       row.append(name, keys);
       col.appendChild(row);
     }
@@ -284,8 +308,21 @@ export function createShortcutsOverlay(parent: HTMLElement): ShortcutsOverlay {
   });
   close.addEventListener('click', hide);
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && !backdrop.hidden) {
+    if (backdrop.hidden) return;
+    if (e.key === 'Escape') {
       e.preventDefault();
+      hide();
+      return;
+    }
+    // The shortcut that opened this has to close it from here, because opening
+    // moved focus into the panel and the editor's keymap is only offered keys the
+    // editor still has. Without this the one key someone would reach for is the
+    // one key that does nothing, which reads as the overlay being stuck.
+    if (e.key === '/' && (e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey) {
+      e.preventDefault();
+      // The webview host forwards every key it sees to the workbench, handled or
+      // not, so a key answered here still has to be stopped from reaching it.
+      e.stopPropagation();
       hide();
     }
   });

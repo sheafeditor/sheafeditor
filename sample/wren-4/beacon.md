@@ -2,6 +2,8 @@
 
 Wren-4 transmits a timing pulse that ships use for position and a slow data channel that carries the belt's hazard bulletin.
 
+<div align="left"><figure><img src="tour/mast.svg" alt="Mast 1, twelve lattice bays and the beacon on top" width="200"><figcaption>Mast 1. Twelve bays, two guy runs, and the only structure aboard nobody touches alone.</figcaption></figure></div>
+
 ## Pulse format
 
 | Field | Bits | Value | Meaning |
@@ -41,6 +43,10 @@ struct wren_pulse {
 | Bulletin | 8.455 GHz | 250 kHz | 50 W | Hazard bulletin, 1 kbit/s |
 | Backup | 2.290 GHz | 2 MHz | 40 W | Timing only, when the main chain fails |
 | Distress | 406.0 MHz | 3 kHz | 5 W | Omnidirectional tone |
+
+<img src="tour/dish.svg" alt="The receiver dish, aimed at the trailing cluster" width="320" align="right">
+
+Between pulses the same aperture listens, which is why the budget below is written for the transmit path and read for both.
 
 ## Link budget
 

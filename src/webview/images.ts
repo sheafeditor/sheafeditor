@@ -4,8 +4,9 @@
  * Two source forms are recognised and rendered as one editable widget:
  *   - Markdown:  ![alt](url "title")
  *   - HTML:      <img src alt width height align>, optionally wrapped in
- *                <p align="center">…</p> for centering or
- *                <figure><img …><figcaption>…</figcaption></figure> for captions.
+ *                <p align="center">…</p> for centering,
+ *                <figure><img …><figcaption>…</figcaption></figure> for captions,
+ *                and <div align="center"> around the figure when it is both.
  *
  * Plain images (no width / align / caption) round-trip as clean Markdown; the
  * moment you resize, align or caption one it upgrades to a single-line HTML
@@ -19,7 +20,8 @@
 
 import { EditorView, WidgetType } from '@codemirror/view';
 import { syntaxTree } from '@codemirror/language';
-import type { EditorState } from '@codemirror/state';
+import type { EditorState, Extension } from '@codemirror/state';
+import { installLinkPaste } from './linkPaste';
 
 export type ImageAlign = 'left' | 'center' | 'right';
 
@@ -182,7 +184,17 @@ export function serializeImage(p: ImageProps): string {
   const img = `<img ${attrs.join(' ')}>`;
 
   if (p.caption) {
-    return `<figure><img ${attrs.join(' ')}><figcaption>${escAttr(p.caption)}</figcaption></figure>`;
+    const figure = `<figure><img ${attrs.join(' ')}><figcaption>${escAttr(p.caption)}</figcaption></figure>`;
+    // The alignment rides on a wrapping `<div align>` rather than on the figure
+    // itself. `align` on a `<figure>` survives GitHub's sanitiser but draws
+    // nothing: HTML's rendering rules map the attribute to `text-align` for
+    // `div`, `p` and the headings only, so no browser gives a figure a hint it
+    // has no rule for. A `<p align>` is not an option either, because `<figure>`
+    // is block-level and closes an open paragraph, so the figure would fall out
+    // of the wrapper as the page was parsed. A `<div align>` is what is left,
+    // and it is on GitHub's allowlist, so the alignment survives there and the
+    // `text-align` it sets is inherited by the picture and the caption both.
+    return p.align ? `<div align="${p.align}">${figure}</div>` : figure;
   }
   if (p.align === 'left' || p.align === 'right') {
     return `<img ${attrs.join(' ')} align="${p.align}">`;
@@ -264,8 +276,10 @@ export function parseHtmlImage(text: string): ImageProps | null {
   if (h && /^\d+/.test(h)) props.height = parseInt(h, 10);
 
   let align = attrOf(tag, 'align');
-  const pAlign = /<p\b[^>]*\balign\s*=\s*["']?(left|center|right)/i.exec(text);
-  if (pAlign) align = pAlign[1];
+  // A lone image is centred by the `<p align>` wrapper READMEs use; a captioned
+  // one by a `<div align>`, because a paragraph cannot hold a `<figure>`.
+  const wrapAlign = /<(?:p|div)\b[^>]*\balign\s*=\s*["']?(left|center|right)/i.exec(text);
+  if (wrapAlign) align = wrapAlign[1];
   if (align && /^(left|center|right)$/i.test(align)) props.align = align.toLowerCase() as ImageAlign;
 
   const cap = /<figcaption\b[^>]*>([\s\S]*?)<\/figcaption>/i.exec(text);
@@ -280,9 +294,12 @@ export function parseHtmlImage(text: string): ImageProps | null {
  * plus parsed props so only the markup is replaced.
  */
 export function matchHtmlImage(text: string): { start: number; end: number; props: ImageProps } | null {
+  // Widest first: a wrapper left behind would sit in the document as loose HTML
+  // beside the widget, and the next rewrite would replace only what it matched.
   let m =
+    /<(p|div)\b[^>]*>\s*<figure\b[^>]*>[\s\S]*?<\/figure>\s*<\/\1>/i.exec(text) ||
     /<figure\b[^>]*>[\s\S]*?<\/figure>/i.exec(text) ||
-    /<p\b[^>]*>\s*<img\b[^>]*>\s*<\/p>/i.exec(text) ||
+    /<(p|div)\b[^>]*>\s*<img\b[^>]*>\s*<\/\1>/i.exec(text) ||
     /<img\b[^>]*>/i.exec(text);
   if (!m) return null;
   const props = parseHtmlImage(m[0]);
@@ -322,6 +339,51 @@ function imageNodeAt(state: EditorState, pos: number): SourceNode | null {
   });
   return found;
 }
+
+// ---- Selection over a picture ---------------------------------------------
+//
+// The editor paints a selection behind the content, and an opaque picture
+// covers it, so a selected image looked exactly like an unselected one. An
+// image whose whole source a selection covers has its wrapper marked instead,
+// and the stylesheet draws a ring on top of it. The mark is set on the live
+// DOM after each update rather than carried on the widget, so a selection
+// change never rebuilds a picture, and a widget whose DOM the editor reused or
+// redrew is marked again on the same update.
+
+/** Views that marked an image on their last pass, so an idle caret costs nothing. */
+const markedImages = new WeakSet<EditorView>();
+
+function markSelectedImages(view: EditorView): void {
+  const { state } = view;
+  const ranges = state.selection.ranges.filter((r) => !r.empty);
+  if (!ranges.length && !markedImages.has(view)) return;
+  let any = false;
+  for (const wrap of Array.from(view.contentDOM.querySelectorAll<HTMLElement>('.md-img-wrap'))) {
+    // A cell editor nested inside this one marks its own images.
+    if (wrap.closest('.cm-content') !== view.contentDOM) continue;
+    let selected = false;
+    if (ranges.length) {
+      let node: SourceNode | null = null;
+      try {
+        node = imageNodeAt(state, view.posAtDOM(wrap));
+      } catch {
+        node = null;
+      }
+      selected = !!node && ranges.some((r) => r.from <= node!.from && r.to >= node!.to);
+    }
+    wrap.classList.toggle('is-selected', selected);
+    any ||= selected;
+  }
+  if (any) markedImages.add(view);
+  else markedImages.delete(view);
+}
+
+/** Marks every image the selection covers; the ring is drawn by media/webview.css. */
+export const imageSelection: Extension = EditorView.updateListener.of((update) => {
+  if (update.selectionSet || update.docChanged || update.viewportChanged || markedImages.has(update.view)) {
+    markSelectedImages(update.view);
+  }
+});
 
 // ---- Editing widget -------------------------------------------------------
 
@@ -401,6 +463,22 @@ function svgIcon(path: string): SVGElement {
   return svg;
 }
 
+/** The corner bracket drawn inside the resize handle: a halo stroke, then the grip over it. */
+function cornerGrip(): SVGElement {
+  const NS = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(NS, 'svg');
+  svg.setAttribute('viewBox', '0 0 20 20');
+  svg.setAttribute('class', 'md-img-grip');
+  svg.setAttribute('aria-hidden', 'true');
+  for (const cls of ['md-img-grip-halo', 'md-img-grip-line']) {
+    const p = document.createElementNS(NS, 'path');
+    p.setAttribute('d', 'M15 6V15H6');
+    p.setAttribute('class', cls);
+    svg.appendChild(p);
+  }
+  return svg;
+}
+
 const ALIGN_ICONS: Record<ImageAlign, string> = {
   left: 'M1 2h14v2H1zM1 6h9v2H1zM1 10h14v2H1zM1 14h9v2H1z',
   center: 'M1 2h14v2H1zM3 6h10v2H3zM1 10h14v2H1zM3 14h10v2H3z',
@@ -457,6 +535,11 @@ class ImageWidget extends WidgetType {
     const fig = document.createElement('span');
     fig.className = 'md-img-fig';
 
+    // The frame is exactly the picture's box, caption excluded, so the resize
+    // grip sits on the picture's corner rather than beside the caption below it.
+    const frame = document.createElement('span');
+    frame.className = 'md-img-frame';
+
     const img = document.createElement('img');
     img.className = 'md-img';
     img.src = this.resolvedSrc;
@@ -464,7 +547,8 @@ class ImageWidget extends WidgetType {
     if (this.props.width) img.style.width = `${this.props.width}px`;
     img.addEventListener('load', () => view.requestMeasure());
     img.addEventListener('error', () => wrap.classList.add('is-broken'));
-    fig.appendChild(img);
+    frame.appendChild(img);
+    fig.appendChild(frame);
 
     if (this.props.caption) {
       const cap = document.createElement('span');
@@ -477,17 +561,25 @@ class ImageWidget extends WidgetType {
     // are offered only where a toolbar action can actually rewrite the source.
     // A control that does nothing when clicked is the bug; one that is not
     // offered is an honest limit.
-    if (this.rewritable) fig.appendChild(this.buildHandle(view, img));
+    if (this.rewritable) frame.appendChild(this.buildHandle(view, img));
     wrap.appendChild(fig);
     if (this.rewritable) wrap.appendChild(this.buildToolbar(view, wrap));
     return wrap;
   }
 
-  /** Bottom-right drag handle for freeform width. */
+  /**
+   * Bottom-right drag handle for freeform width. The element is a transparent
+   * hit box with the cursor across all of it; what is drawn inside is a corner
+   * bracket in the link colour over a halo in the editor's background colour,
+   * so it reads as a grip on a white, a black or a busy picture alike.
+   */
   private buildHandle(view: EditorView, img: HTMLImageElement): HTMLElement {
     const handle = document.createElement('span');
     handle.className = 'md-img-handle';
     handle.title = 'Drag to resize';
+    handle.setAttribute('role', 'button');
+    handle.setAttribute('aria-label', 'Resize image');
+    handle.appendChild(cornerGrip());
     handle.addEventListener('pointerdown', (e) => {
       e.preventDefault();
       e.stopPropagation();
@@ -680,6 +772,11 @@ async function fileToBase64(file: File | Blob): Promise<string> {
   return btoa(binary);
 }
 
+/** The part of a thrown error worth reading. */
+function reasonOf(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
 function baseName(name: string): string {
   return name.replace(/\.[^.]+$/, '').replace(/[-_]+/g, ' ').trim();
 }
@@ -698,8 +795,14 @@ async function ingest(view: EditorView, files: File[], at: number): Promise<void
     let relPath: string;
     try {
       relPath = await saveImageFile(file);
-    } catch {
-      continue;
+    } catch (err) {
+      // The host says why it could not save, in a notification naming the
+      // reason, so nothing is inserted and nothing more is said here. Every
+      // reason a save fails is about the document rather than this one file, so
+      // the files behind it would fail the same way and stack up the same
+      // notification; the run stops instead.
+      console.warn(`Sheaf could not save a pasted image: ${reasonOf(err)}`);
+      break;
     }
     const line = view.state.doc.lineAt(Math.min(cursor, view.state.doc.length));
     const prefix = cursor === line.from ? '' : '\n';
@@ -766,6 +869,12 @@ function imageFilesFrom(dt: DataTransfer | null): File[] {
 export function setupImageIngestion(view: EditorView, post: VsPost): void {
   ingestPost = post;
   const dom = view.dom;
+
+  // A web address pasted over chosen words links them rather than replacing them.
+  // It has to be decided further up than the handlers below: CodeMirror answers a
+  // paste on the content itself, so by the time one has reached this element the
+  // words are already gone.
+  installLinkPaste(view);
 
   dom.addEventListener('dragover', (e) => {
     if (e.dataTransfer && Array.from(e.dataTransfer.items ?? []).some((i) => i.kind === 'file')) {

@@ -12,6 +12,8 @@
 | Found | Asleep in the waveguide access port, warm |
 | On the manifest | No |
 
+<figure><img src="../tour/waveguide.svg" alt="WG-2 access port, hatch open" width="420"><figcaption>WG-2. She came out of this at 02:14 with no ship docked.</figcaption></figure>
+
 ## Favourite places
 
 | Place | How often | Notes |
@@ -30,6 +32,16 @@
 - Refused the medic's treats. Accepted Bray's.
 
 </details>
+
+The two she actually uses, in order:
+
+<img src="../tour/bunk.svg" alt="The hub bunk" width="300" height="169"> <img src="../tour/airlock.svg" alt="The EVA hatch, with a suit beside it" width="300">
+
+The bunk because it does not turn, and the hatch because the suit is warm.
+
+[![The lens mark on her chest, close enough to read](<../tour/lens (detail).svg>)](fresnel.svg)
+
+The mark on her chest is a lens, etched not printed. Nobody at the yard chips a cat with a lens.
 
 ## Rules
 

@@ -1,7 +1,30 @@
 import { createRequire } from 'node:module';
 
-const { planEdit, toWebviewText, DocumentSync, mountWebview } =
-  createRequire(import.meta.url)('./textSync.bundle.cjs');
+const {
+  planEdit,
+  toWebviewText,
+  DocumentSync,
+  mountWebview,
+  RecentTyping,
+  RECENT_TYPING_MS,
+  noticeAboutLostText,
+  quoteLost,
+  parseView,
+  applyView,
+  rowMatches,
+  prefillFor,
+  setViewKey,
+  formatWhere,
+  formatSort,
+  formatShow,
+  setWhereCondition,
+  setSortKey,
+  hideViewColumn,
+  viewKeyValue,
+  leadingNumber,
+  wholeNumber,
+} = createRequire(import.meta.url)('./textSync.bundle.cjs');
+import { bootWebview } from './webview.mjs';
 
 /** The document text the planned edit produces when VS Code applies it. */
 function applied(documentText, edit) {
@@ -55,6 +78,8 @@ function makeHost(text, { crlf = false } = {}) {
     refused: 0,
     /** Every document the host has posted to the webview. */
     posted: [],
+    /** Whether each of those documents was said to take back text the person typed. */
+    took: [],
     /** Runs before every edit is written, for a file something else keeps writing to. */
     beforeEveryApply: null,
     /** Runs once, just before the next edit is written. */
@@ -94,13 +119,36 @@ function makeHost(text, { crlf = false } = {}) {
       once('afterApply');
       return true;
     },
-    setContent(next) {
+    setContent(next, tookTypedText) {
       doc.posted.push(next);
+      doc.took.push(tookTypedText === true);
     },
     onEdited() {},
   };
   return doc;
 }
+
+/**
+ * The recent-typing window, on a clock the check moves itself. `clock.now` is the
+ * time it reads, so a check can step past the window instead of waiting out ten real
+ * seconds.
+ */
+const recently = (clock = { now: 1_000 }) => new RecentTyping(RECENT_TYPING_MS, () => clock.now);
+
+/** A small datatable for the view checks, with ties, empties, currency and ISO dates. */
+const TASKS_HEADER = ['Feature', 'Status', 'Estimate', 'Owner', 'Due'];
+const TASKS = [
+  ['Login', 'Done', '3', 'Sam', '2024-03-01'],
+  ['Search', 'In progress', '10', 'Ann', '2024-01-15'],
+  ['Export', 'Todo', '9', 'Sam', ''],
+  ['Import', 'todo', '$1,200', '', '2023-12-31'],
+  ['Sync', 'Blocked', '', 'Sam', '2024-02-10'],
+];
+
+/** The source rows a view body shows over the tasks table, in display order. */
+const viewRows = (body, header = TASKS_HEADER, rows = TASKS) => applyView(parseView(body), header, rows).rows;
+/** The rows a `from` plus one `where` line shows over the tasks table. */
+const whereRows = (where, header, rows) => viewRows(`from: tasks.csv\nwhere: ${where}`, header, rows);
 
 const cases = [
   ['identical text is no edit', () => planEdit('x\n', 'x\n', false) === null],
@@ -257,7 +305,483 @@ const cases = [
     const e = planEdit('a\r\nb\nc\rd\n', 'a\nb\nc\nd!\n', false);
     return e?.start === 8 && e.end === 8 && e.replacement === '!' && e.text === 'a\r\nb\nc\rd!\n';
   }],
+  // The rest drive the real webview, `src/webview/main.ts`, and hand it the file's own
+  // bytes. The host converts line endings before it posts, but the webview must not
+  // depend on that: CodeMirror reads a carriage return as a line break whoever sent it.
+  ['real webview, CRLF file: a change from outside shows the file’s lines, keeps the caret, and the next keystroke writes only itself', () =>
+    outsideChangeThenKeystroke({
+      before: 'First line.\r\n\r\nSecond line.\r\n\r\nThird line.\r\n',
+      after: 'First line changed.\r\n\r\nSecond line.\r\n\r\nThird line.\r\n',
+      crlf: true,
+      caretIn: 'Third',
+      typeIn: 'Second',
+      want: 'First line changed.\r\n\r\nSeZcond line.\r\n\r\nThird line.\r\n',
+    })],
+  ['real webview, LF file: a change from outside shows the file’s lines, keeps the caret, and the next keystroke writes only itself', () =>
+    outsideChangeThenKeystroke({
+      before: 'First line.\n\nSecond line.\n\nThird line.\n',
+      after: 'First line changed.\n\nSecond line.\n\nThird line.\n',
+      crlf: false,
+      caretIn: 'Third',
+      typeIn: 'Second',
+      want: 'First line changed.\n\nSeZcond line.\n\nThird line.\n',
+    })],
+  ['real webview, CRLF file with no final line ending: a change from outside adds no line and no ending', () =>
+    outsideChangeThenKeystroke({
+      before: 'First line.\r\n\r\nSecond line.\r\n\r\nThird line.',
+      after: 'First line changed.\r\n\r\nSecond line.\r\n\r\nThird line.',
+      crlf: true,
+      caretIn: 'Third',
+      typeIn: 'Second',
+      want: 'First line changed.\r\n\r\nSeZcond line.\r\n\r\nThird line.',
+    })],
+  ['real webview, mixed line endings: a change from outside leaves every other line ending as the file has it', () =>
+    outsideChangeThenKeystroke({
+      before: 'One.\r\nTwo.\nThree.\rFour.\r\n',
+      after: 'One changed.\r\nTwo.\nThree.\rFour.\r\n',
+      crlf: true,
+      caretIn: 'Four',
+      typeIn: 'Two',
+      want: 'One changed.\r\nTwZo.\nThree.\rFour.\r\n',
+    })],
+  ['real webview, CRLF file: the document the host posts after a write from outside reaches the webview as a minimal change', async () => {
+    // The host's own path: the write from outside goes through the sync, which posts
+    // what the webview should hold. Nothing here hands the webview a carriage return.
+    const doc = makeHost('First line.\r\n\r\nSecond line.\r\n\r\nThird line.\r\n', { crlf: true });
+    const sync = new DocumentSync(doc.host);
+    const webview = bootWebview((m) => m.type === 'edit' && void sync.edit(m.text));
+    webview.init(toWebviewText(doc.text));
+    webview.click(webview.doc().indexOf('Third') + 2);
+    doc.write('First line changed.\r\n\r\nSecond line.\r\n\r\nThird line.\r\n');
+    sync.documentChanged(doc.text);
+    for (const text of doc.posted) webview.setContent(text);
+    const caretKept = webview.caret() === webview.doc().indexOf('Third') + 2;
+    webview.click(webview.doc().indexOf('Second') + 2);
+    webview.type('Z');
+    await settle();
+    const lines = webview.lines();
+    webview.close();
+    return (
+      same(lines, ['First line changed.', '', 'SeZcond line.', '', 'Third line.', '']) &&
+      caretKept &&
+      doc.text === 'First line changed.\r\n\r\nSeZcond line.\r\n\r\nThird line.\r\n' &&
+      doc.applied === 1
+    );
+  }],
+  ['real webview: a letter handed back by the host mid-burst keeps its place in the word', async () => {
+    // The person is typing `Z2` after `Z1`. Between the two letters the host posts the
+    // document twice: once a step behind, without the `Z` the person has just typed,
+    // and once with it, as its own write of that letter lands. The second one inserts
+    // the `Z` exactly where the caret is sitting, and where the caret goes then is what
+    // decides the order the next letter comes out in.
+    const webview = bootWebview();
+    webview.init('Some words.\n');
+    webview.click(7); // Inside "words", after "wo".
+    webview.type('Z');
+    webview.type('1');
+    webview.type('Z');
+    webview.setContent('Some woZ1rds.\n');
+    webview.setContent('Some woZ1Zrds.\n');
+    webview.type('2');
+    const doc = webview.doc();
+    const caret = webview.caret();
+    webview.close();
+    return doc === 'Some woZ1Z2rds.\n' && caret === 11;
+  }],
+  ['real webview: a final newline added on the way to disk leaves the caret on the line it was on', () => {
+    // `files.insertFinalNewline` puts a newline on the end of a file that has none,
+    // and the person is typing at that end, so the newline arrives exactly where the
+    // caret is. A line break is the one thing arriving text must not put itself in
+    // front of the caret for: doing that moves the person onto the next line, and the
+    // rest of what they were writing goes there with them.
+    const webview = bootWebview();
+    webview.init('No newline at the end');
+    webview.click('No newline at the end'.length);
+    webview.type(' A');
+    webview.setContent('No newline at the end A\n');
+    webview.type(' B');
+    const doc = webview.doc();
+    webview.close();
+    return doc === 'No newline at the end A B\n';
+  }],
+
+  /*
+   * What the person typed in the last few seconds, and what a write from outside took
+   * of it. A clock of its own, so the window is a number these checks set rather than
+   * how long the suite happens to take.
+   */
+  ['lost text: a write made from text read before the keystroke names what it took', () => {
+    const typing = recently();
+    typing.record('Some words.\n');
+    return typing.dropped('Some woZZrds.\n', 'Some words.\nAdded by a tool.\n') === 'ZZ';
+  }],
+  ['lost text: a write that keeps what was typed takes nothing', () => {
+    const typing = recently();
+    typing.record('Some words.\n');
+    return typing.dropped('Some woZZrds.\n', 'Some woZZrds.\nAdded by a tool.\n') === undefined;
+  }],
+  ['lost text: a write to a part of the file the person never touched takes nothing', () => {
+    const typing = recently();
+    typing.record('Intro.\n\nSome words.\n');
+    return typing.dropped('Intro.\n\nSome woZZrds.\n', 'Intro changed.\n\nSome woZZrds.\n') === undefined;
+  }],
+  ['lost text: a write with nothing typed before it takes nothing', () => {
+    return recently().dropped('Some words.\n', 'Other words.\n') === undefined;
+  }],
+  ['lost text: typing that has fallen out of the window is no longer something a write can take', () => {
+    const clock = { now: 1_000 };
+    const typing = recently(clock);
+    typing.record('Some words.\n');
+    clock.now += RECENT_TYPING_MS + 1;
+    return typing.dropped('Some woZZrds.\n', 'Some words.\n') === undefined;
+  }],
+  ['lost text: the keystroke before the window closes still counts', () => {
+    const clock = { now: 1_000 };
+    const typing = recently(clock);
+    typing.record('Some words.\n');
+    clock.now += RECENT_TYPING_MS - 1;
+    return typing.dropped('Some woZZrds.\n', 'Some words.\n') === 'ZZ';
+  }],
+  ['lost text: only the part of the typing the write did not keep is named', () => {
+    const typing = recently();
+    typing.record('Row: \n');
+    // The write kept the line and everything on it up to `ab`, and dropped the rest.
+    return typing.dropped('Row: abcd\n', 'Row: ab\n') === 'cd';
+  }],
+  ['lost text: a write that takes only whitespace says nothing', () => {
+    const typing = recently();
+    typing.record('Start\n');
+    return typing.dropped('Start   \n', 'Start\n') === undefined;
+  }],
+  ['lost text: text deleted and then written back by the tool is not something taken', () => {
+    const typing = recently();
+    typing.record('Some words.\n');
+    // The person deleted `words`; the write from outside puts it back. Nothing of
+    // theirs is in the file to lose.
+    return typing.dropped('Some .\n', 'Some words.\n') === undefined;
+  }],
+  ['lost text: what is on record is forgotten once a document from outside has landed', () => {
+    const typing = recently();
+    typing.record('Some words.\n');
+    typing.forget();
+    return typing.dropped('Some woZZrds.\n', 'Some words.\n') === undefined;
+  }],
+  ['lost text: the notice quotes what was taken and says which key brings it back', () => {
+    return (
+      noticeAboutLostText('ZZ') ===
+      'Sheaf: this file changed outside the editor, and your last change is gone: "ZZ". Undo brings it back.'
+    );
+  }],
+  ['lost text: a long quote is cut short, and a quote spanning lines is shown on one', () => {
+    const long = quoteLost('x'.repeat(200));
+    return long === `${'x'.repeat(60)}…` && quoteLost(' one\ntwo  three ') === 'one two three';
+  }],
+  ['lost text: the document that took it is the one the webview is told to make undoable', () => {
+    const doc = makeHost('Some words.\n');
+    const sync = new DocumentSync(doc.host);
+    doc.write('Other words.\n');
+    const reached = sync.documentChanged(doc.text, true);
+    return reached === true && same(doc.posted, ['Other words.\n']) && same(doc.took, [true]);
+  }],
+  ['lost text: a document the webview already holds is not pushed and is not said to have taken anything', () => {
+    const doc = makeHost('Some words.\n');
+    const sync = new DocumentSync(doc.host);
+    return sync.documentChanged(doc.text, true) === false && doc.posted.length === 0;
+  }],
+
+  // View blocks: the query layer, with no rendering.
+  ['cell numbers: the column sort reading is shared, currency, separators and signs included', () => {
+    return (
+      leadingNumber('$1,200') === 1200 &&
+      leadingNumber('−12 apples') === -12 &&
+      leadingNumber('.5') === 0.5 &&
+      leadingNumber('apples') === null &&
+      wholeNumber('50%') === 50 &&
+      wholeNumber('12 apples') === null
+    );
+  }],
+  ['view: a full body parses every key, keys case-insensitive and spaces around the colon tolerated', () => {
+    const q = parseView('  FROM :  tasks.csv  \n\nWhere: status != Done; owner = Sam\nsort: estimate desc, feature\nshow: feature, status, estimate\nlayout: Board\ngroup: status\n');
+    return (
+      q.from === 'tasks.csv' &&
+      same(q.where.map((c) => [c.column, c.op, c.value]), [['status', '!=', 'Done'], ['owner', '=', 'Sam']]) &&
+      same(q.sort.map((s) => [s.column, s.descending]), [['estimate', true], ['feature', false]]) &&
+      same(q.show, ['feature', 'status', 'estimate']) &&
+      q.layout === 'board' &&
+      q.group === 'status' &&
+      q.errors.length === 0
+    );
+  }],
+  ['view: a named inline block is kept as written, and absent keys take their defaults', () => {
+    const q = parseView('from: #tasks');
+    return q.from === '#tasks' && q.where.length === 0 && q.sort.length === 0 && q.show === null && q.layout === 'table' && q.group === null && q.errors.length === 0;
+  }],
+  ['view: column names may hold spaces in where, sort and show', () => {
+    const q = parseView('from: t.csv\nwhere: due date is empty; next step contains call\nsort: due date desc\nshow: due date, next step');
+    return (
+      same(q.where.map((c) => [c.column, c.op, c.value]), [['due date', 'is empty', ''], ['next step', 'contains', 'call']]) &&
+      same(q.sort.map((s) => [s.column, s.descending]), [['due date', true]]) &&
+      same(q.show, ['due date', 'next step'])
+    );
+  }],
+  ['view: a quoted value holds a semicolon and keeps its outer spaces', () => {
+    const q = parseView('from: t.csv\nwhere: note = "a;b"; note contains " x "; title = "say ""hi"""');
+    return same(q.where.map((c) => c.value), ['a;b', ' x ', 'say "hi"']) && q.errors.length === 0;
+  }],
+  ['view: an unknown key is an error on its line, and the rest still parses', () => {
+    const q = parseView('from: tasks.csv\nfilter: status = Done\nsort: estimate');
+    return (
+      same(q.errors, [{ line: 1, key: 'filter', message: 'Unknown key "filter". A view understands from, where, sort, show, layout and group.' }]) &&
+      q.from === 'tasks.csv' &&
+      same(q.sort.map((s) => s.column), ['estimate'])
+    );
+  }],
+  ['view: a missing from is an error on the whole block', () => {
+    const q = parseView('sort: estimate\n');
+    return same(q.errors, [{ line: null, key: 'from', message: 'A view needs a "from" line that names its table, like "from: tasks.csv" or "from: #tasks".' }]) && q.from === null;
+  }],
+  ['view: a board with no group is an error on the layout line', () => {
+    const q = parseView('from: t.csv\nlayout: board');
+    return same(q.errors, [{ line: 1, key: 'layout', message: 'A board needs a column to group its cards by. Add a line like "group: status".' }]);
+  }],
+  ['view: an unknown layout, a line with no key and a repeated key are each errors, and the first key wins', () => {
+    const q = parseView('from: t.csv\nlayout: grid\njust words\nsort: a\nsort: b');
+    return (
+      same(q.errors.map((e) => [e.line, e.key]), [[1, 'layout'], [2, null], [4, 'sort']]) &&
+      q.errors[0].message === 'Unknown layout "grid". A view\'s layout is table or board.' &&
+      q.layout === 'table' &&
+      same(q.sort.map((s) => s.column), ['a'])
+    );
+  }],
+  ['view: a condition with no operator, or no value, is an error and the other conditions still hold', () => {
+    const q = parseView('from: t.csv\nwhere: status Done; owner =; estimate > 3');
+    return (
+      same(q.errors.map((e) => e.line), [1, 1]) &&
+      q.errors[0].message.startsWith('Can\'t read the condition "status Done".') &&
+      q.errors[1].message === 'The condition "owner =" needs a value after "=". To find blank cells, write "owner is empty".' &&
+      same(q.where.map((c) => [c.column, c.op, c.value]), [['estimate', '>', '3']])
+    );
+  }],
+  ['view: parsing never throws, whatever the body holds', () => {
+    const bodies = ['', '\n\n', ':', 'where:', 'where: ;;;', 'where: "unclosed', 'sort: ,, desc', 'from:', '\r\n\r', 'show:'];
+    return bodies.every((b) => {
+      try {
+        return Array.isArray(parseView(b).errors);
+      } catch {
+        return false;
+      }
+    });
+  }],
+  ['view where: = and != compare text case-insensitively', () => {
+    return same(whereRows('status = todo'), [2, 3]) && same(whereRows('status != Done'), [1, 2, 3, 4]);
+  }],
+  ['view where: <, <=, > and >= compare numbers as numbers, and an empty cell matches none of them', () => {
+    return (
+      same(whereRows('estimate > 9'), [1, 3]) &&
+      same(whereRows('estimate >= 9'), [1, 2, 3]) &&
+      same(whereRows('estimate < 9'), [0]) &&
+      same(whereRows('estimate <= 9'), [0, 2])
+    );
+  }],
+  ['view where: contains, is empty and is not empty', () => {
+    return (
+      same(whereRows('feature CONTAINS or'), [2, 3]) &&
+      same(whereRows('owner is empty'), [3]) &&
+      same(whereRows('owner Is Not Empty'), [0, 1, 2, 4])
+    );
+  }],
+  ['view where: 10 > 9 and $1,200 > 30 read as numbers, apple < Banana reads as text', () => {
+    const nums = [['9'], ['10'], ['$1,200'], ['30']];
+    const fruit = [['apple'], ['Banana'], ['cherry']];
+    return (
+      same(whereRows('n > 9', ['n'], nums), [1, 2, 3]) &&
+      same(whereRows('n > 30', ['n'], nums), [2]) &&
+      same(whereRows('name < Banana', ['Name'], fruit), [0]) &&
+      same(whereRows('name = BANANA', ['Name'], fruit), [1])
+    );
+  }],
+  ['view where: ISO dates compare in date order', () => {
+    return same(whereRows('due < 2024-02-01'), [1, 3]) && same(whereRows('due >= 2024-02-10'), [0, 4]);
+  }],
+  ['view where: a quoted value matches a cell holding a semicolon', () => {
+    return same(whereRows('note = "a;b"', ['Note'], [['a;b'], ['a'], ['b']]), [0]);
+  }],
+  ['view: a where, sort, show or group naming a missing column is an error naming the columns, and the rest applies', () => {
+    const q = parseView('from: t.csv\nwhere: priority = 1; status = todo\nsort: size, estimate desc\nshow: feature, nope, status\nlayout: board\ngroup: team');
+    const v = applyView(q, TASKS_HEADER, TASKS);
+    return (
+      same(v.rows, [3, 2]) &&
+      same(v.columns, [0, 1]) &&
+      v.group === null &&
+      same(v.errors.map((e) => [e.line, e.key]), [[1, 'where'], [2, 'sort'], [3, 'show'], [5, 'group']]) &&
+      v.errors[0].message === 'No column is named "priority". The columns are Feature, Status, Estimate, Owner and Due.'
+    );
+  }],
+  ['view: a group naming a real column resolves to its index', () => {
+    return applyView(parseView('from: t.csv\nlayout: board\ngroup: STATUS'), TASKS_HEADER, TASKS).group === 1;
+  }],
+  ['view sort: numbers as numbers, empty cells last in either direction', () => {
+    return (
+      same(viewRows('from: t.csv\nsort: estimate'), [0, 2, 1, 3, 4]) &&
+      same(viewRows('from: t.csv\nsort: estimate desc'), [3, 1, 2, 0, 4])
+    );
+  }],
+  ['view sort: several keys, the second breaking ties in the first, desc on one', () => {
+    return same(viewRows('from: t.csv\nsort: owner, estimate desc'), [1, 2, 0, 4, 3]);
+  }],
+  ['view sort: ties keep their source order, ascending and descending', () => {
+    return same(viewRows('from: t.csv\nsort: status'), [4, 0, 1, 2, 3]) && same(viewRows('from: t.csv\nsort: status desc'), [2, 3, 1, 0, 4]);
+  }],
+  ['view sort: slashed dates sort as dates when the column settles their order', () => {
+    return same(viewRows('from: t.csv\nsort: d', ['D'], [['2/3/2024'], ['12/31/2023'], ['1/15/2024']]), [1, 2, 0]);
+  }],
+  ['view: show picks columns in the order written, and absent shows them all in file order', () => {
+    return (
+      same(applyView(parseView('from: t.csv\nshow: estimate, FEATURE'), TASKS_HEADER, TASKS).columns, [2, 0]) &&
+      same(applyView(parseView('from: t.csv'), TASKS_HEADER, TASKS).columns, [0, 1, 2, 3, 4])
+    );
+  }],
+  ['view: applying a view never changes the table it reads', () => {
+    const header = TASKS_HEADER.slice();
+    const rows = TASKS.map((r) => r.slice());
+    const before = JSON.stringify([header, rows]);
+    applyView(parseView('from: t.csv\nwhere: status != Done\nsort: estimate desc\nshow: owner'), header, rows);
+    return JSON.stringify([header, rows]) === before;
+  }],
+  ['view: a new row is prefilled with what the = conditions require', () => {
+    const q = parseView('from: t.csv\nwhere: status = Todo; owner = Sam; estimate > 3; nope = x');
+    return same(prefillFor(q, TASKS_HEADER), ['', 'Todo', '', 'Sam', '']);
+  }],
+  ['view: an edited row is checked against the filter on its own', () => {
+    const q = parseView('from: t.csv\nwhere: status != Done; owner = Sam');
+    return rowMatches(q, TASKS_HEADER, TASKS[2]) === true && rowMatches(q, TASKS_HEADER, TASKS[0]) === false && rowMatches(q, TASKS_HEADER, TASKS[1]) === false;
+  }],
+  ['view header: the filter, sort and columns format back into lines that parse the same', () => {
+    const q = parseView('from: t.csv\nwhere: note = "a;b"; owner is empty; pad contains " x "; t = "say ""hi"""\nsort: due date desc, feature\nshow: due date, feature');
+    const again = parseView(`from: t.csv\nwhere: ${formatWhere(q.where)}\nsort: ${formatSort(q.sort)}\nshow: ${formatShow(q.show)}`);
+    return (
+      formatWhere(q.where) === 'note = "a;b"; owner is empty; pad contains " x "; t = "say ""hi"""' &&
+      formatSort(q.sort) === 'due date desc, feature' &&
+      same(again.where, q.where.map((c) => ({ ...c }))) &&
+      same(again.sort, q.sort) &&
+      same(again.show, q.show)
+    );
+  }],
+  ['view header: setting a key rewrites only its line, keeping its spelling and spacing', () => {
+    return setViewKey('from: t.csv\nSort:  a\nshow: x\n', 'sort', 'b desc') === 'from: t.csv\nSort:  b desc\nshow: x\n';
+  }],
+  ['view header: a key that is absent is appended after the last line, before trailing blank lines', () => {
+    return (
+      setViewKey('from: t.csv\n', 'sort', 'a') === 'from: t.csv\nsort: a\n' &&
+      setViewKey('from: t.csv\n\n', 'sort', 'a') === 'from: t.csv\nsort: a\n\n' &&
+      setViewKey('from: t.csv', 'sort', 'a') === 'from: t.csv\nsort: a' &&
+      setViewKey('', 'from', 't.csv') === 'from: t.csv'
+    );
+  }],
+  ['view header: CRLF bodies keep CRLF on replaced, appended and neighbouring lines', () => {
+    return (
+      setViewKey('from: t.csv\r\nsort: a\r\n', 'sort', 'b') === 'from: t.csv\r\nsort: b\r\n' &&
+      setViewKey('from: t.csv\r\nshow: x\r\n', 'sort', 'a') === 'from: t.csv\r\nshow: x\r\nsort: a\r\n' &&
+      setViewKey('from: t.csv\r\nshow: x', 'sort', 'a') === 'from: t.csv\r\nshow: x\r\nsort: a'
+    );
+  }],
+  ['view header: removing a key drops its line and keeps the final-newline state', () => {
+    return (
+      setViewKey('from: t.csv\nsort: a\nshow: x\n', 'sort', null) === 'from: t.csv\nshow: x\n' &&
+      setViewKey('from: t.csv\nsort: a', 'sort', null) === 'from: t.csv' &&
+      setViewKey('from: t.csv\r\nsort: a\r\n', 'SORT', null) === 'from: t.csv\r\n' &&
+      setViewKey('from: t.csv\n', 'sort', null) === 'from: t.csv\n'
+    );
+  }],
+  ['view header: a header filter changes its own condition and leaves every other condition as written', () => {
+    const body = 'from: t.csv\nWhere:  owner=Sam ;status != Done;  note = "a;b"\nsort: x\n';
+    return (
+      // Updated in place, keeping the column's spelling and the spaces around the part.
+      setWhereCondition(body, 'STATUS', { op: 'contains', value: 'Op' }) ===
+        'from: t.csv\nWhere:  owner=Sam ;status contains Op;  note = "a;b"\nsort: x\n' &&
+      // Added after the others.
+      setWhereCondition(body, 'estimate', { op: 'is empty', value: '' }) ===
+        'from: t.csv\nWhere:  owner=Sam ;status != Done;  note = "a;b"; estimate is empty\nsort: x\n' &&
+      // Taken out, the rest untouched.
+      setWhereCondition(body, 'status', null) === 'from: t.csv\nWhere:  owner=Sam ;  note = "a;b"\nsort: x\n' &&
+      // A value needing quotes is quoted.
+      setWhereCondition('from: t.csv\n', 'note', { op: '=', value: 'x; y' }) === 'from: t.csv\nwhere: note = "x; y"\n' &&
+      // The last condition taken out takes the line with it; a column with none changes nothing.
+      setWhereCondition('from: t.csv\nwhere: a = 1\nsort: b\n', 'a', null) === 'from: t.csv\nsort: b\n' &&
+      setWhereCondition(body, 'nobody', null) === body
+    );
+  }],
+  ['view header: a click sorts by one column, a Shift-click changes or adds one key and leaves the others as written', () => {
+    const body = 'from: t.csv\nsort: Status  asc, estimate desc\n';
+    return (
+      setSortKey(body, 'feature', 'asc', false) === 'from: t.csv\nsort: feature\n' &&
+      setSortKey(body, 'estimate', null, false) === 'from: t.csv\n' &&
+      setSortKey(body, 'estimate', 'asc', true) === 'from: t.csv\nsort: Status  asc, estimate\n' &&
+      setSortKey(body, 'feature', 'desc', true) === 'from: t.csv\nsort: Status  asc, estimate desc, feature desc\n' &&
+      setSortKey(body, 'status', null, true) === 'from: t.csv\nsort: estimate desc\n' &&
+      setSortKey('from: t.csv', 'a', 'desc', true) === 'from: t.csv\nsort: a desc'
+    );
+  }],
+  ['view header: hiding a column takes its name off show, or writes show from the columns shown', () => {
+    return (
+      hideViewColumn('from: t.csv\nshow:  feature,Status , estimate\n', 'status', ['feature', 'status', 'estimate']) ===
+        'from: t.csv\nshow:  feature, estimate\n' &&
+      hideViewColumn('from: t.csv\n', 'status', ['feature', 'status', 'estimate']) === 'from: t.csv\nshow: feature, estimate\n' &&
+      // The last column shown stays: a view with no columns shows nothing.
+      hideViewColumn('from: t.csv\nshow: a\n', 'a', ['a']) === 'from: t.csv\nshow: a\n' &&
+      viewKeyValue('from: t.csv\nSHOW :  a, b \n', 'show') === 'a, b' &&
+      viewKeyValue('from: t.csv\n', 'show') === null
+    );
+  }],
 ];
+
+/** Let the sync's queued writes land: each crosses a turn. */
+function settle() {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+
+/**
+ * A file open in the real webview is rewritten from outside, and the webview is handed
+ * the new bytes as they are on disk. Then the person types Z two characters into the
+ * word `typeIn`. Holds when the webview shows exactly the file's lines, the caret is
+ * still two characters into `caretIn`, the change came in as the smallest edit rather
+ * than a whole-document replace, and the file afterwards is `want`: the new bytes plus
+ * the Z and nothing else.
+ */
+async function outsideChangeThenKeystroke({ before, after, crlf, caretIn, typeIn, want }) {
+  const doc = makeHost(before, { crlf });
+  const sync = new DocumentSync(doc.host);
+  const writes = [];
+  const applyEdit = doc.host.applyEdit;
+  doc.host.applyEdit = (start, end, replacement) => {
+    writes.push({ start, end, replacement });
+    return applyEdit(start, end, replacement);
+  };
+  const webview = bootWebview((m) => m.type === 'edit' && void sync.edit(m.text));
+  webview.init(before);
+  const shown = toWebviewText(after);
+  const caretAt = (text) => text.indexOf(caretIn) + 2;
+  webview.click(caretAt(webview.doc()));
+  doc.write(after);
+  webview.setContent(after);
+  const lines = webview.lines();
+  const caret = webview.caret();
+  const echoed = webview.edits().length;
+  webview.click(webview.doc().indexOf(typeIn) + 2);
+  webview.type('Z');
+  await settle();
+  webview.close();
+  return (
+    same(lines, shown.split('\n')) &&
+    caret === caretAt(shown) &&
+    // A change from outside is not the person's edit, so nothing goes back to the host.
+    echoed === 0 &&
+    doc.text === want &&
+    same(writes, [{ start: after.indexOf(typeIn) + 2, end: after.indexOf(typeIn) + 2, replacement: 'Z' }])
+  );
+}
 
 let passed = 0;
 for (const [name, check] of cases) {

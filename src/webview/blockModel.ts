@@ -13,7 +13,9 @@
 import { ChangeSet, EditorSelection, EditorState, StateEffect, StateField, Text, TransactionSpec } from '@codemirror/state';
 import { Decoration, EditorView } from '@codemirror/view';
 import { ensureSyntaxTree, language, syntaxTree } from '@codemirror/language';
-import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
+import { markdown } from '@codemirror/lang-markdown';
+import { sheafMarkdownLanguage } from './markdownDialect';
+import { frontMatterEnd } from './frontMatter';
 import { isolateHistory } from '@codemirror/commands';
 import type { SyntaxNode, Tree } from '@lezer/common';
 import {
@@ -68,16 +70,6 @@ interface Group {
 
 function fullTree(state: EditorState): Tree {
   return ensureSyntaxTree(state, state.doc.length, 200) ?? syntaxTree(state);
-}
-
-/** The line number closing YAML front matter that opens the document, or 0 when there is none. */
-function frontMatterEnd(doc: Text): number {
-  if (doc.lines < 3 || doc.line(1).text.trimEnd() !== '---' || doc.line(2).text.trim() === '') return 0;
-  for (let n = 2; n <= doc.lines; n++) {
-    const t = doc.line(n).text.trimEnd();
-    if (t === '---' || t === '...') return n;
-  }
-  return 0;
 }
 
 function unitFor(doc: Text, from: number, to: number, kind: BlockKind, node: SyntaxNode | null): Unit {
@@ -192,7 +184,7 @@ function parentOf(group: Group): Unit | null {
 
 /** Top-level blocks plus list items: a merge between neighbours lowers this count. */
 function structureCount(state: EditorState, text: string): number {
-  const parser = state.facet(language)?.parser ?? markdownLanguage.parser;
+  const parser = state.facet(language)?.parser ?? sheafMarkdownLanguage.parser;
   const tree = parser.parse(text);
   let count = 0;
   for (let c = tree.topNode.firstChild; c; c = c.nextSibling) count++;
@@ -685,13 +677,22 @@ export function exitBlockSelection(view: EditorView): boolean {
 
 // ---- Turn into ----------------------------------------------------------------
 
-export type TurnIntoKind = 'text' | 'h1' | 'h2' | 'h3' | 'bullet' | 'ordered' | 'task' | 'quote' | 'code';
+export type TurnIntoKind = 'text' | 'h1' | 'h2' | 'h3' | 'h4' | 'h5' | 'h6' | 'bullet' | 'ordered' | 'task' | 'quote' | 'code';
 
-export const TURN_INTO: { kind: TurnIntoKind; label: string }[] = [
+/**
+ * Every kind a block can be set to, in the order each Turn into surface lists them.
+ * All six heading levels are here because Markdown has six and Sheaf reads all six;
+ * a menu that offered three would leave `####` reachable only by typing it. The
+ * three deep levels sit behind a rule so the three in daily use stay a unit.
+ */
+export const TURN_INTO: { kind: TurnIntoKind; label: string; separator?: boolean }[] = [
   { kind: 'text', label: 'Text' },
   { kind: 'h1', label: 'Heading 1' },
   { kind: 'h2', label: 'Heading 2' },
   { kind: 'h3', label: 'Heading 3' },
+  { kind: 'h4', label: 'Heading 4', separator: true },
+  { kind: 'h5', label: 'Heading 5' },
+  { kind: 'h6', label: 'Heading 6' },
   { kind: 'bullet', label: 'Bullet list' },
   { kind: 'ordered', label: 'Numbered list' },
   { kind: 'task', label: 'Task list' },
@@ -708,12 +709,22 @@ export function canTurnInto(kind: BlockKind | null): boolean {
 
 const LIST_MARK_RE = /^(\s*)(?:[-*+]|\d+[.)])[ \t]+(?:\[[ xX]\][ \t]+)?/;
 
+/** The underline of a heading written `Title` over `=====` or `-----`. */
+const SETEXT_UNDERLINE_RE = /^\s{0,3}(=+|-+)\s*$/;
+
 /** What a block's source currently is, in Turn into terms. */
 export function currentTurnInto(text: string, kind: BlockKind | null): TurnIntoKind {
-  const first = text.split('\n')[0];
+  const lines = text.split('\n');
+  const first = lines[0];
   if (kind === 'code') return 'code';
   const atx = /^\s{0,3}(#{1,6})[ \t]/.exec(first);
-  if (atx) return atx[1].length === 1 ? 'h1' : atx[1].length === 2 ? 'h2' : atx[1].length === 3 ? 'h3' : 'text';
+  if (atx) return `h${atx[1].length}` as TurnIntoKind;
+  // An underlined heading is a heading of level 1 or 2, so it reports that level
+  // rather than the body text it would otherwise look like. Only a block the parse
+  // already called a heading is read this way: the same two lines elsewhere are a
+  // paragraph followed by a divider.
+  const last = lines[lines.length - 1];
+  if (kind === 'heading' && lines.length > 1 && SETEXT_UNDERLINE_RE.test(last)) return last.trimStart().startsWith('=') ? 'h1' : 'h2';
   if (/^\s{0,3}>/.test(first)) return 'quote';
   if (/^\s*[-*+][ \t]+\[[ xX]\][ \t]/.test(first)) return 'task';
   if (/^\s*[-*+][ \t]/.test(first)) return 'bullet';
@@ -741,7 +752,7 @@ function stripToText(text: string, kind: BlockKind | null): string {
  */
 function runOnText(text: string, caret: number, steps: ((v: EditorView) => void)[]): { text: string; caret: number } {
   const view = new EditorView({
-    state: EditorState.create({ doc: text, selection: { anchor: Math.min(caret, text.length) }, extensions: [markdown({ base: markdownLanguage })] }),
+    state: EditorState.create({ doc: text, selection: { anchor: Math.min(caret, text.length) }, extensions: [markdown({ base: sheafMarkdownLanguage })] }),
   });
   try {
     for (const step of steps) step(view);
@@ -767,6 +778,9 @@ export function convertText(text: string, kind: BlockKind | null, into: TurnInto
     case 'h1':
     case 'h2':
     case 'h3':
+    case 'h4':
+    case 'h5':
+    case 'h6':
       // A heading is one line, so a paragraph's lines join into it.
       if (kind === 'paragraph' || kind === 'heading' || kind === null) plain = plain.split('\n').map((l) => l.trim()).join(' ');
       steps.push(selectFirstLine, (v) => toggleHeading(v, Number(into[1])));

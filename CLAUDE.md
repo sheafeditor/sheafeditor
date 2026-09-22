@@ -1,25 +1,26 @@
 # Sheaf — project steering
 
-> **This file ships in the public repository.** It is engineering steering and nothing else. The issue tracker and its ticket numbers, commercial positioning, pricing and revenue thinking, the maintainer's identity, and how the sessions on this machine are organised all belong in the private `brain` repo instead. A pre-commit hook scans this file for that material and stops the commit, which is a reminder rather than a wall: if it fires on something legitimate, move the text or widen the hook deliberately.
+> **This file ships in the public repository.** It is engineering steering and nothing else. Issue-tracker references, commercial thinking, and anything about the people or tooling behind the work stay out of it. A pre-commit hook scans this file for that material and stops the commit, which is a reminder rather than a wall: if it fires on something legitimate, move the text or widen the hook deliberately.
 
 ## What this is
 
-Sheaf is a WYSIWYG editor for the Markdown documents and tables already in your repo, with the feel of a modern block editor, built for VS Code as a `CustomTextEditorProvider` over CodeMirror 6, and running unchanged in editors built on Code OSS.
+Sheaf is a WYSIWYG editor for the Markdown documents and tables already in your repo, with the feel of a modern block editor, built over CodeMirror 6.
 
-**This project is built to be public.** The repo is being opened up at [github.com/sheafeditor/sheafeditor](https://github.com/sheafeditor/sheafeditor), and the extension is headed for the VS Code Marketplace under the `sheafeditor` publisher for other people to install and use. Nothing has shipped yet — version is still `0.0.1` and unpublished — but this is not a personal/internal tool, and it should never read like one.
+It runs in more than one place. In VS Code it is a `CustomTextEditorProvider`, and the same extension installs unchanged in editors built on Code OSS. It also serves a folder from your own machine to a browser tab, so a document opens in applications that have no way to load an extension. Those are hosts for one editor rather than separate products: see **One editor, several hosts** below, which is the rule that keeps them from becoming separate products.
+
+**This project is public.** It lives at [github.com/sheafeditor/sheafeditor](https://github.com/sheafeditor/sheafeditor) and is published to the VS Code Marketplace and Open VSX under the `sheafeditor` publisher for other people to install and use. It is not a personal or internal tool, and it should never read like one.
 
 Treat that as the governing constraint on every change:
 
 - **Assume an outside audience.** Code, comments, docs, commit messages, and issue replies are read by strangers. No internal shorthand, no unexplained references.
 - **Never commit anything private** — no local paths, credentials, tokens, API keys, internal URLs, or personal data. Check before adding files.
 - **Secrets are what must never land here**, and gitleaks enforces it in a machine-wide pre-commit and pre-push hook. Fix a finding at its source, or record a false positive in `.gitleaksignore` with a note. Never bypass the hook.
-- **Two remotes, two rules.** `origin` is the private development repo and takes anything. `oss` is the public one, and a repo-local pre-push hook allows only the `release` branch to reach it. `main` carries unreviewed agent commits and must never be pushed there.
 - **User-facing text is product copy.** Command titles, setting descriptions, error messages, and README prose are the product. Write them for a first-time user who has no context.
 - **Breaking changes matter from first publish.** Once the extension is on the Marketplace, changing a setting name, a command ID, or the `sheaf.wysiwyg` view type breaks real installs. Rename only with a deprecation path, and say so in the changelog. (Renames done *before* first publish are free — that is why the `nib` → `md-editor` → `sheaf` history costs nothing, and why the legacy view-type list in `src/defaultEditor.ts` can eventually be dropped.)
 
 ## What Sheaf is for
 
-**The best documents-and-datatables editing experience in VS Code.** When a roadmap or design argument is close, settle it against that sentence.
+**Documents and datatables, edited in place, inside the code editor.** When a design argument is close, settle it against the bar below.
 
 The bar: a developer who keeps their docs in the repo should get a writing surface as good as the best modern block editors and a table surface as good as a spreadsheet's, without leaving the editor and without importing anything into a vault. Two halves, both first-class:
 
@@ -34,7 +35,7 @@ That covers the README and Marketplace listing, the site, command titles, settin
 - **"a modern document app"** — when the point is polish.
 - Best of all, just say the thing: "a centred reading column", "renders as you type", "type straight into the document".
 
-Internal writing is different. The design and research docs in the private `brain` repo compare named products, and code comments say where a token or behaviour came from. That is engineering rationale and it should stay accurate. The rule governs how Sheaf describes *itself* to the people using it.
+Code comments are different: they say where a token or behaviour came from. That is engineering rationale and it should stay accurate. The rule governs how Sheaf describes *itself* to the people using it.
 
 ## No database. Git is the store.
 
@@ -53,13 +54,13 @@ Because git is the store, some things are permanently out of scope. Answer these
 - **Enforced schemas.** Column types are advisory hints for editing and display. Any other tool can write anything into a cell, and that must not corrupt the document.
 - **Very large tables** are handled by referenced data files, not by a database — see below. What stays out of scope is what a database would add on top: indexes, joins and query planning.
 
-Sheaf is not competing with hosted database products. It is making the tables that already exist in repository documents pleasant to edit.
+Sheaf makes the tables that already exist in repository documents pleasant to edit.
 
 ### The consequence: diff size is a correctness concern
 
 If git is the store, then **the shape of the diff is a feature, not a cosmetic detail.** Two people editing different rows of the same table should merge cleanly. That only happens if an edit rewrites the lines it changed and leaves the rest byte-identical.
 
-So a serializer that reformats a whole block on any edit — realigning padding, renormalizing delimiters — is not a harmless tidy-up. It turns every concurrent edit into a merge conflict, on exactly the feature we are selling. Prefer a minimal diff over pretty output. If normalizing a table's alignment is worth doing, it belongs in an explicit "format this table" command the user invokes, not as a side effect of typing in a cell.
+So a serializer that reformats a whole block on any edit — realigning padding, renormalizing delimiters — is not a harmless tidy-up. It turns every concurrent edit into a merge conflict, on exactly the feature this project exists for. Prefer a minimal diff over pretty output. If normalizing a table's alignment is worth doing, it belongs in an explicit "format this table" command the user invokes, not as a side effect of typing in a cell.
 
 ## Non-negotiable design invariant
 
@@ -140,6 +141,32 @@ That gives the **presentation sidecar** its hard rules. It is additive and optio
 
 A **data file** is judged differently, the way an image is: the test is not "is the document complete without it" but "is the reference visible, honest, and resolvable from the repository". A fenced block naming `data/sites.csv` passes — a reader sees exactly where the rows live and can open them in anything. A binary blob, an opaque key, or a path outside the repo does not.
 
+## One editor, several hosts
+
+The editor is a bundle that runs in a browser. VS Code is one place to put it, behind a custom editor provider; a local server that hands a folder to a browser tab is another. More will follow. What makes any of that safe to claim is a single rule:
+
+**The editor bundle is the same bytes in every host.** `media/webview.js` built for the extension is the file the browser loads. There is no second editor, no port of one, and therefore nothing that can drift. The bundle reaches its host through exactly two things: the `acquireVsCodeApi()` global it calls at module scope, and `window.postMessage`. Supplying those is the whole of what a host does.
+
+Two directories follow from that, and which one a thing belongs in is decided by one question: should it exist in VS Code?
+
+- **Exists in every host, the same** — `src/webview/`. This is nearly everything.
+- **Exists in every host, but differs** — still `src/webview/`, gated by a capability the host declares. See below.
+- **Exists around the editor rather than inside it** — `src/server/`. A file tree beside the document is the example: VS Code has an Explorer, so a second one inside the webview would be a worse copy sitting next to the real one. The page builds it, and the bundle never learns it exists.
+
+A check in the host suite enforces the split by bundling the editor and reading what esbuild actually pulled in, so a module reached through three others is caught the same as a direct import.
+
+### Capabilities, and why there should be few
+
+A host that cannot do something says so in `init`, and the editor leaves that thing out. The first is the terminal: there is none behind a browser tab, so the right-click menu drops **Send to terminal** rather than offering an item that does nothing when pressed. Never silently degrade applies here as it does in Strict mode.
+
+Two rules keep this from becoming a hole in the guarantee above.
+
+**Absence means everything.** A host that sends no capabilities has them all, which is VS Code. If the editor's own host ever started sending a list of its own, every ability would depend on somebody remembering to add it there, and forgetting would quietly take a command away with nothing failing. A check pins that silence.
+
+**The host decides, not the page.** A capability is a fact about the process behind the editor, so the process states it. The browser's shim carries the answer and has no opinion of its own: policy in a transport is how a decision ends up somewhere no test can see it.
+
+**Keep the list short.** One capability is a fact about a host. Twenty would be a second product built out of conditionals, and identical bytes doing different things is drift with extra steps. If a third arrives, that is the moment to stop and ask whether the difference belongs in the editor at all.
+
 ## Release checklist
 
 Releases are built and published by `.github/workflows/release.yml`, which fires on a version tag. Publishing from a laptop is no longer the path: the workflow attests the `.vsix` it builds, and a hand-uploaded build carries no attestation to verify. Before tagging:
@@ -147,31 +174,34 @@ Releases are built and published by `.github/workflows/release.yml`, which fires
 1. `npm run check-types && npm test` pass.
 2. `CHANGELOG.md` has an entry for the new version — user-visible changes, written for users, not a commit log.
 3. `npm run package` and inspect `unzip -l sheafeditor-*.vsix`: it should contain only `dist/`, `media/`, `package.json`, `readme.md`, `changelog.md`, and `LICENSE.txt`. Anything else means `.vscodeignore` needs updating.
-4. The maintainer runs `npm version <major|minor|patch>` to bump and tag, then pushes the tag. Nobody else does: an agent never creates or pushes a tag. The workflow re-runs the gates above, checks the tag against `package.json`, builds, attests, creates the GitHub Release, and publishes to the Marketplace and Open VSX.
+4. The maintainer runs `npm version <major|minor|patch>` to bump and tag, then pushes the tag. Nobody else creates or pushes a tag. The workflow re-runs the gates above, checks the tag against `package.json`, builds, attests, creates the GitHub Release, and publishes to the Marketplace and Open VSX.
 
 Each publish step stays inert until its own repository secret exists (`VSCE_PAT` for the Marketplace, `OVSX_PAT` for Open VSX), so the workflow can be exercised end to end before anything goes public. Both registries receive the same attested file, which is why the workflow passes `--packagePath` to each rather than letting either tool repackage. `npm run publish` and `npm run publish:ovsx` still work for an emergency, but a release published that way has no provenance behind it.
 
 Open VSX is how Sheaf reaches editors built on Code OSS. Kiro, Cursor, Windsurf and VSCodium cannot install from the Marketplace, and open-vsx.org is the registry they query instead. It needs one setup step nobody can automate: an Eclipse Foundation account has to sign the Publisher Agreement and claim the `sheafeditor` namespace (`npx ovsx create-namespace sheafeditor`) before any token can publish. That account is publicly linked to the namespace.
 
-While pre-1.0, `priority: "default"` on the custom editor means installing Sheaf takes over every `.md` file. Keep the escape hatch — **Open as Raw Markdown (Text)** in the editor title bar — working and documented in the README.
+While pre-1.0, `priority: "default"` on the custom editor means installing Sheaf takes over every `.md` file. Keep the escape hatch working and documented in the README: the **Open raw Markdown** button at the right end of the formatting toolbar, and the **Open as Raw Markdown (Text)** command in the palette. Sheaf contributes nothing to the editor title bar; that space belongs to VS Code.
 
 ## Conventions
 
 - TypeScript, bundled with esbuild. Extension host code in `src/`, webview code in `src/webview/`.
-- Tests are plain Node scripts under `test/` driven by jsdom; `npm test` runs them.
-- Design and research docs live in the private `brain` repo, not here. They are internal thinking: competitive research, the roadmap, design language and architecture rationale. Update them there when architecture changes.
+- Tests are plain Node scripts under `test/`; `npm test` runs them. Most of them mount the webview in jsdom, and two do not: the sync suite is pure functions, and the server suite drives the local server over HTTP.
 
 ## Dev process
 
-Sheaf is a VS Code extension, so there is no dev server, port or database to run. One builder session changes code, in this checkout, on `main`.
+Sheaf is a VS Code extension, so there is no dev server, port or database to run. Code changes land on `main`.
 
+- **The gates, in one command:** `npm run gates` runs the documentation check, the type check, every suite, the jsdom half of the real-editor scenarios (`test:editor:unit`, every area, about half a minute) and the production build, in that order, stopping at the first failure. Prefer it to running the three yourself, and never chain them with `&&`: a single command is one thing to approve and one thing to read, and the three must not overlap anyway, for the esbuild reason under **Build** below.
 - **Type check:** `npm run check-types`.
-- **Tests:** `npm test` runs five suites (engine, tables, sync, host, prose). Four are jsdom; the host suite is `test/host.test.mjs`, which drives extension-host code against a stand-in `vscode` module, so it covers commands, menu contributions and settings scopes that the webview suites cannot reach. Its `pretest` step rebuilds the test bundles first. Prose scenarios live in `test/prose/*.ts` and are registered in `test/prose.entry.ts`; table scenarios live in `test/tables.entry.ts`.
+- **Tests:** `npm test` runs six suites (engine, tables, sync, host, prose, server), bundling each with this checkout's own esbuild before it runs. Three mount the webview in jsdom. The sync suite is pure functions. The host suite is `test/host.test.mjs`, which drives extension-host code against a stand-in `vscode` module, so it covers commands, menu contributions and settings scopes the webview suites cannot reach. The server suite drives the local server over HTTP. Prose scenarios live in `test/prose/*.ts` and are registered in `test/prose.entry.ts`; table scenarios live in `test/tables.entry.ts`.
+- **One suite while you work:** `npm run test:prose`, and the same for `test:engine`, `test:tables`, `test:sync`, `test:host` and `test:server`. Each bundles only what it runs, so it costs a second rather than the whole set. `node scripts/run-tests.mjs tables host` takes several at once. Run the full `npm test` before landing.
+- **Real editor checks:** `npm run test:editor <area>` drives a real VS Code window through the scenarios in `test/real-editor/editor/`, and `npm run test:editor:unit <area>` runs the jsdom half. Areas are the file names there: `tables-select`, `pointer`, `cell-editing`, `media` and the rest. Add a scenario id to run one, as in `npm run test:editor pointer mouse-selection.e13`. Both need `PLAYWRIGHT_CORE` pointing at a `playwright-core` install, since it is not a dependency of this extension, and both take `SHEAF_EDITOR_RUNS` for where run folders go. Set those in the environment rather than on the command line, so the command stays the same everywhere.
+- **Everything the build needs is in this repository.** `npm ci` installs it, and the scripts call the binaries in `node_modules`. Never reach for `npx`, a global install, or a helper script written to a temporary directory: if a step is worth running twice it belongs in `scripts/` with an entry in `package.json`, where the next person and CI both get it.
+- **Edit files with the file tools, not with a shell one-liner.** A `python3 - <<EOF` or a `sed -i` that rewrites a source file is unreviewable, easy to get wrong on a file someone else is editing, and needs approval every time it runs. Use the editor's own read and edit tools for source changes, and a script in `scripts/` for anything mechanical enough to repeat.
 - **Build:** `npm run build` writes `dist/extension.js` and `media/webview.js`. Run the gates one at a time: `npm test` and `npm run build` both drive esbuild over this checkout, and overlapping them makes the test run print no counts and the build end in a stack trace, with nothing actually wrong.
+- **A `.vsix` to install and try:** `npm run package:clean`, which exports a commit with `git archive`, installs into that export and packages there, leaving this checkout alone. It takes `--ref <commit>` (default `HEAD`) and `--out <dir>` (default `.claude/scratch/build`, which is gitignored). `npm run package` packages the working tree instead, which is what CI uses and what the release checklist means; prefer the clean one by hand, since it packages exactly a commit and nothing uncommitted.
 - **Secrets:** gitleaks runs in a machine-wide pre-commit and pre-push hook. Fix a finding at its source; never bypass the hook.
-- **Remotes:** two, with different rules. `origin` is `sheafeditor/sheaf-dev`, private, and takes anything. `oss` is `sheafeditor/sheafeditor`, public at launch, and the pre-push hook allows only `refs/heads/release` to reach it. `main` carries unreviewed agent commits and must never be pushed there.
-- **Landing:** fixes are committed straight to `main`. Work done in agent worktrees is cherry-picked onto `main`, and the type check, all five suites and the build run again before the issue is closed.
-- **The index is shared, even when the paths are not.** Several sessions commit in this checkout at once. `git add <path>` leaves your file in an index another session may commit a moment later, and `git cherry-pick --continue` commits whatever the index holds rather than the paths you resolved. Both have already carried one session's file into another session's commit, under the wrong author and an unrelated message. Read `git status` immediately before committing, and commit with `git commit --only <paths>`, which builds its own temporary index and never stages through the shared one. **`--only` defends the paths, not the file.** It commits whatever the named path holds at that moment, so another session's edits *inside* a file you name come along with yours: that is how one session's rewrite of this file landed under another session's commit about a test harness. A `git diff --numstat` read a minute earlier proves nothing. Read `git diff <path>` immediately before the commit, and leave a file alone entirely while another session is rewriting it. A commit that already swept up foreign work is not worth rewriting once others have built on it: the content is right and only the attribution is wrong. Resolve a conflict promptly rather than leaving it open: esbuild walks up out of an agent worktree to this checkout's `package.json`, so a conflicted file here fails every agent's test run with a JSON parse error, not just yours.
-- **Issues:** bugs are worked in priority order from the maintainer's tracker. A fixed issue gets a comment naming its commit on `main` before it is closed.
+- **Landing:** changes land on `main`, and the whole of `npm run gates` runs again before an issue is closed.
+- **Issues:** a fixed issue gets a comment naming its commit before it is closed.
 - **Real editor checks:** jsdom has no layout, pointer capture, input methods or VS Code key forwarding, so behaviour that depends on them is confirmed in a real VS Code window before it is trusted. Three things about driving one with Playwright's Electron support, each of which cost several attempts before it was understood. A driven window keeps an inactive editor's webview alive, so select the frame by its content rather than taking the first match. A modifier has to be *held across* the click with `keyboard.down` rather than passed as a click option or sent as a key press; done that way Cmd-click drives correctly. And native UI is invisible to the driver unless `window.dialogStyle` is set to `custom`, which renders dialogs as DOM: a menu that never appears or a tab that will not close usually means something native is waiting offscreen rather than that the gesture did nothing. Earlier notes here claimed modifiers and chords could not be driven at all. They can, and a false impossibility is worse than silence, because it stops the next person trying.
-- **Publishing** (a version tag, or anything pushed to a public repository) happens only when the maintainer says so. Work lands on `main`; `release` is what gets published. A publish is a squash-merge of `main` into `release` followed by `git push oss release`, so the public repository sees one reviewed commit rather than hundreds of agent commits. `release` has no shared history with `main` by design. **Never create or push a tag:** a `v*` tag fires the release workflow, which builds and can publish to the Marketplace and Open VSX, and that reaches real machines.
+- **Publishing** happens only when the maintainer says so. **Never create or push a tag:** a `v*` tag fires the release workflow, which builds and can publish to the Marketplace and Open VSX, and that reaches real machines.

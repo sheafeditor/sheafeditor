@@ -12,9 +12,10 @@
  *
  * A marker is only hidden on lines that are *not* "active", which is how a block's
  * raw Markdown is shown for editing. A line is active when an explicit reveal
- * covers it (Edit Markdown, and find uncovering a match), and, where the opt-in
- * `revealSyntaxOnLine` is on, when a selection touches it. Tables decide
- * separately and by the caret rather than the selection, in tables.ts.
+ * covers it (Edit Markdown, and find uncovering a match), when whole-document
+ * source mode is on, and, where the opt-in `revealSyntaxOnLine` is on, when a
+ * selection touches it. Tables decide separately and by the caret rather than
+ * the selection, in tables.ts.
  *
  * Two CodeMirror 6 constraints shape what follows:
  *   - A ViewPlugin's replace decorations may not cross a line break, so every
@@ -30,8 +31,13 @@ import { Decoration, DecorationSet, EditorView, ViewPlugin, ViewUpdate, WidgetTy
 import { EditorState, Extension, Range, RangeSet, StateEffect, StateField, Text, Transaction } from '@codemirror/state';
 import { syntaxTree } from '@codemirror/language';
 import { SyntaxNode, Tree } from '@lezer/common';
-import { editableProps, imageWidgetFor, matchHtmlImage } from './images';
+import { alertLabel, alertLine, alertMarkerAt } from './alerts';
+import { editableProps, imageSelection, imageWidgetFor, matchHtmlImage } from './images';
+import { inlineHtmlPairAt } from './inlineHtml';
 import { BlockRange, blockRangeAt } from './blockModel';
+import { blockMath, blockMathError, blockMathRanges, inlineMath, inlineMathError, mathError } from './maths';
+import { coveredEnd } from './selectionExtent';
+import { floatingField, setSourceMode as setSourceModeEffect } from './floatingState';
 
 export interface LivePreviewConfig {
   revealSyntaxOnLine: boolean;
@@ -63,6 +69,60 @@ export function setLivePreviewConfig(cfg: LivePreviewConfig): void {
 /** Set (or clear, with null) the block range whose raw Markdown is revealed. */
 export const setReveal = StateEffect.define<{ from: number; to: number } | null>();
 
+// ---- Whole-document source mode -------------------------------------------
+//
+// Source mode is the same idea as Edit Markdown, at the size of the document, so
+// it runs through the same state: the reveal covers every byte, every marker
+// shows, and a table falls back to the pipe rows it is written as. What sets it
+// apart is that it is sticky. A block's reveal closes when the caret leaves it
+// or a line break is typed into it, which is right for one block someone is
+// editing and wrong for a document someone asked to read as source. So while
+// source mode is on, the rules below that close a reveal do not run.
+//
+// Whether it is on lives in the floating state, which already carries it for the
+// selection toolbar, so there is one answer rather than two that can disagree.
+//
+// The command is the only way out. Escape and Edit Markdown both clear a reveal,
+// and while source mode is on they leave the document showing its source: only
+// the command also puts the monospace font away, so anything else that closed
+// the reveal would leave that font over rendered text.
+
+/** Whether the whole document is showing its raw Markdown. */
+export function sourceModeOn(state: EditorState): boolean {
+  return state.field(floatingField, false)?.sourceMode ?? false;
+}
+
+/** Whether source mode is on once `tr` has applied, its own effect included. */
+function sourceModeAfter(tr: Transaction): boolean {
+  let on = tr.startState.field(floatingField, false)?.sourceMode ?? false;
+  for (const e of tr.effects) if (e.is(setSourceModeEffect)) on = e.value;
+  return on;
+}
+
+/**
+ * Turn whole-document source mode on or off.
+ *
+ * Both halves move in the one call because neither is the feature on its own:
+ * the class is what the stylesheet reads for the monospace font, and the state
+ * is what stops the markers being hidden. Setting only the class is what left
+ * source mode looking like a font change.
+ *
+ * The reveal travels as an ordinary `setReveal` alongside it. The field would
+ * work it out from the source-mode flag regardless; sending the effect is what
+ * tells the two fields that draw from a distance — tables, and the block widget
+ * for multi-line image markup — that there is something to redraw.
+ */
+export function setDocumentSourceMode(view: EditorView, root: HTMLElement, on: boolean): void {
+  root.classList.toggle('source-mode', on);
+  view.dispatch({
+    effects: [
+      setSourceModeEffect.of(on),
+      setReveal.of(on ? { from: 0, to: view.state.doc.length } : null),
+    ],
+    scrollIntoView: false,
+  });
+}
+
 /**
  * Whether `tr` writes a line break the person typed into `range`.
  *
@@ -91,6 +151,11 @@ function typedLineBreak(tr: Transaction, range: { from: number; to: number }): b
 export const revealField = StateField.define<{ from: number; to: number } | null>({
   create: () => null,
   update(value, tr) {
+    // Source mode reveals the whole document and keeps it revealed. It is read
+    // first because none of the rules below, each of which closes a block's
+    // reveal, applies to it: the caret cannot leave the document, and a line
+    // break typed anywhere would otherwise put the source away.
+    if (sourceModeAfter(tr)) return { from: 0, to: tr.newDoc.length };
     // A reveal asked for in this transaction is what the range is, edits and all:
     // the table's Edit raw source rewrites the pipes and opens them in one go.
     let asked = false;
@@ -207,6 +272,14 @@ class HrWidget extends WidgetType {
     hr.className = 'md-hr';
     return hr;
   }
+  ignoreEvent(): boolean {
+    // The press is the editor's: blocks.ts turns a click on a rule into the rule
+    // selected as a block. Ignored here, the press went to the browser, which put a
+    // caret of its own in front of the hidden dashes without the editor's selection
+    // moving at all, so Edit Markdown opened whatever block the caret had been in
+    // before, and the next letter typed turned the rule into text.
+    return false;
+  }
 }
 
 // ---- Reusable decorations -------------------------------------------------
@@ -221,6 +294,23 @@ const dimMark = Decoration.mark({ class: 'tok-mark' });
 const bulletDim = Decoration.mark({ class: 'tok-bullet' });
 const fenceMark = Decoration.mark({ class: 'tok-code-fence' });
 const hide = Decoration.replace({});
+
+const inlineHtmlMarks = new Map<string, Decoration>();
+
+/**
+ * The mark for the content of an inline HTML formatting pair. An abbreviation's
+ * title becomes the span's own title, so hovering it shows what it stands for,
+ * as a browser shows it for `<abbr>`.
+ */
+function inlineHtmlMark(cls: string, title: string | undefined): Decoration {
+  if (title) return Decoration.mark({ class: cls, attributes: { title: decodeEntity(title) } });
+  let deco = inlineHtmlMarks.get(cls);
+  if (!deco) {
+    deco = Decoration.mark({ class: cls });
+    inlineHtmlMarks.set(cls, deco);
+  }
+  return deco;
+}
 
 const headingLine = (level: number) => Decoration.line({ class: `tok-heading tok-h${level}` });
 const quoteLine = Decoration.line({ class: 'tok-quote' });
@@ -249,8 +339,16 @@ function frontMatterRange(state: EditorState): BlockRange | null {
 
 // ---- Active-line computation ---------------------------------------------
 
+/**
+ * The lines showing their raw Markdown, by line number.
+ *
+ * Empty in source mode, where every line shows it: the callers ask
+ * `sourceModeOn` first rather than making this fill a set with every line number
+ * in the document on every redraw.
+ */
 function activeLineSet(state: EditorState): Set<number> {
   const lines = new Set<number>();
+  if (sourceModeOn(state)) return lines;
   const doc = state.doc;
   const addRange = (from: number, to: number): void => {
     const start = doc.lineAt(from).number;
@@ -269,8 +367,11 @@ function activeLineSet(state: EditorState): Set<number> {
   // expose syntax.
   if (currentConfig.revealSyntaxOnLine) {
     for (const range of state.selection.ranges) {
-      addRange(range.from, range.to);
-      for (const pos of range.empty ? [range.head] : [range.from, range.to]) {
+      // A selection ending at the start of a line (a triple-clicked line) covers
+      // nothing of that line, so neither it nor its block is revealed.
+      const end = coveredEnd(doc, range);
+      addRange(range.from, end);
+      for (const pos of range.empty ? [range.head] : [range.from, end]) {
         const block = blockRangeAt(state, pos);
         if (block && block.kind !== 'frontmatter') addRange(block.from, block.to);
       }
@@ -325,9 +426,10 @@ function isInlineImage(state: EditorState, from: number, to: number): boolean {
 function buildDecorations(view: EditorView): BuiltDecorations {
   const b = new DecoBuilder();
   const { state } = view;
+  const allActive = sourceModeOn(state);
   const active = activeLineSet(state);
   const doc = state.doc;
-  const lineActive = (pos: number): boolean => active.has(doc.lineAt(pos).number);
+  const lineActive = (pos: number): boolean => allActive || active.has(doc.lineAt(pos).number);
   // The parser marks every `[...]` as a Link; only some of them are links.
   const definitions = referenceDefinitions(state);
   const linkVerdicts = new Map<number, boolean>();
@@ -417,6 +519,27 @@ function buildDecorations(view: EditorView): BuiltDecorations {
           return;
         }
 
+        // --- Inline maths -------------------------------------------------
+        if (name === 'InlineMath') {
+          const source = doc.sliceString(node.from + 1, node.to - 1);
+          const failed = mathError(source, false);
+          if (failed) {
+            // Half-typed maths is the normal state while someone is writing it,
+            // so what does not typeset keeps its source, exactly where it is,
+            // with KaTeX's message on it.
+            b.mark(inlineMathError(failed), node.from, node.to);
+          } else if (!lineActive(node.from)) {
+            b.replace(inlineMath(source), node.from, node.to);
+          }
+          return;
+        }
+        if (name === 'InlineMathMark') {
+          // Off the caret's line the whole span is replaced above; on it the
+          // dollars stay visible and dim, as every other marker does.
+          if (lineActive(node.from)) b.mark(dimMark, node.from, node.to);
+          return;
+        }
+
         // --- Escapes & entities ------------------------------------------
         // The parser never produces these inside code, so code stays as written.
         if (name === 'Escape') {
@@ -481,11 +604,25 @@ function buildDecorations(view: EditorView): BuiltDecorations {
               const widget = imageWidgetFor(mm.props, isInlineImage(state, from, to));
               if (widget) b.replace(Decoration.replace({ widget }), from, to);
             }
+            return;
+          }
+          // A formatting pair such as `<kbd>F5</kbd>`: the content takes the
+          // formatting and the tags are markers, hidden off the caret's line
+          // and dim on it, as `**` and `==` are. The closing tag is found from
+          // its opening one, so it needs no branch of its own.
+          const pair = name === 'HTMLTag' ? inlineHtmlPairAt(node.node, doc) : null;
+          if (pair) {
+            b.mark(inlineHtmlMark(pair.cls, pair.title), pair.openTo, pair.closeFrom);
+            const active = lineActive(pair.openFrom);
+            hideOrDim(b, pair.openFrom, pair.openTo, active);
+            hideOrDim(b, pair.closeFrom, pair.closeTo, active);
           }
           return;
         }
         if (name === 'Link') {
-          // Brackets that are not a link (`[1]`, `[!NOTE]`, `[~]`) render as written.
+          // Brackets that are not a link (`[1]`, `[!NOTE]`, `[~]`) render as
+          // written. The one exception is a quote's opening `[!NOTE]`, which
+          // the Blockquote branch below draws as an alert's label instead.
           if (rendersAsLink(node.node)) b.mark(linkTextMark, node.from, node.to);
           return;
         }
@@ -541,9 +678,25 @@ function buildDecorations(view: EditorView): BuiltDecorations {
 
         // --- Blockquote ---------------------------------------------------
         if (name === 'Blockquote') {
+          // A quote whose first line opens with `[!type]`, with an optional
+          // fold marker and title, is an alert: it keeps the quote's rule and
+          // takes the type's colour, and the whole marker line, title
+          // included, is drawn as an icon and a label. The label goes on only
+          // where the line is not showing its source, so the caret coming in
+          // brings the line back exactly as every other marker returns.
+          //
+          // Only a quote at the top level. A marker inside a nested quote is
+          // ordinary text on GitHub, and drawing it as a callout here would put
+          // two types on the same lines, leaving the rule's colour to whichever
+          // the stylesheet happens to declare last.
+          let quoted = node.node.parent;
+          while (quoted && quoted.name !== 'Blockquote') quoted = quoted.parent;
+          const alert = quoted ? null : alertMarkerAt(doc, node.from);
           for (let n = doc.lineAt(node.from).number; n <= doc.lineAt(node.to).number; n++) {
             b.line(quoteLine, doc.line(n).from);
+            if (alert) b.line(alertLine(alert.kind), doc.line(n).from);
           }
+          if (alert && !lineActive(alert.from)) b.replace(alertLabel(alert), alert.from, alert.to);
           return;
         }
         if (name === 'QuoteMark') {
@@ -751,6 +904,9 @@ function referenceImageProps(
 
 /** Block replace decorations for HTML image markup that spans several lines. */
 function buildHtmlImageDecorations(state: EditorState): DecorationSet {
+  // In source mode the markup is what the reader asked to see, so no figure is
+  // drawn over it, the same as on any other line showing its Markdown.
+  if (sourceModeOn(state)) return Decoration.none;
   const decos: Range<Decoration>[] = [];
   const doc = state.doc;
   const active = activeLineSet(state);
@@ -813,6 +969,68 @@ const htmlImageField = StateField.define<HtmlImageDecorations>({
   ],
 });
 
+// ---- Block maths ----------------------------------------------------------
+//
+// `$$…$$` is written over several lines, which a ViewPlugin's replace
+// decorations may not cross, so display maths gets its own field for the same
+// reason the multi-line image markup above has one.
+
+/** Block replace decorations for the document's `$$…$$` equations. */
+function buildBlockMathDecorations(state: EditorState): DecorationSet {
+  // In source mode the delimiters are what the reader asked to see.
+  if (sourceModeOn(state)) return Decoration.none;
+  const decos: Range<Decoration>[] = [];
+  const doc = state.doc;
+  const active = activeLineSet(state);
+
+  for (const math of blockMathRanges(state)) {
+    const first = doc.lineAt(math.from).number;
+    const last = doc.lineAt(math.to).number;
+    let shown = false;
+    for (let n = first; n <= last; n++) if (active.has(n)) shown = true;
+    if (shown) continue;
+    const failed = mathError(math.source, true);
+    if (failed) {
+      // As with inline maths: the source stays, with the message on it.
+      for (let n = first; n <= last; n++) decos.push(blockMathError(failed).range(doc.line(n).from));
+    } else {
+      decos.push(blockMath(math.source).range(math.from, math.to));
+    }
+  }
+
+  return Decoration.set(decos, true);
+}
+
+interface BlockMathDecorations {
+  configVersion: number;
+  decorations: DecorationSet;
+}
+
+const blockMathField = StateField.define<BlockMathDecorations>({
+  create: (state) => ({ configVersion, decorations: buildBlockMathDecorations(state) }),
+  update(value, tr) {
+    if (
+      tr.docChanged ||
+      tr.selection ||
+      tr.effects.some((e) => e.is(setReveal)) ||
+      value.configVersion !== configVersion ||
+      syntaxTree(tr.state) !== syntaxTree(tr.startState)
+    ) {
+      return { configVersion, decorations: buildBlockMathDecorations(tr.state) };
+    }
+    return { configVersion: value.configVersion, decorations: value.decorations.map(tr.changes) };
+  },
+  provide: (f) => [
+    EditorView.decorations.from(f, (v) => v.decorations),
+    // Cursor motion glides over a drawn equation as one unit. The line
+    // decorations a failed equation gets are not replacements, so they are no
+    // part of this and its source stays as editable as any other text.
+    EditorView.atomicRanges.of((view) =>
+      view.state.field(f).decorations.update({ filter: (_from, _to, deco) => deco.spec.block === true })
+    ),
+  ],
+});
+
 // ---- Plugin ---------------------------------------------------------------
 
 const livePreviewPlugin = ViewPlugin.fromClass(
@@ -851,6 +1069,7 @@ const livePreviewPlugin = ViewPlugin.fromClass(
 
 /**
  * Live preview: inline decorations from the view plugin, plus the block
- * decorations that draw HTML image markup spanning several lines.
+ * decorations that draw HTML image markup spanning several lines and the
+ * `$$…$$` equations that do the same.
  */
-export const livePreview: Extension = [livePreviewPlugin, htmlImageField];
+export const livePreview: Extension = [livePreviewPlugin, htmlImageField, blockMathField, imageSelection];

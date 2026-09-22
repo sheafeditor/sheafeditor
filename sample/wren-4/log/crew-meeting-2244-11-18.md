@@ -32,6 +32,10 @@ Quill walked through the [incident report](incident-2244-11-17.md). The beacon w
 
 Xenon and waveguide gaskets are also below their reorder levels and are already on the next tender. The full list is in [maintenance](../maintenance.md#stores).
 
+![](../tour/stores.svg)
+
+Bray put this on the screen rather than reading the list out.
+
 ## 3. Tender schedule
 
 | Tender | Date | Carrying |
@@ -50,9 +54,9 @@ Xenon and waveguide gaskets are also below their reorder levels and are already 
 
 | # | Action | Owner | Due | Status |
 | ---: | :--- | :--- | :--- | :--- |
-| 1 | Put the backup cryocooler in warm standby | Bray | 2244-11-18 | Done |
-| 2 | Add the full-power backup test to the weekly checklist | Quill | 2244-11-20 | Open |
-| 3 | Order hardened controller boards | Quill | 2244-11-21 | Open |
+| 1 | Put the backup cryocooler in warm standby | Bray | 2244-11-18 | ![done](../tour/pip-green.svg) Done |
+| 2 | Add the full-power backup test to the weekly checklist | Quill | 2244-11-20 | ![open](../tour/pip-amber.svg) Open |
+| 3 | Order hardened controller boards | Quill | 2244-11-21 | ![blocked](../tour/pip-red.svg) Blocked on the yard |
 | 4 | Fit the replacement sensor-mast pane | Bray | 2244-11-21 | Open |
 | 5 | Send the storm write-up to the forecast office | MOTH-3 | 2244-11-22 | Open |
 

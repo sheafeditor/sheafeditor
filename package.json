@@ -1,8 +1,8 @@
 {
   "name": "sheafeditor",
-  "displayName": "Sheaf Editor — WYSIWYG Markdown",
-  "description": "WYSIWYG editing for Markdown files, powered by CodeMirror 6. Renders as you type; double-click any element to edit its raw Markdown.",
-  "version": "0.0.1",
+  "displayName": "Sheaf Editor: WYSIWYG Markdown",
+  "description": "Edit the Markdown in your repository as a finished document, with tables you edit like a spreadsheet. The file stays plain Markdown, and an edit changes only what you typed.",
+  "version": "0.1.0",
   "publisher": "sheafeditor",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -17,7 +17,7 @@
   "bugs": {
     "url": "https://github.com/sheafeditor/sheafeditor/issues"
   },
-  "homepage": "https://github.com/sheafeditor/sheafeditor#readme",
+  "homepage": "https://sheafeditor.com",
   "engines": {
     "vscode": "^1.90.0"
   },
@@ -35,6 +35,9 @@
     "live preview"
   ],
   "main": "./dist/extension.js",
+  "bin": {
+    "sheaf": "./dist/serve.js"
+  },
   "activationEvents": [
     "onStartupFinished"
   ],
@@ -52,6 +55,19 @@
           }
         ],
         "priority": "default"
+      },
+      {
+        "viewType": "sheaf.csv",
+        "displayName": "Sheaf (Grid)",
+        "selector": [
+          {
+            "filenamePattern": "*.csv"
+          },
+          {
+            "filenamePattern": "*.tsv"
+          }
+        ],
+        "priority": "option"
       }
     ],
     "commands": [
@@ -69,14 +85,56 @@
         "command": "sheaf.toggleSourceMode",
         "title": "Toggle Whole-Document Source Mode",
         "category": "Sheaf"
+      },
+      {
+        "command": "sheaf.toggleTableOfContents",
+        "title": "Toggle Table of Contents",
+        "category": "Sheaf"
+      },
+      {
+        "command": "sheaf.copyRef",
+        "title": "Copy Ref",
+        "category": "Sheaf"
+      },
+      {
+        "command": "sheaf.sendRefToTerminal",
+        "title": "Send Selection to Terminal",
+        "category": "Sheaf"
+      },
+      {
+        "command": "sheaf.openInBrowser",
+        "title": "Open This Folder in a Browser",
+        "category": "Sheaf"
+      },
+      {
+        "command": "sheaf.stopBrowser",
+        "title": "Stop Serving to the Browser",
+        "category": "Sheaf"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "sheaf.copyRef",
+        "key": "ctrl+shift+alt+r",
+        "mac": "cmd+shift+alt+r",
+        "when": "activeCustomEditorId == 'sheaf.wysiwyg' || activeCustomEditorId == 'sheaf.csv'"
+      },
+      {
+        "command": "sheaf.sendRefToTerminal",
+        "key": "ctrl+shift+alt+t",
+        "mac": "cmd+shift+alt+t",
+        "when": "activeCustomEditorId == 'sheaf.wysiwyg' || activeCustomEditorId == 'sheaf.csv'"
       }
     ],
     "menus": {
-      "editor/title": [
+      "commandPalette": [
         {
-          "command": "sheaf.openAsText",
-          "when": "activeCustomEditorId == sheaf.wysiwyg",
-          "group": "navigation"
+          "command": "sheaf.copyRef",
+          "when": "activeCustomEditorId == 'sheaf.wysiwyg' || activeCustomEditorId == 'sheaf.csv'"
+        },
+        {
+          "command": "sheaf.sendRefToTerminal",
+          "when": "activeCustomEditorId == 'sheaf.wysiwyg' || activeCustomEditorId == 'sheaf.csv'"
         }
       ],
       "explorer/context": [
@@ -115,6 +173,11 @@
           "type": "boolean",
           "default": false,
           "description": "Double-clicking a rendered element reveals and lets you edit its raw Markdown. Off by default, so double-clicking selects a word as it does elsewhere; Edit Markdown (Cmd+Alt+E, or Ctrl+Alt+E on Windows and Linux) reveals the Markdown either way."
+        },
+        "sheaf.tableOfContents": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show a panel to the right of the text listing the document's headings, so a long file's shape is visible and any section is one click away. The heading you are reading is marked as you scroll it past the top of the window. This applies to every Markdown file you open in Sheaf; the toolbar's list button turns it on and off."
         }
       }
     }
@@ -124,17 +187,29 @@
     "build": "node esbuild.mjs --production",
     "watch": "node esbuild.mjs --watch",
     "check-types": "tsc --noEmit",
+    "check-docs": "node scripts/check-docs.mjs",
     "gen:corpus": "node scripts/gen-corpus.mjs",
     "gen:icons": "node scripts/build-icons.mjs",
     "check-corpus": "node scripts/gen-corpus.mjs --check",
     "fetch:wild": "node scripts/fetch-wild-corpus.mjs",
     "gen:wren4": "node scripts/gen-wren4.mjs",
     "check-icons": "node scripts/build-icons.mjs --check",
-    "pretest": "esbuild test/engine.entry.ts --bundle --format=cjs --platform=browser --outfile=test/bundle.cjs --log-level=warning && esbuild test/tables.entry.ts --bundle --format=cjs --platform=browser --outfile=test/tables.bundle.cjs --log-level=warning && esbuild test/sync.entry.ts --bundle --format=cjs --platform=node --outfile=test/textSync.bundle.cjs --log-level=warning && esbuild test/hostEntry.ts --bundle --format=cjs --platform=node --external:vscode --outfile=test/host.bundle.cjs --log-level=warning && esbuild test/prose.entry.ts --bundle --format=cjs --platform=browser --outfile=test/prose.bundle.cjs --log-level=warning",
-    "test": "node test/engine.test.mjs && node test/tables.test.mjs && node test/textSync.test.mjs && node test/host.test.mjs && node test/prose.test.mjs",
+    "check-render": "node scripts/check-render.mjs",
+    "gates": "node scripts/gates.mjs",
+    "serve": "node dist/serve.js",
+    "test": "node scripts/run-tests.mjs",
     "package": "vsce package --no-dependencies",
     "publish": "vsce publish --no-dependencies",
-    "publish:ovsx": "ovsx publish --no-dependencies"
+    "publish:ovsx": "ovsx publish --no-dependencies",
+    "test:engine": "node scripts/run-tests.mjs engine",
+    "test:tables": "node scripts/run-tests.mjs tables",
+    "test:sync": "node scripts/run-tests.mjs sync",
+    "test:host": "node scripts/run-tests.mjs host",
+    "test:prose": "node scripts/run-tests.mjs prose",
+    "test:server": "node scripts/run-tests.mjs server",
+    "test:editor": "node test/real-editor/run-editor.mjs",
+    "test:editor:unit": "node test/real-editor/run-unit.mjs",
+    "package:clean": "node scripts/package-clean.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
@@ -156,6 +231,7 @@
     "@lezer/common": "^1.2.3",
     "@lezer/highlight": "^1.2.1",
     "@lezer/markdown": "^1.4.2",
-    "crelt": "^1.0.6"
+    "crelt": "^1.0.6",
+    "katex": "^0.18.7"
   }
 }

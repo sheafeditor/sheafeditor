@@ -736,12 +736,12 @@ export function insertLink(view: EditorView): boolean {
 }
 
 /** The kinds of block a line can be turned into. */
-export type BlockKind = 'text' | 'h1' | 'h2' | 'h3' | 'bullet' | 'ordered' | 'task' | 'quote' | 'code';
+export type BlockKind = 'text' | 'h1' | 'h2' | 'h3' | 'h4' | 'h5' | 'h6' | 'bullet' | 'ordered' | 'task' | 'quote' | 'code';
 
-/** The block kind of the line holding a format state, or null for one the menus do not name (H4 to H6). */
-export function blockKindOf(fs: FormatState): BlockKind | null {
+/** The block kind of the line holding a format state. Every heading level has one, so a line is never unnamed. */
+export function blockKindOf(fs: FormatState): BlockKind {
   if (fs.codeBlock) return 'code';
-  if (fs.heading) return fs.heading <= 3 ? (`h${fs.heading}` as BlockKind) : null;
+  if (fs.heading) return `h${fs.heading}` as BlockKind;
   if (fs.list) return fs.list;
   if (fs.quote) return 'quote';
   return 'text';
@@ -849,7 +849,10 @@ export function turnInto(view: EditorView, kind: BlockKind): boolean {
           return to(body, true);
         case 'h1':
         case 'h2':
-        case 'h3': {
+        case 'h3':
+        case 'h4':
+        case 'h5':
+        case 'h6': {
           const wanted = Number(kind[1]);
           if (level === wanted && !list) return to(text, false);
           // A heading that only changes level stays in the quote it is in.
@@ -925,6 +928,7 @@ const ICONS = {
   plus: '<path d="M5 12h14"/><path d="M12 5v14"/>',
   fileCode: '<path d="M4 22h14a2 2 0 0 0 2-2V7l-5-5H6a2 2 0 0 0-2 2v3"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="m9 13-2 2 2 2"/><path d="m13 17 2-2-2-2"/>',
   lineNumbers: '<line x1="10" x2="21" y1="6" y2="6"/><line x1="10" x2="21" y1="12" y2="12"/><line x1="10" x2="21" y1="18" y2="18"/><path d="M4 6h1v4"/><path d="M4 10h2"/><path d="M6 18H4l1.5-1.5A1 1 0 0 0 4 15"/>',
+  listTree: '<path d="M21 12h-8"/><path d="M21 6H8"/><path d="M21 18h-8"/><path d="M3 6v4c0 1.1.9 2 2 2h3"/><path d="M3 10v6c0 1.1.9 2 2 2h3"/>',
   keyboard: '<path d="M10 8h.01"/><path d="M12 12h.01"/><path d="M14 8h.01"/><path d="M16 12h.01"/><path d="M18 8h.01"/><path d="M6 8h.01"/><path d="M7 16h10"/><path d="M8 12h.01"/><rect width="20" height="16" x="2" y="4" rx="2"/>',
   chevron: '<path d="m6 9 6 6 6-6"/>',
 };
@@ -946,6 +950,8 @@ interface DropdownOption {
   run: (view: EditorView) => void;
   /** Marks the option that describes the selection (shown checked). */
   current?: (fs: FormatState) => boolean;
+  /** Draws a rule above this option, grouping the ones before it. */
+  separator?: boolean;
 }
 
 type Item =
@@ -982,11 +988,18 @@ const ITEMS: Item[] = [
     icon: 'plus',
     title: 'Text style',
     label: (fs) => (fs.heading ? `H${fs.heading}` : 'Text'),
+    // Six levels, because Markdown has six. The last three carry no shortcut: the
+    // run of Mod-Alt digits ends at Task list, and a chord invented for a level
+    // this rare would cost more to learn than it saves. The slash menu is their
+    // keyboard path.
     options: [
       { label: 'Text', hintKey: 'Mod-Alt-0', run: (v) => turnInto(v, 'text'), current: (fs) => !fs.heading },
       { label: 'Heading 1', hintKey: 'Mod-Alt-1', run: (v) => turnInto(v, 'h1'), current: (fs) => fs.heading === 1 },
       { label: 'Heading 2', hintKey: 'Mod-Alt-2', run: (v) => turnInto(v, 'h2'), current: (fs) => fs.heading === 2 },
       { label: 'Heading 3', hintKey: 'Mod-Alt-3', run: (v) => turnInto(v, 'h3'), current: (fs) => fs.heading === 3 },
+      { label: 'Heading 4', run: (v) => turnInto(v, 'h4'), current: (fs) => fs.heading === 4, separator: true },
+      { label: 'Heading 5', run: (v) => turnInto(v, 'h5'), current: (fs) => fs.heading === 5 },
+      { label: 'Heading 6', run: (v) => turnInto(v, 'h6'), current: (fs) => fs.heading === 6 },
     ],
   },
   { kind: 'sep' },
@@ -1130,6 +1143,12 @@ function makeDropdown(item: Extract<Item, { kind: 'dropdown' }>, getView: () => 
 
   const checks: { el: HTMLButtonElement; current: (fs: FormatState) => boolean }[] = [];
   for (const opt of item.options) {
+    if (opt.separator) {
+      const rule = document.createElement('div');
+      rule.className = 'sheaf-tb-menu-sep';
+      rule.setAttribute('role', 'separator');
+      menu.appendChild(rule);
+    }
     const mi = document.createElement('button');
     mi.type = 'button';
     mi.className = 'sheaf-tb-menu-item';
@@ -1173,6 +1192,22 @@ function makeDropdown(item: Extract<Item, { kind: 'dropdown' }>, getView: () => 
 }
 
 /**
+ * The table-of-contents button, and how it is drawn when the panel is on.
+ *
+ * Unlike the line-number toggle, this one does not decide its own state: the setting
+ * does, and the setting comes back from the host after a round trip, so the button is
+ * told what to show rather than flipping itself.
+ */
+let tocButton: HTMLButtonElement | undefined;
+
+/** Draw the table-of-contents button as pressed, or not, to match the setting. */
+export function reflectTableOfContents(on: boolean): void {
+  if (!tocButton) return;
+  tocButton.classList.toggle('is-active', on);
+  tocButton.setAttribute('aria-pressed', String(on));
+}
+
+/**
  * Populate `container` with the formatting toolbar. Editing buttons run against
  * the current view (resolved lazily via `getView`, since the view mounts after
  * the toolbar). Trailing actions — open the raw Markdown and show keyboard
@@ -1184,7 +1219,9 @@ export function mountToolbar(
   onShowShortcuts: () => void,
   onOpenRaw: () => void,
   onToggleLineNumbers: () => boolean,
-  lineNumbersOn: boolean
+  lineNumbersOn: boolean,
+  onToggleTableOfContents: () => void = () => {},
+  tableOfContentsOn = false
 ): void {
   reflectors = [];
   for (const item of ITEMS) {
@@ -1233,6 +1270,14 @@ export function mountToolbar(
   reflect(lineNumbersOn);
   lineNo.addEventListener('click', () => reflect(onToggleLineNumbers()));
   container.appendChild(lineNo);
+
+  // View toggle: the table of contents. Pressed-ness follows `sheaf.tableOfContents`,
+  // so the button is drawn from `reflectTableOfContents` once the setting has been written.
+  tocButton = makeButton('listTree', 'Table of contents');
+  tocButton.setAttribute('aria-pressed', 'false');
+  reflectTableOfContents(tableOfContentsOn);
+  tocButton.addEventListener('click', onToggleTableOfContents);
+  container.appendChild(tocButton);
 
   const raw = makeButton('fileCode', 'Open raw Markdown');
   raw.addEventListener('click', onOpenRaw);

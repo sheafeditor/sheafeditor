@@ -24,6 +24,10 @@ const cases = [
   ['bold',       P + 'a **bold** b',                 (r) => r.counts.strong === 1],
   ['italic',     P + 'a _em_ b',                     (r) => r.counts.em === 1],
   ['strike',     P + 'a ~~gone~~ b',                 (r) => r.counts.strike === 1],
+  // One tilde is strikethrough too, which is what pins this harness to the
+  // dialect the editor reads: the stock Markdown language parses `~gone~` as
+  // Pandoc subscript and renders nothing struck through.
+  ['oneTilde',   P + 'a ~gone~ b',                   (r) => r.counts.strike === 1],
   ['inlineCode', P + 'a `code` b',                   (r) => r.counts.inlineCode === 1],
   ['link',       P + 'a [text](https://x.com) b',    (r) => r.counts.link === 1],
   ['blockquote', P + '> quoted line',                (r) => r.counts.quote === 1],

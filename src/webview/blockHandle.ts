@@ -32,6 +32,7 @@ import {
   nearestDropIndex,
   turnRangeInto,
 } from './blockModel';
+import { fence } from './contextmenu';
 import { openSlashMenuAtCaret } from './slashMenu';
 import { revealRange } from './revealBlock';
 import { hint } from './shortcuts';
@@ -54,11 +55,11 @@ export function setBlockRefHost(host: BlockRefHost | null): void {
 
 /** `path:line` for a one-line block; `path:start-end` and the block's source for a longer one. */
 function blockRef(view: EditorView, range: BlockRange, fileName: string): string {
-  if (range.startLine === range.endLine) return `${fileName}:${range.startLine}\n`;
+  // One line or many, the ref carries the block's source, so a paste says what is
+  // there as well as where it is. A block with nothing in it has nothing to quote.
+  const lines = range.startLine === range.endLine ? `${range.startLine}` : `${range.startLine}-${range.endLine}`;
   const text = view.state.sliceDoc(range.from, range.to);
-  const longest = (text.match(/`+/g) ?? []).reduce((max, run) => Math.max(max, run.length), 0);
-  const bars = '`'.repeat(Math.max(3, longest + 1));
-  return `${fileName}:${range.startLine}-${range.endLine}\n\n${bars}\n${text}\n${bars}\n`;
+  return text === '' ? `${fileName}:${lines}\n` : `${fileName}:${lines}\n\n${fence(text)}\n`;
 }
 
 // ---- Menu model -----------------------------------------------------------------
@@ -92,6 +93,7 @@ export function blockMenuItems(view: EditorView, range: BlockRange): BlockMenuIt
       children: TURN_INTO.map((t) => ({
         label: t.label,
         current: t.kind === now,
+        separator: t.separator,
         run: focus(() => turnRangeInto(view, range, t.kind)),
       })),
     });
@@ -306,10 +308,16 @@ class BlockHandleView {
         const lineHeight = Math.min(line.height, view.defaultLineHeight * 1.6);
         // Beside a table the grip lines up with the header row, below the table's controls bar.
         const header = range.kind === 'table' ? this.tableAt(range.from)?.querySelector('tr')?.getBoundingClientRect() : undefined;
+        // Beside anything else it sits on the block's first line, centred on that line's
+        // own height, so a long paragraph's handle points at where it starts, and a
+        // heading's centres on the heading's larger type.
+        const first = indent && indent.bottom > indent.top ? indent : undefined;
         return {
           top: header?.height
             ? header.top - scroller.top + view.scrollDOM.scrollTop + (header.height - 24) / 2
-            : line.top + view.documentTop - scroller.top + view.scrollDOM.scrollTop + (Math.min(line.height, lineHeight * 2) - 24) / 2,
+            : first
+              ? first.top - scroller.top + view.scrollDOM.scrollTop + (first.bottom - first.top - 24) / 2
+              : line.top + view.documentTop - scroller.top + view.scrollDOM.scrollTop + (Math.min(line.height, lineHeight * 2) - 24) / 2,
           left: Math.max(content.left + padLeft, indent ? indent.left : 0) - scroller.left + view.scrollDOM.scrollLeft,
         };
       },

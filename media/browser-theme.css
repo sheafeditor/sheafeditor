@@ -1,0 +1,231 @@
+/*
+ * The editor's colours, for a browser.
+ *
+ * `webview.css` resolves every colour through a `--vscode-*` variable, which is
+ * what lets the editor take on whatever theme somebody is using. VS Code sets
+ * those on the webview's root element. Nothing does outside it, so in a browser
+ * tab they are all undefined, and a rule that resolves to nothing is not a
+ * fallback to something sensible: `background: var(--vscode-editorWidget-background)`
+ * with nothing behind it leaves the element transparent. That is how the
+ * right-click menu came to be drawn as floating text over the document with the
+ * page showing through it.
+ *
+ * So this file defines every variable the stylesheet asks for. When a new one is
+ * used there, it has to be added here too, or it goes the same way. The server
+ * suite checks the two lists against each other so that is not left to memory.
+ *
+ * The values are VS Code's own Light Modern and Dark Modern, because a person
+ * who knows Sheaf from their editor should not find a different-looking
+ * product in a tab. Where a theme leaves one unset, as with the selection
+ * foreground, a readable value is chosen rather than leaving it to chance.
+ *
+ * Dark follows the operating system, and `data-theme` on the root element
+ * overrides it, so an embedding page can say which it wants.
+ */
+
+:root {
+  color-scheme: light;
+
+  /* The page itself */
+  --vscode-editor-background: #ffffff;
+  --vscode-editor-foreground: #3b3b3b;
+  --vscode-editor-selectionBackground: #add6ff;
+  --vscode-editor-selectionForeground: #000000;
+  --vscode-descriptionForeground: #6a6a6a;
+  --vscode-focusBorder: #005fb8;
+
+  /* Panels that float above it: the right-click menu, the toolbar over a
+   * selection, the link popover, the table of contents. */
+  --vscode-editorWidget-background: #f8f8f8;
+  --vscode-editorWidget-foreground: #3b3b3b;
+  --vscode-editorWidget-border: #e5e5e5;
+  --vscode-widget-border: #e5e5e5;
+  --vscode-widget-shadow: rgba(0, 0, 0, 0.16);
+  --vscode-toolbar-hoverBackground: rgba(0, 0, 0, 0.1);
+
+  /* Links, code spans and code blocks */
+  --vscode-textLink-foreground: #005fb8;
+  --vscode-textLink-activeForeground: #005fb8;
+  --vscode-textCodeBlock-background: #f3f3f3;
+  --vscode-textPreformat-foreground: #a31515;
+  --vscode-textPreformat-background: rgba(0, 0, 0, 0.06);
+
+  /* The find bar and its fields */
+  --vscode-input-background: #ffffff;
+  --vscode-input-foreground: #3b3b3b;
+  --vscode-input-border: #cecece;
+  --vscode-input-placeholderForeground: #767676;
+  --vscode-inputOption-activeBackground: rgba(0, 95, 184, 0.2);
+  --vscode-inputOption-activeBorder: #005fb8;
+  --vscode-inputOption-activeForeground: #000000;
+  --vscode-inputValidation-errorBorder: #e51400;
+  --vscode-editor-findMatchBackground: #a8ac94;
+  --vscode-editor-findMatchBorder: #e2a336;
+  --vscode-editor-findMatchHighlightBackground: rgba(234, 92, 0, 0.33);
+
+  /* Buttons that are not the primary one */
+  --vscode-button-secondaryBackground: #e5e5e5;
+  --vscode-button-secondaryForeground: #3b3b3b;
+  --vscode-button-secondaryHoverBackground: #cccccc;
+
+  /* Callouts, and anything that reports a problem */
+  --vscode-errorForeground: #e51400;
+  --vscode-editorError-foreground: #e51400;
+  --vscode-editorWarning-foreground: #bf8803;
+  --vscode-editorInfo-foreground: #1a85ff;
+  --vscode-testing-iconPassed: #388a34;
+
+  /* The five callout colours */
+  --vscode-charts-red: #e51400;
+  --vscode-charts-green: #388a34;
+  --vscode-charts-blue: #1a85ff;
+  --vscode-charts-yellow: #bf8803;
+  --vscode-charts-purple: #652d90;
+
+  /* Syntax colours inside a code block. The stylesheet's own fallbacks for
+   * these are the dark theme's, which on a white page are barely legible. */
+  --vscode-symbolIcon-keywordForeground: #0000ff;
+  --vscode-symbolIcon-propertyForeground: #001080;
+  --vscode-symbolIcon-functionForeground: #795e26;
+  --vscode-symbolIcon-classForeground: #267f99;
+  --vscode-debugTokenExpression-string: #a31515;
+  --vscode-debugTokenExpression-number: #098658;
+}
+
+/*
+ * Dark. Written twice so that the operating system's preference applies on its
+ * own, and a page that has asked for dark gets it whatever the system says. The
+ * media query is guarded so an explicit light choice is not overruled by a dark
+ * system.
+ */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    color-scheme: dark;
+
+    --vscode-editor-background: #1f1f1f;
+    --vscode-editor-foreground: #cccccc;
+    --vscode-editor-selectionBackground: #264f78;
+    --vscode-editor-selectionForeground: #ffffff;
+    --vscode-descriptionForeground: #9d9d9d;
+    --vscode-focusBorder: #0078d4;
+
+    --vscode-editorWidget-background: #202020;
+    --vscode-editorWidget-foreground: #cccccc;
+    --vscode-editorWidget-border: #454545;
+    --vscode-widget-border: #313131;
+    --vscode-widget-shadow: rgba(0, 0, 0, 0.36);
+    --vscode-toolbar-hoverBackground: rgba(90, 93, 94, 0.31);
+
+    --vscode-textLink-foreground: #4daafc;
+    --vscode-textLink-activeForeground: #4daafc;
+    --vscode-textCodeBlock-background: #181818;
+    --vscode-textPreformat-foreground: #d7ba7d;
+    --vscode-textPreformat-background: rgba(255, 255, 255, 0.1);
+
+    --vscode-input-background: #313131;
+    --vscode-input-foreground: #cccccc;
+    --vscode-input-border: #3c3c3c;
+    --vscode-input-placeholderForeground: #989898;
+    --vscode-inputOption-activeBackground: rgba(36, 137, 255, 0.35);
+    --vscode-inputOption-activeBorder: #2488db;
+    --vscode-inputOption-activeForeground: #ffffff;
+    --vscode-inputValidation-errorBorder: #be1100;
+    --vscode-editor-findMatchBackground: #9e6a03;
+    --vscode-editor-findMatchBorder: #f38518;
+    --vscode-editor-findMatchHighlightBackground: rgba(234, 92, 0, 0.33);
+
+    --vscode-button-secondaryBackground: #313131;
+    --vscode-button-secondaryForeground: #cccccc;
+    --vscode-button-secondaryHoverBackground: #3c3c3c;
+
+    --vscode-errorForeground: #f85149;
+    --vscode-editorError-foreground: #f85149;
+    --vscode-editorWarning-foreground: #cca700;
+    --vscode-editorInfo-foreground: #3794ff;
+    --vscode-testing-iconPassed: #89d185;
+
+    --vscode-charts-red: #f14c4c;
+    --vscode-charts-green: #89d185;
+    --vscode-charts-blue: #3794ff;
+    --vscode-charts-yellow: #cca700;
+    --vscode-charts-purple: #b180d7;
+
+    /* Syntax colours inside a code block. */
+    --vscode-symbolIcon-keywordForeground: #c586c0;
+    --vscode-symbolIcon-propertyForeground: #9cdcfe;
+    --vscode-symbolIcon-functionForeground: #dcdcaa;
+    --vscode-symbolIcon-classForeground: #4ec9b0;
+    --vscode-debugTokenExpression-string: #ce9178;
+    --vscode-debugTokenExpression-number: #b5cea8;
+  }
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+
+  --vscode-editor-background: #1f1f1f;
+  --vscode-editor-foreground: #cccccc;
+  --vscode-editor-selectionBackground: #264f78;
+  --vscode-editor-selectionForeground: #ffffff;
+  --vscode-descriptionForeground: #9d9d9d;
+  --vscode-focusBorder: #0078d4;
+
+  --vscode-editorWidget-background: #202020;
+  --vscode-editorWidget-foreground: #cccccc;
+  --vscode-editorWidget-border: #454545;
+  --vscode-widget-border: #313131;
+  --vscode-widget-shadow: rgba(0, 0, 0, 0.36);
+  --vscode-toolbar-hoverBackground: rgba(90, 93, 94, 0.31);
+
+  --vscode-textLink-foreground: #4daafc;
+  --vscode-textLink-activeForeground: #4daafc;
+  --vscode-textCodeBlock-background: #181818;
+  --vscode-textPreformat-foreground: #d7ba7d;
+  --vscode-textPreformat-background: rgba(255, 255, 255, 0.1);
+
+  --vscode-input-background: #313131;
+  --vscode-input-foreground: #cccccc;
+  --vscode-input-border: #3c3c3c;
+  --vscode-input-placeholderForeground: #989898;
+  --vscode-inputOption-activeBackground: rgba(36, 137, 255, 0.35);
+  --vscode-inputOption-activeBorder: #2488db;
+  --vscode-inputOption-activeForeground: #ffffff;
+  --vscode-inputValidation-errorBorder: #be1100;
+  --vscode-editor-findMatchBackground: #9e6a03;
+  --vscode-editor-findMatchBorder: #f38518;
+  --vscode-editor-findMatchHighlightBackground: rgba(234, 92, 0, 0.33);
+
+  --vscode-button-secondaryBackground: #313131;
+  --vscode-button-secondaryForeground: #cccccc;
+  --vscode-button-secondaryHoverBackground: #3c3c3c;
+
+  --vscode-errorForeground: #f85149;
+  --vscode-editorError-foreground: #f85149;
+  --vscode-editorWarning-foreground: #cca700;
+  --vscode-editorInfo-foreground: #3794ff;
+  --vscode-testing-iconPassed: #89d185;
+
+  --vscode-charts-red: #f14c4c;
+  --vscode-charts-green: #89d185;
+  --vscode-charts-blue: #3794ff;
+  --vscode-charts-yellow: #cca700;
+  --vscode-charts-purple: #b180d7;
+
+  /* Syntax colours inside a code block. */
+  --vscode-symbolIcon-keywordForeground: #c586c0;
+  --vscode-symbolIcon-propertyForeground: #9cdcfe;
+  --vscode-symbolIcon-functionForeground: #dcdcaa;
+  --vscode-symbolIcon-classForeground: #4ec9b0;
+  --vscode-debugTokenExpression-string: #ce9178;
+  --vscode-debugTokenExpression-number: #b5cea8;
+}
+
+/*
+ * The page's own background and text, which VS Code sets on the webview body
+ * and nothing sets here.
+ */
+html,
+body {
+  background: var(--vscode-editor-background);
+  color: var(--vscode-editor-foreground);
+}

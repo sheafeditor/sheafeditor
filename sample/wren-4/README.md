@@ -1,15 +1,14 @@
 # Wren-4 Beacon Station
 
-The working repository for Wren-4, a fictional two-crew navigation beacon at the trailing Lagrange point of the gas giant Vesna c. Ships crossing the Oriel Belt steer by its pulse. Everything the station records lives here as Markdown: the log, the space weather, the eclipse schedule, the traffic, the signals and the noodles.
+Wren-4 is a two-crew navigation beacon at the trailing Lagrange point of the gas giant Vesna c. Ships crossing the Oriel Belt steer by its pulse. This is everything the station knows, written down where the next crew can find it: the log, the space weather, the eclipse schedule, the traffic, the signals and the noodles.
 
-> [!IMPORTANT]
+![Wren-4 from the approach lane, Vesna c behind it](tour/panorama.svg)
+
 > **A note from Bray, for whoever reads this next.**
 >
 > Every 26 days since 2230, something out in the trailing cluster has sent this station a signal. Nobody knows what it is. Quill calls it instrument noise and has asked me to stop talking about it, so I am writing it down instead.
 >
 > If you want to find out, start with the *Unexplained narrowband* row on the [signals page](signals.md#detections). There is more hidden around this station than the documents table admits.
-
-![Solar wind speed through November](charts/solar-wind-november.svg)
 
 ## At a glance
 
@@ -26,6 +25,27 @@ The working repository for Wren-4, a fictional two-crew navigation beacon at the
 | Unexplained signals logged this year | 140 |
 
 Solar wind this month: ▂▂▂▁▁▁▁▂▂▂▂▁▁▂▄▆█▆▄▂▂▁▁▂▁▂▁▁▁▁
+
+![Solar wind speed through November](charts/solar-wind-november.svg)
+
+## The station
+
+<img src="tour/hab.svg" alt="The hab ring, fourteen windows and four spokes" width="640">
+
+Fourteen windows, four spokes, one hub. Three of the windows have been shuttered since 2238. The hub does not turn, which is where you sleep and where the good chair is not.
+
+## Standing orders
+
+1. Two people for anything outside. No exceptions, and none have ever been asked for.
+2. The beacon comes first. If you are choosing between the beacon and the hydroponics, shed the hydroponics.
+3. Log the watch before you sleep, not after you wake. Quill will know.
+4. If the beacon goes quiet, open the [runbook](runbooks/beacon-silent.md) before you open the panel.
+
+The one command worth memorising, because it answers most of the questions the panel does:
+
+```sh
+beaconctl status --watch
+```
 
 ## Documents
 
@@ -45,11 +65,32 @@ Solar wind this month: ▂▂▂▁▁▁▁▂▂▂▂▁▁▂▄▆█▆▄
 
 ## Crew
 
+<img src="tour/badge.svg" alt="The station badge" width="28"> Commissioned 2229, crewed continuously since.
+
 | Name | Role | Aboard since | Notes |
 | :--- | :--- | :---: | :--- |
 | Ada Quill | Station chief | 2231 | Writes the log. Owns the good multimeter. |
 | Tomas Bray | Systems technician | 2242 | Recalibrates the antenna more than it needs. |
 | MOTH-3 | Maintenance drone | 2238 | Six legs, one opinion, several spare parts. |
 | [Fresnel](crew/fresnel.md) | Cat | 2240 | Not on the manifest. Has never missed a watch. |
+
+## How these files are kept
+
+You will add to this, so here is what the conventions are. All of it is still text, and none of it needs a program this station does not already have.
+
+> [!NOTE]
+> A block written like this is a callout, and the runbook uses them for the steps that will bite you. It is the one piece of formatting worth reaching for when something is genuinely dangerous.
+
+- Numbers you might want to sort, plot or hand to something else go in a `csv` block rather than a table. [Every eclipse this month](eclipses.md#every-eclipse-this-month) is kept that way, and so is the receiver log for the night of the 17th.
+- Diagrams are written as Mermaid, so they still read as text when nothing is there to draw them. The [work plan](maintenance.md#work-plan) is a Gantt chart written in about twelve lines.
+- Where the working matters more than the answer, write the working. The [link budget](beacon.md#link-budget) keeps the free-space term as $20\log_{10}(4\pi d / \lambda)$ rather than a number, because the number is wrong the moment the geometry moves.
+- ==Highlight the one line that matters== instead of bolding half a paragraph. The incident report does it once, on the sentence the whole case rests on.
+- A chart that needs its numbers beside it is Vega-Lite, which is what the [signals](signals.md) page uses.
+
+Before you hand over to the crew after you:
+
+- [ ] Read the runbook front to back, not the summary
+- [ ] Walk the ring once with the outgoing chief
+- [ ] Find out what the narrowband is
 
 <!-- The documents table does not list every room. -->

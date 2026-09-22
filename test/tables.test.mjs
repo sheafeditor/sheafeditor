@@ -11,6 +11,15 @@ for (const key of [
 ]) {
   if (window[key]) globalThis[key] = window[key];
 }
+// A cell editor is a CodeMirror view of its own, so this suite now runs CodeMirror's
+// measuring. It asks a range where it is drawn, and asks whether what it scrolls
+// inside is the window. jsdom has neither, and without these every measure throws
+// into its uncaught-error reporter, which prints and is seen by no scenario. Same
+// three lines as test/real-editor/run-unit.mjs, for the same reason.
+const emptyRect = () => ({ x: 0, y: 0, left: 0, top: 0, right: 0, bottom: 0, width: 0, height: 0 });
+if (!window.Range.prototype.getClientRects) window.Range.prototype.getClientRects = () => [];
+if (!window.Range.prototype.getBoundingClientRect) window.Range.prototype.getBoundingClientRect = emptyRect;
+if (!globalThis.Window && window.Window) globalThis.Window = window.Window;
 if (!globalThis.ResizeObserver) globalThis.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} };
 if (!globalThis.IntersectionObserver) globalThis.IntersectionObserver = class { observe() {} unobserve() {} disconnect() {} };
 globalThis.window = window;

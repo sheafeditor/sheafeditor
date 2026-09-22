@@ -216,7 +216,48 @@ export const scenarios: Scenario[] = [
     },
   },
   {
-    name: 'the prose menu offers clipboard, formatting and turn into, and link actions on a link',
+    name: 'Send to terminal sits beside Copy ref, and is absent where the host cannot send one',
+    run: () => {
+      const sent: number[] = [];
+      const p = mountProse('one\n\ntwo words\n\nthree');
+      p.select(7);
+      // With the host offering it: the item is there, next to Copy ref, and asks for the command.
+      const withHost = openMenu(p, { sendRefToTerminal: () => sent.push(1) });
+      const labels = withHost.labels();
+      const beside = labels.indexOf('Send to terminal') === labels.indexOf('Copy ref') + 1;
+      withHost.item('Send to terminal')!.click();
+      withHost.close();
+      // Without it: no item, rather than one that does nothing.
+      const without = openMenu(p);
+      const gone = !without.labels().includes('Send to terminal');
+      without.close();
+      const ok = beside && sent.length === 1 && gone && p.doc() === 'one\n\ntwo words\n\nthree';
+      p.destroy();
+      return ok;
+    },
+  },
+  {
+    name: 'Copy ref shows its key where the host binds it, and no key in a host that does not',
+    run: () => {
+      const p = mountProse('one\n\ntwo words\n\nthree');
+      p.select(7);
+      const key = (m: ReturnType<typeof openMenu>) => m.item('Copy ref')?.querySelector('.sheaf-ctx-key')?.textContent ?? null;
+      // VS Code: the host offers Send to terminal, and binds both keys.
+      const withHost = openMenu(p, { sendRefToTerminal: () => {} });
+      const shown = key(withHost);
+      const terminalKey = withHost.item('Send to terminal')?.querySelector('.sheaf-ctx-key')?.textContent ?? null;
+      withHost.close();
+      // A browser tab: no terminal, and nothing binds the key, so no hint claims one.
+      const without = openMenu(p);
+      const absent = key(without);
+      without.close();
+      p.destroy();
+      // Both keys are drawn the same way, and they differ only in their last letter.
+      return !!shown && !!terminalKey && shown.slice(0, -1) === terminalKey.slice(0, -1) && /r$/i.test(shown) && absent === null;
+    },
+  },
+  {
+    name: 'the prose menu leads with Turn into and Edit Markdown, then the marks, Copy ref and the link actions',
     run: () => {
       const opened: string[] = [];
       const copied: string[] = [];
@@ -224,15 +265,16 @@ export const scenarios: Scenario[] = [
       p.select(9);
       const m = openMenu(p, { openLink: (u) => opened.push(u) }, copied);
       const labels = m.labels();
-      const order = ['Cut', 'Copy', 'Paste', 'Copy ref', 'Open link', 'Copy link address', 'Remove link', 'Bold', 'Italic', 'Strikethrough', 'Highlight', 'Inline code', 'Clear formatting', 'Turn into'];
+      const order = ['Turn into', 'Edit Markdown', 'Highlight', 'Inline code', 'Clear formatting', 'Copy ref', 'Open link', 'Copy link address', 'Remove link'];
       const offered = order.every((l, i) => labels.indexOf(l) >= 0 && (i === 0 || labels.indexOf(l) > labels.indexOf(order[i - 1])));
-      const cutDisabled = m.item('Cut')!.disabled && m.item('Copy')!.disabled;
+      // Inside a link there is nothing to link, so Link is not offered a second time.
+      const noSecondLink = !labels.includes('Link');
       m.item('Copy link address')!.click();
       const m2 = openMenu(p, { openLink: (u) => opened.push(u) }, copied);
       m2.item('Open link')!.click();
       const m3 = openMenu(p, {}, copied);
       m3.item('Remove link')!.click();
-      const ok = offered && cutDisabled && copied[0] === 'https://example.com' && opened[0] === 'https://example.com' && p.doc() === 'go to the site now';
+      const ok = offered && noSecondLink && copied[0] === 'https://example.com' && opened[0] === 'https://example.com' && p.doc() === 'go to the site now';
       m3.close();
       p.destroy();
       return ok;
@@ -245,7 +287,7 @@ export const scenarios: Scenario[] = [
       const p = mountProse('```js\nlet a = 1;\nlet b = 2;\n```');
       p.select(8);
       const m = openMenu(p, {}, copied);
-      const disabled = ['Bold', 'Italic', 'Link'].every((l) => m.item(l)?.disabled);
+      const disabled = ['Highlight', 'Inline code', 'Link'].every((l) => m.item(l)?.disabled);
       m.item('Copy code')!.click();
       const ok = disabled && copied[0] === 'let a = 1;\nlet b = 2;';
       m.close();
@@ -271,23 +313,26 @@ export const scenarios: Scenario[] = [
     },
   },
   {
-    name: 'menu Paste inserts the clipboard text at the selection, and Cut sends the selection to the clipboard',
+    name: 'the prose menu leaves cut, copy, paste and the three common marks to the keyboard and the selection toolbar',
     run: async () => {
-      const copied: string[] = [];
       const p = mountProse('hello world');
       p.select(6, 11);
-      const m = openMenu(p, { readClipboard: async () => 'there' }, copied);
-      m.item('Paste')!.click();
-      await tick();
+      const m = openMenu(p);
+      const labels = m.labels();
+      const gone = ['Cut', 'Copy', 'Paste', 'Bold', 'Italic', 'Strikethrough'].every((l) => !labels.includes(l));
+      m.close();
+      // The selection toolbar comes up on the same gesture and still carries the three marks.
+      const bar = p.view.dom.querySelector('.sheaf-seltb');
+      const onToolbar = ['bold', 'italic', 'strike'].every((c) => !!bar?.querySelector(`[data-cmd="${c}"]`));
+      // And the paste the editor handles itself is untouched by the menu losing its item.
+      const e = new G.Event('paste', { bubbles: true, cancelable: true });
+      const data = { getData: (t: string) => (t === 'text/plain' ? 'there' : ''), types: ['text/plain'], files: [], items: [] };
+      Object.defineProperty(e, 'clipboardData', { value: data });
+      p.view.contentDOM.dispatchEvent(e);
       await tick();
       const pasted = p.doc() === 'hello there';
-      p.select(0, 5);
-      const m2 = openMenu(p, {}, copied);
-      m2.item('Cut')!.click();
-      const ok = pasted && copied[0] === 'hello' && p.doc() === ' there';
-      m2.close();
       p.destroy();
-      return ok;
+      return gone && onToolbar && pasted;
     },
   },
   {

@@ -108,7 +108,10 @@ export function planEdit(
   const edit = minimalEdit(shown, webviewText);
   const start = carriageReturns ? advance(documentText, 0, edit.start) : edit.start;
   const end = carriageReturns ? advance(documentText, start, edit.end - edit.start) : edit.end;
-  const replacement = crlf ? edit.replacement.replace(/\n/g, '\r\n') : edit.replacement;
+  // `\r?\n`, not `\n`: a replacement that already carries a carriage return would otherwise
+  // come out as `\r\r\n`, one doubled return per line, and the conversion has to be safe to
+  // run over text that is already in the document's endings.
+  const replacement = crlf ? edit.replacement.replace(/\r?\n/g, '\r\n') : edit.replacement;
   return {
     start,
     end,
@@ -125,8 +128,12 @@ export interface SyncHost {
   crlf(): boolean;
   /** Replace `[start, end)` with `replacement`. False when the editor refused the edit. */
   applyEdit(start: number, end: number, replacement: string): Promise<boolean>;
-  /** Give the webview a whole document, in the webview's line endings, replacing what it holds. */
-  setContent(text: string): void;
+  /**
+   * Give the webview a whole document, in the webview's line endings, replacing what
+   * it holds. `tookTypedText` is true when that document drops something the person
+   * typed a moment ago, which is what makes the change one their own Undo takes back.
+   */
+  setContent(text: string, tookTypedText?: boolean): void;
   /** Called after each edit the document accepted. */
   onEdited(): void;
 }
@@ -181,19 +188,24 @@ export class DocumentSync {
     return this.draining;
   }
 
-  /** The document changed. Pushes it to the webview unless the webview is ahead. */
-  public documentChanged(text: string): void {
+  /**
+   * The document changed. Pushes it to the webview unless the webview is ahead, and
+   * says whether it pushed, so the caller knows whether the webview has seen this
+   * document yet.
+   */
+  public documentChanged(text: string, tookTypedText = false): boolean {
     if (this.draining) {
       // Mid-burst: this is either the echo of an edit of our own or an outside
       // write the burst is about to be planned against. `drain` posts whatever
       // the document ends up holding, so nothing older than that goes out now.
-      return;
+      return false;
     }
     if (text === this.syncedText) {
-      return;
+      return false;
     }
     this.syncedText = text;
-    this.host.setContent(toWebviewText(text));
+    this.host.setContent(toWebviewText(text), tookTypedText);
+    return true;
   }
 
   private async drain(): Promise<void> {

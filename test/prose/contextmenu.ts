@@ -6,9 +6,17 @@ const G: any = globalThis;
 
 interface Menu {
   shown: () => boolean;
+  labels: () => string[];
   item: (label: string) => HTMLButtonElement | undefined;
+  /** The label of the focused item, or how the focused element reads when it is not one. */
+  focused: () => string;
   close: () => void;
 }
+
+/** Send a keydown the way the menu's own document listener receives it. */
+const key = (name: string): void => {
+  document.activeElement!.dispatchEvent(new G.KeyboardEvent('keydown', { key: name, bubbles: true, cancelable: true }));
+};
 
 /** Open the prose menu at the caret the way the keyboard does, and read what it offers. */
 function openMenu(p: Prose, extra: Partial<ContextMenuDeps> = {}, copied: string[] = []): Menu {
@@ -22,9 +30,18 @@ function openMenu(p: Prose, extra: Partial<ContextMenuDeps> = {}, copied: string
   p.view.contentDOM.dispatchEvent(new G.MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 0 }));
   const menus = (): HTMLElement[] => Array.from(document.querySelectorAll<HTMLElement>('.sheaf-ctx-menu'));
   const all = (): HTMLButtonElement[] => menus().flatMap((m) => Array.from(m.querySelectorAll<HTMLButtonElement>('.sheaf-ctx-item')));
+  const shownItems = (): HTMLButtonElement[] =>
+    menus()
+      .filter((m) => !m.hidden)
+      .flatMap((m) => Array.from(m.querySelectorAll<HTMLButtonElement>('.sheaf-ctx-item')));
   return {
     shown: () => menus().some((m) => !m.hidden),
+    labels: () => shownItems().map((b) => b.querySelector('span')!.textContent ?? ''),
     item: (label) => all().find((b) => b.querySelector('span')!.textContent === label),
+    focused: () =>
+      document.activeElement?.classList.contains('sheaf-ctx-item')
+        ? (document.activeElement.querySelector('span')?.textContent ?? '')
+        : `<${(document.activeElement as HTMLElement | null)?.tagName ?? 'none'}>`,
     close: () => document.querySelectorAll('.sheaf-ctx-menu').forEach((m) => m.remove()),
   };
 }
@@ -42,6 +59,67 @@ function copyRef(doc: string, from: number, to: number): string {
 }
 
 export const scenarios: Scenario[] = [
+  {
+    name: 'a right-click on a paragraph opens on Turn into, with Edit Markdown under it and nothing the keyboard already binds',
+    run: () => {
+      const p = mountProse('# Title\n\nA paragraph of text.');
+      p.select(14);
+      const m = openMenu(p);
+      // The whole menu, in order: cut, copy, paste, bold, italic and strikethrough
+      // are gone, and the two items worth opening a menu for come first.
+      const shown = m.labels();
+      m.close();
+      p.destroy();
+      return JSON.stringify(shown) === JSON.stringify(['Turn into', 'Edit Markdown', 'Highlight', 'Inline code', 'Link', 'Clear formatting', 'Copy ref']);
+    },
+  },
+  {
+    name: 'Turn into checks the kind of the block that was clicked, and inside a code block offers only Text and Code block',
+    run: () => {
+      const h = mountProse('## Section\n\nbody');
+      h.select(5);
+      const hm = openMenu(h);
+      hm.item('Turn into')!.click();
+      const headingChecked =
+        hm.item('Heading 2')!.getAttribute('aria-checked') === 'true' &&
+        ['Text', 'Heading 1', 'Heading 3', 'Bullet list'].every((l) => hm.item(l)!.getAttribute('aria-checked') === 'false');
+      hm.close();
+      h.destroy();
+
+      const c = mountProse('```js\nlet a = 1;\n```');
+      c.select(8);
+      const cm = openMenu(c);
+      cm.item('Turn into')!.click();
+      // The ones that cannot apply are shown disabled rather than dropped.
+      const kinds = ['Text', 'Heading 1', 'Heading 2', 'Heading 3', 'Bullet list', 'Numbered list', 'Task list', 'Quote', 'Code block'];
+      const allThere = kinds.every((l) => !!cm.item(l));
+      const enabled = kinds.filter((l) => cm.item(l)!.disabled === false);
+      cm.close();
+      c.destroy();
+      return headingChecked && allThere && JSON.stringify(enabled) === JSON.stringify(['Text', 'Code block']);
+    },
+  },
+  {
+    name: 'the menu opens from the keyboard onto Turn into, the arrows walk the new order, and Escape gives the caret back',
+    run: () => {
+      const p = mountProse('A paragraph of text.');
+      p.select(3);
+      p.view.contentDOM.focus();
+      const before = document.activeElement;
+      const m = openMenu(p);
+      const seen = [m.focused()];
+      for (let i = 0; i < 3; i++) {
+        key('ArrowDown');
+        seen.push(m.focused());
+      }
+      key('Escape');
+      const closed = !m.shown();
+      const returned = document.activeElement === before;
+      m.close();
+      p.destroy();
+      return seen.join('|') === 'Turn into|Edit Markdown|Highlight|Inline code' && closed && returned;
+    },
+  },
   {
     name: 'Copy link address copies the address a link names, not its Markdown spelling',
     run: () => {
@@ -80,6 +158,29 @@ export const scenarios: Scenario[] = [
       const intoNext = copyRef('a\nb\nc', 2, 5) === 'doc.md:2-3\n\n```\nb\nc\n```\n';
       return tripleClicked && lineToLine && intoNext;
     },
+  },
+  {
+    name: 'Copy ref with only a caret quotes that line as the file holds it, hashes and all',
+    run: () => {
+      // Nothing selected: the ref still carries the line it names, so a paste says
+      // what is there as well as where it is.
+      const paragraph = copyRef('one\n\ntwo words\n\nthree', 8, 8) === 'doc.md:3\n\n```\ntwo words\n```\n';
+      // The source, not the rendered heading, so the quote matches the file.
+      const heading = copyRef('## Heading\n\nbody', 5, 5) === 'doc.md:1\n\n```\n## Heading\n```\n';
+      return paragraph && heading;
+    },
+  },
+  {
+    name: 'a caret ref on a line carrying a run of backticks is wrapped in a longer fence',
+    run: () => {
+      const doc = 'text\n\n```js\nlet a = 1;\n```';
+      // The opening fence line itself: the wrapper has to outrun the three backticks in it.
+      return copyRef(doc, doc.indexOf('```js') + 2, doc.indexOf('```js') + 2) === 'doc.md:3\n\n````\n```js\n````\n';
+    },
+  },
+  {
+    name: 'a caret on an empty line copies the location alone, with no empty fence',
+    run: () => copyRef('one\n\nthree', 4, 4) === 'doc.md:2\n',
   },
   {
     name: 'the prose menu closes when the document changes, so Remove link and Mark done act on the document as it is now',
@@ -121,7 +222,7 @@ export const scenarios: Scenario[] = [
     name: 'the prose menu shows Turn into and inline formatting disabled on YAML front matter',
     run: () => {
       const doc = '---\ntitle: Notes\n---\n\nBody text';
-      const formatting = ['Bold', 'Italic', 'Strikethrough', 'Highlight', 'Inline code', 'Link', 'Clear formatting', 'Turn into'];
+      const formatting = ['Highlight', 'Inline code', 'Link', 'Clear formatting', 'Turn into'];
       const p = mountProse(doc);
       p.select(doc.indexOf('Notes') + 2);
       const m = openMenu(p);
@@ -129,7 +230,7 @@ export const scenarios: Scenario[] = [
       const refStillOn = m.item('Copy ref')?.disabled === false;
       m.item('Turn into')!.click();
       const noHeading = !m.item('Heading 1');
-      m.item('Bold')!.click();
+      m.item('Highlight')!.click();
       const untouched = p.doc() === doc;
       m.close();
 
@@ -220,6 +321,32 @@ export const scenarios: Scenario[] = [
         win.HTMLAnchorElement.prototype.click = original;
         setLinkHost(() => {});
       }
+    },
+  },
+  {
+    name: 'a scroll caused by the click that opened the menu does not dismiss it, and a later one does',
+    run: async () => {
+      // A right-click selects what it landed on before the menu opens, and a grid
+      // scrolls the cell it has just selected into view. That scroll is dispatched
+      // after the handler returns, so it arrived a moment after the menu appeared
+      // and closed it, which read as a right-click that did nothing at all.
+      const p = mountProse('Say hello to the world today.');
+      p.select(7);
+      const m = openMenu(p);
+      const opened = m.shown();
+      const scroller = document.createElement('div');
+      document.body.appendChild(scroller);
+      const scroll = (): void => scroller.dispatchEvent(new G.Event('scroll', { bubbles: false }));
+      scroll();
+      const survivedItsOwn = m.shown();
+      // Past the grace, a scroll is the person moving the page out from under it.
+      await new Promise((r) => setTimeout(r, 60));
+      scroll();
+      const closedByALaterOne = !m.shown();
+      m.close();
+      scroller.remove();
+      p.destroy();
+      return opened && survivedItsOwn && closedByALaterOne;
     },
   },
 ];

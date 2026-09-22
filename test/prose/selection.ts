@@ -1,5 +1,7 @@
 import { Scenario, mountProse, Prose } from '../harness';
 import { setClipboardHost } from '../../src/webview/hostClipboard';
+import { revealField } from '../../src/webview/livePreview';
+import { hint } from '../../src/webview/shortcuts';
 
 const G: any = globalThis;
 
@@ -8,6 +10,12 @@ const popover = (p: Prose): HTMLElement | null => p.view.dom.querySelector<HTMLE
 const button = (p: Prose, cmd: string): HTMLButtonElement => toolbar(p)!.querySelector<HTMLButtonElement>(`[data-cmd="${cmd}"]`)!;
 const pressed = (p: Prose, cmd: string): boolean => button(p, cmd).getAttribute('aria-pressed') === 'true';
 const tick = (ms = 0): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** The Markdown on show, as its text (empty when the document is all rendered). */
+const shown = (p: Prose): string => {
+  const range = p.view.state.field(revealField, false);
+  return range ? p.view.state.sliceDoc(range.from, range.to) : '';
+};
 
 const mouse = (target: EventTarget, type: string): MouseEvent => {
   const event = new G.MouseEvent(type, { bubbles: true, cancelable: true, button: 0 });
@@ -143,17 +151,119 @@ export const scenarios: Scenario[] = [
       p.select(0, 5);
       const escaped = p.press('Escape') && toolbar(p) === null;
       p.select(6, 11);
-      const focused = p.press('Alt-F10') && document.activeElement === button(p, 'bold');
+      const focused = p.press('Alt-F10') && document.activeElement === button(p, 'reveal');
       key(document.activeElement!, 'ArrowRight');
-      const moved = document.activeElement === button(p, 'italic');
+      const moved = document.activeElement === button(p, 'bold');
       key(document.activeElement!, 'ArrowLeft');
+      const back = document.activeElement === button(p, 'reveal');
       key(document.activeElement!, 'ArrowLeft');
       const wrapped = document.activeElement === toolbar(p)!.querySelector('[data-cmd="turn-into"]');
       key(document.activeElement!, 'Escape');
       const sel = p.view.state.selection.main;
       const closed = toolbar(p) === null && sel.from === 6 && sel.to === 11;
       p.destroy();
-      return escaped && focused && moved && wrapped && closed;
+      return escaped && focused && moved && back && wrapped && closed;
+    },
+  },
+  {
+    name: 'the selection toolbar opens with Edit Markdown, then a separator, then Bold',
+    run: () => {
+      const p = mountProse('hello world');
+      p.select(0, 5);
+      const bar = toolbar(p)!;
+      const first = bar.children[0];
+      const second = bar.children[1];
+      const third = bar.children[2];
+      const edit = button(p, 'reveal');
+      const want = `Edit Markdown (${hint('Mod-Alt-e')})`;
+      const ok =
+        first === edit &&
+        second.getAttribute('role') === 'separator' &&
+        third === button(p, 'bold') &&
+        !edit.disabled &&
+        edit.title === want &&
+        edit.getAttribute('aria-label') === want;
+      p.destroy();
+      return ok;
+    },
+  },
+  {
+    name: 'Edit Markdown in the selection toolbar opens the block around the selection, leaving the caret in it',
+    run: () => {
+      const doc = '# A\n\nFirst line of para\nsecond line of para\n\n# B';
+      const p = mountProse(doc);
+      const at = doc.indexOf('second');
+      p.select(at, at + 6);
+      button(p, 'reveal').click();
+      const open = shown(p);
+      const sel = p.view.state.selection.main;
+      const block = { from: doc.indexOf('First'), to: doc.indexOf('\n\n# B') };
+      const ok =
+        open === 'First line of para\nsecond line of para' &&
+        sel.from >= block.from &&
+        sel.to <= block.to &&
+        p.doc() === doc &&
+        toolbar(p) === null;
+      p.destroy();
+      return ok;
+    },
+  },
+  {
+    name: 'Edit Markdown from the toolbar opens a heading, a list item and a quote each on its own',
+    run: () => {
+      const cases: [string, string, string][] = [
+        ['Intro.\n\n## A title here\n\nAfter.', 'title', '## A title here'],
+        ['Intro.\n\n- first item\n- second item\n\nAfter.', 'second', '- second item'],
+        ['Intro.\n\n> quoted words\n\nAfter.', 'quoted', '> quoted words'],
+      ];
+      return cases.every(([doc, word, want]) => {
+        const p = mountProse(doc);
+        const at = doc.indexOf(word);
+        p.select(at, at + word.length);
+        const bar = toolbar(p);
+        if (bar) button(p, 'reveal').click();
+        const open = shown(p);
+        const unchanged = p.doc() === doc;
+        p.destroy();
+        return !!bar && open === want && unchanged;
+      });
+    },
+  },
+  {
+    name: 'Edit Markdown is visibly disabled when the selection starts where there is no block to open',
+    run: () => {
+      // The selection runs from the blank line between two paragraphs into the second
+      // one, so where it starts there is nothing to open.
+      const p = mountProse('One.\n\nTwo.');
+      p.select(5, 9);
+      const bar = toolbar(p);
+      const off = !!bar && button(p, 'reveal').disabled;
+      button(p, 'reveal').click();
+      const nothing = shown(p) === '';
+      p.select(6, 9);
+      const on = !button(p, 'reveal').disabled;
+      p.destroy();
+      return off && nothing && on;
+    },
+  },
+  {
+    name: 'no selection carrying the toolbar sits in front matter or a table, so Edit Markdown is never offered there',
+    run: () => {
+      const front = mountProse('---\ntitle: A note\n---\n\nBody text.\n');
+      const meta = front.view.state.doc.line(2);
+      front.select(meta.from + 7, meta.to);
+      const inFront = toolbar(front);
+      const body = front.doc().indexOf('Body');
+      front.select(body, body + 4);
+      const offered = toolbar(front) !== null && !button(front, 'reveal').disabled;
+      front.destroy();
+
+      const t = mountProse('| a | b |\n| - | - |\n| one | two |\n\ntext');
+      const row = t.view.state.doc.line(3);
+      t.select(row.from + 2, row.from + 5);
+      const inTable = toolbar(t);
+      t.destroy();
+      return inFront === null && inTable === null && offered;
     },
   },
   {

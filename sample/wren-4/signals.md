@@ -4,6 +4,8 @@ Between pulses the beacon's dish listens. The receiver logs every detection abov
 
 ![Signal detections as a heat map](charts/signals-heatmap.svg)
 
+<div align="right"><figure><img src="tour/dish.svg" alt="The receiver dish" width="240"><figcaption>Aimed at the trailing cluster since before either of us arrived. Nobody aboard aimed it.</figcaption></figure></div>
+
 ## Detections
 
 > [!TIP]
@@ -48,6 +50,38 @@ Carbon monoxide, 115 GHz    · · ░ ░ ▒ ▓ █ █ ▒ ░ ░ ·
 Unexplained narrowband      ▒ ▓ ▓ ▓ ▓ █ █ ▒ ░ ░ ░ █
 Fresnel near a receiver     · · · · · ▓ █ █ █ ▓ · ·
 Aurora of Vesna c           █ ▓ ▒ ░ · · · · · ░ ▒ ▓
+```
+
+## The count, month by month
+
+The unexplained band on its own, which is the drawing Bray made to show Quill the counts were not random. She said a jagged line is exactly what random looks like.
+
+```vega-lite
+{
+  "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+  "description": "Unexplained narrowband detections by month, Wren-4, 2244",
+  "data": {
+    "values": [
+      {"month": "Jan", "detections": 6},
+      {"month": "Feb", "detections": 15},
+      {"month": "Mar", "detections": 12},
+      {"month": "Apr", "detections": 12},
+      {"month": "May", "detections": 15},
+      {"month": "Jun", "detections": 23},
+      {"month": "Jul", "detections": 20},
+      {"month": "Aug", "detections": 8},
+      {"month": "Sep", "detections": 5},
+      {"month": "Oct", "detections": 3},
+      {"month": "Nov", "detections": 1},
+      {"month": "Dec", "detections": 20}
+    ]
+  },
+  "mark": {"type": "bar", "tooltip": true},
+  "encoding": {
+    "x": {"field": "month", "type": "ordinal", "sort": null, "title": "Month"},
+    "y": {"field": "detections", "type": "quantitative", "title": "Detections"}
+  }
+}
 ```
 
 ## The signal year

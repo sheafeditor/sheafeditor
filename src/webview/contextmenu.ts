@@ -1,17 +1,26 @@
 /*
  * Right-click context menu.
  *
- * Renders a small popup at the cursor with common operations. The headline
- * action is "Copy ref" — it puts `path:line` (a line range when text spans
- * several lines) on the clipboard, followed by the selected text, so the result
- * pastes cleanly into an AI chat as a code reference. Clipboard reads/writes are
- * routed through the host (see markdownEditorProvider) rather than the webview's
- * restricted `navigator.clipboard`, and the remaining items reuse the same
- * editing commands as the toolbar and keyboard shortcuts.
+ * Renders a small popup at the cursor. On prose it leads with Turn into and
+ * Edit Markdown, because converting the block you clicked, or opening its raw
+ * Markdown, is the reason to open a menu on that block at all. What follows is
+ * what has nowhere else to live: the inline marks with no button on the
+ * selection toolbar, and Copy ref, which puts `path:line` (a line range when
+ * text spans several lines) on the clipboard, followed by the selected text, so
+ * the result pastes cleanly into an AI chat as a code reference. Clipboard
+ * writes are routed through the host (see markdownEditorProvider) rather than
+ * the webview's restricted `navigator.clipboard`, and every item reuses the
+ * same editing commands as the toolbar and keyboard shortcuts.
  *
- * On prose the menu depends on what was clicked: a link adds open, copy address
- * and remove; a fenced code block adds Copy code and switches formatting off; a
- * task line adds Mark done or Mark not done. Turn into is a submenu.
+ * Cut, copy and paste are deliberately absent: the platform binds them, its own
+ * menu bar lists them, and no one opens a menu to find them. Bold, italic and
+ * strikethrough are absent for the same reason, plus the selection toolbar,
+ * which appears on the very gesture that makes them meaningful.
+ *
+ * On prose the menu also depends on what was clicked: a link adds open, copy
+ * address and remove; a fenced code block adds Copy code and switches
+ * formatting off; a task line adds Mark done or Mark not done. Turn into is a
+ * submenu.
  */
 
 import { EditorState, StateEffect, Text } from '@codemirror/state';
@@ -21,11 +30,11 @@ import { toggleWrap, insertLink, clearFormatting, turnInto, blockKindOf, BlockKi
 import { hint } from './shortcuts';
 import { tableRowSourceAt, tableRowRefAt, tableActionsAt } from './tables';
 import { formatStateAt } from './formatState';
-import { readClipboardText } from './hostClipboard';
 import { inFrontMatter } from './floatingState';
 import { blockRangeAt } from './blockModel';
 import { revealBlockAt } from './revealBlock';
 import { linkAddress, linkAddressAt, openLink } from './linkTarget';
+import { coveredEnd } from './selectionExtent';
 
 export interface ContextMenuDeps {
   getView: () => EditorView | undefined;
@@ -33,10 +42,10 @@ export interface ContextMenuDeps {
   getFileName: () => string;
   /** Send text to the host clipboard. */
   copyToClipboard: (text: string) => void;
-  /** Read the clipboard's text; the host clipboard when omitted. */
-  readClipboard?: () => Promise<string>;
   /** Open a link's target; a link click the host intercepts when omitted. */
   openLink?: (url: string) => void;
+  /** Ask the host to send the current selection's reference to the terminal; the item is hidden when omitted. */
+  sendRefToTerminal?: () => void;
 }
 
 type MenuItem =
@@ -54,28 +63,43 @@ type MenuItem =
     }
   | { kind: 'submenu'; label: string; items: MenuItem[]; disabled?: boolean };
 
-/** Build the `path:line` (or `path:start-end`) reference, plus any selected text. */
-function buildRef(view: EditorView, fileName: string): string {
+/**
+ * Build the `path:line` (or `path:start-end`) reference, plus the text it names.
+ * A reference always carries its content, so a paste says what is there as well as
+ * where it is: the selected text, or, with only a caret, the source of the line the
+ * caret sits on. An empty line has nothing to quote and gets the location alone.
+ *
+ * Exported because the same reference is reachable from a command and a keystroke
+ * as well as from this menu, and two builders would drift into saying two things
+ * about one selection.
+ */
+export function buildRef(view: EditorView, fileName: string): string {
   const { doc } = view.state;
   const sel = view.state.selection.main;
   const startLine = doc.lineAt(sel.from).number;
   // A selection that ends at the start of a line (a triple-clicked line) covers
   // no character of that line, so the range stops at the line before it.
-  const endAt = doc.lineAt(sel.to);
-  const endLine = !sel.empty && sel.to === endAt.from ? Math.max(startLine, endAt.number - 1) : endAt.number;
+  const endLine = doc.lineAt(coveredEnd(doc, sel)).number;
   const range = !sel.empty && endLine !== startLine ? `${startLine}-${endLine}` : `${startLine}`;
-  let ref = `${fileName}:${range}\n`;
-  if (!sel.empty) {
-    ref += `\n${fence(doc.sliceString(sel.from, sel.to))}\n`;
-  }
-  return ref;
+  const text = sel.empty ? doc.line(startLine).text : doc.sliceString(sel.from, sel.to);
+  return quotedRef(`${fileName}:${range}`, text);
 }
 
-/** A `path:line` (or `path:start-end`) reference to a table row's source. */
-function tableRowRef(fileName: string, ref: { start: number; end: number; text: string }): string {
-  if (ref.start === ref.end) return `${fileName}:${ref.start}\n`;
-  // Several rows: the line range, then those rows' source, as a prose selection gets.
-  return `${fileName}:${ref.start}-${ref.end}\n\n${fence(ref.text)}\n`;
+/**
+ * A reference to cells of a table: `path:line` (or `path:start-end`), then which
+ * cells those are in the grid's terms when the grid said, as in
+ * `doc.md:24 (Time, row 4)`. Exported for the same reason as `buildRef`.
+ */
+export function tableRowRef(fileName: string, ref: { start: number; end: number; text: string; label?: string }): string {
+  // The ref carries the text the grid handed back: whole lines, the cells that
+  // were picked inside them, or one cell's text.
+  const range = ref.start === ref.end ? `${ref.start}` : `${ref.start}-${ref.end}`;
+  return quotedRef(`${fileName}:${range}${ref.label ? ` (${ref.label})` : ''}`, ref.text);
+}
+
+/** `location`, then `text` in a fenced block below it, or the location alone when there is nothing to quote. */
+function quotedRef(location: string, text: string): string {
+  return text === '' ? `${location}\n` : `${location}\n\n${fence(text)}\n`;
 }
 
 /**
@@ -83,7 +107,7 @@ function tableRowRef(fileName: string, ref: { start: number; end: number; text: 
  * the longest backtick run inside the text so content containing ``` stays
  * intact, and a trailing newline is trimmed so the closing fence sits flush.
  */
-function fence(text: string): string {
+export function fence(text: string): string {
   const longest = (text.match(/`+/g) ?? []).reduce((max, run) => Math.max(max, run.length), 0);
   const bars = '`'.repeat(Math.max(3, longest + 1));
   return `${bars}\n${text.replace(/\n$/, '')}\n${bars}`;
@@ -158,26 +182,6 @@ function taskAt(state: EditorState, pos: number): { at: number; done: boolean } 
   return m ? { at: line.from + m[1].length, done: m[2] !== ' ' } : null;
 }
 
-/**
- * Paste `text` the way Cmd+V does, by handing the editor a paste event that
- * carries it. The editor's own paste handling then runs unchanged: a range
- * copied from a spreadsheet becomes a table, and any other text goes in at the
- * selection. Focus moves to the editor first, since a pasted table takes focus
- * into its grid.
- */
-function pasteText(view: EditorView | undefined, text: string): void {
-  if (!view) return;
-  view.focus();
-  const event = new Event('paste', { bubbles: true, cancelable: true });
-  const data = { getData: (type: string) => (type === 'text/plain' ? text : ''), types: ['text/plain'], files: [], items: [] };
-  Object.defineProperty(event, 'clipboardData', { value: data });
-  view.contentDOM.dispatchEvent(event);
-  // Nothing took the event, so there is no paste handling to share: insert the text as is.
-  if (!event.defaultPrevented) {
-    view.dispatch({ ...view.state.replaceSelection(text.replace(/\r\n?/g, '\n')), userEvent: 'input.paste', scrollIntoView: true });
-  }
-}
-
 /** Screen coordinates of a document position, or null where there is no layout to measure. */
 function coordsAt(view: EditorView, pos: number): { left: number; bottom: number } | null {
   try {
@@ -192,6 +196,10 @@ function coordsAt(view: EditorView, pos: number): { left: number; bottom: number
  * rebuilt on each open, since enablement depends on the current selection.
  */
 export function mountContextMenu(root: HTMLElement, deps: ContextMenuDeps): void {
+  // Copy ref's key is bound by the editor window, not in this page, so it is shown only where the
+  // host has that window. Send to terminal is offered in exactly the same hosts, so its presence is
+  // the answer; in a browser tab neither key does anything, and a hint there would be untrue.
+  const copyRefKey = () => (deps.sendRefToTerminal ? 'Mod-Shift-Alt-r' : undefined);
   const menu = document.createElement('div');
   menu.className = 'sheaf-ctx-menu';
   menu.hidden = true;
@@ -252,6 +260,25 @@ export function mountContextMenu(root: HTMLElement, deps: ContextMenuDeps): void
   };
   // Closing because the window lost focus or resized leaves focus alone.
   const closeQuietly = (): void => close(false);
+  /**
+   * Whether a scroll now means the person scrolled away, rather than the gesture
+   * that opened the menu scrolling something into view.
+   *
+   * A right-click selects what it landed on before the menu opens, and a grid
+   * scrolls the cell it has just selected into view. That scroll is dispatched
+   * after the handler returns, so it arrived a moment after the menu appeared and
+   * dismissed it. What a person saw was a right-click that did nothing, and only
+   * on the one cell in a table that was not already fully in view.
+   *
+   * Counted in frames, not milliseconds. A scroll queued by the click is delivered
+   * in the frame's scroll steps, which run before that frame's animation callbacks,
+   * so by the second callback after opening it has certainly arrived. A time budget
+   * cannot promise that: this was first a thirty-two millisecond window, and on a
+   * busy machine a frame ran longer than that, the scroll landed outside the window
+   * and the menu closed itself again. No amount of load can outrun a frame count.
+   */
+  let listeningForScroll = false;
+  let openSeq = 0;
   // The menu is placed where the text was when it opened, so scrolling the
   // document closes it rather than leaving it beside text that has moved away.
   // Scroll events do not bubble; listening while capturing sees any scroller.
@@ -259,6 +286,10 @@ export function mountContextMenu(root: HTMLElement, deps: ContextMenuDeps): void
   const onScroll = (e: Event): void => {
     const target = e.target as Node | null;
     if (target && (menu.contains(target) || sub.contains(target))) return;
+    // Until the opening gesture's own scroll has had its frame, any scroll is that
+    // one. A person cannot right-click and scroll inside two frames, so nothing
+    // they actually did is lost by waiting that long to start listening.
+    if (!listeningForScroll) return;
     close(false);
   };
   const onDocDown = (e: MouseEvent): void => {
@@ -335,37 +366,10 @@ export function mountContextMenu(root: HTMLElement, deps: ContextMenuDeps): void
         close(true);
       };
     const selected = state.selection.ranges.filter((r) => !r.empty);
-    const selectedText = (): string => selected.map((r) => state.sliceDoc(r.from, r.to)).join('\n');
     const fs = formatStateAt(state, pos);
     const link = fs.codeBlock ? null : linkAt(state, pos);
     const code = fs.codeBlock ? codeAt(state, pos) : null;
     const task = fs.codeBlock ? null : taskAt(state, pos);
-
-    const items: MenuItem[] = [
-      {
-        kind: 'item',
-        label: 'Cut',
-        keyHint: 'Mod-x',
-        disabled: !selected.length,
-        run: cmd((v) => {
-          deps.copyToClipboard(selectedText());
-          v.dispatch({ ...v.state.replaceSelection(''), userEvent: 'delete.cut', scrollIntoView: true });
-        }),
-      },
-      { kind: 'item', label: 'Copy', keyHint: 'Mod-c', disabled: !selected.length, run: cmd(() => deps.copyToClipboard(selectedText())) },
-      {
-        kind: 'item',
-        label: 'Paste',
-        keyHint: 'Mod-v',
-        run: cmd(() => {
-          void (deps.readClipboard ?? readClipboardText)().then((text) => {
-            const v = deps.getView();
-            if (text) pasteText(v, text);
-          });
-        }),
-      },
-      { kind: 'item', label: 'Copy ref', run: cmd((v) => deps.copyToClipboard(buildRef(v, deps.getFileName()))) },
-    ];
 
     const context: MenuItem[] = [];
     if (link?.url) {
@@ -391,12 +395,12 @@ export function mountContextMenu(root: HTMLElement, deps: ContextMenuDeps): void
         run: cmd((v) => v.dispatch({ changes: { from: at, to: at + 1, insert: done ? ' ' : 'x' }, userEvent: 'input' })),
       });
     }
-    if (context.length) items.push({ kind: 'sep' }, ...context);
-
     // Inside code, Markdown markers would be typed into the code as literal text.
     // Front matter is YAML, and a marker or block prefix written there breaks it.
     const frontMatter = state.selection.ranges.some((r) => inFrontMatter(state, r.from) || inFrontMatter(state, r.to)) || inFrontMatter(state, pos);
     const noInline = fs.codeBlock || frontMatter;
+    // Bold, italic and strikethrough are off the menu but not off the document:
+    // Clear formatting still has something to clear when the caret sits in one.
     const anyMark = fs.bold || fs.italic || fs.strike || fs.code || fs.highlight || fs.link;
     const mark = (label: string, keyHint: string, marker: string, on: boolean): MenuItem => ({
       kind: 'item',
@@ -406,16 +410,6 @@ export function mountContextMenu(root: HTMLElement, deps: ContextMenuDeps): void
       disabled: noInline,
       run: cmd((v) => toggleWrap(v, marker)),
     });
-    items.push(
-      { kind: 'sep' },
-      mark('Bold', 'Mod-b', '**', fs.bold),
-      mark('Italic', 'Mod-i', '*', fs.italic),
-      mark('Strikethrough', 'Mod-Shift-x', '~~', fs.strike),
-      mark('Highlight', 'Mod-Shift-h', '==', fs.highlight),
-      mark('Inline code', 'Mod-e', '`', fs.code),
-      ...(link ? [] : [{ kind: 'item', label: 'Link', keyHint: 'Mod-k', disabled: noInline, run: cmd(insertLink) } as MenuItem]),
-      { kind: 'item', label: 'Clear formatting', disabled: noInline || (!selected.length && !anyMark), run: cmd(clearFormatting) }
-    );
 
     const current = blockKindOf(fs);
     const into = (label: string, kind: BlockKind, keyHint?: string): MenuItem => ({
@@ -428,15 +422,11 @@ export function mountContextMenu(root: HTMLElement, deps: ContextMenuDeps): void
       disabled: frontMatter || (fs.codeBlock && kind !== 'text' && kind !== 'code'),
       run: cmd((v) => turnInto(v, kind)),
     });
-    items.push(
-      { kind: 'sep' },
-      {
-        kind: 'item',
-        label: 'Edit Markdown',
-        keyHint: 'Mod-Alt-e',
-        disabled: !blockRangeAt(state, pos),
-        run: cmd((v) => void revealBlockAt(v, pos)),
-      },
+
+    // Converting the block you clicked comes first, and reading its raw Markdown
+    // second. Below them sit the marks the selection toolbar has no button for,
+    // then Copy ref and whatever the click itself turned up.
+    const items: MenuItem[] = [
       {
         kind: 'submenu',
         label: 'Turn into',
@@ -446,14 +436,40 @@ export function mountContextMenu(root: HTMLElement, deps: ContextMenuDeps): void
           into('Heading 1', 'h1', 'Mod-Alt-1'),
           into('Heading 2', 'h2', 'Mod-Alt-2'),
           into('Heading 3', 'h3', 'Mod-Alt-3'),
+          // Heading 4 to 6 have no shortcut of their own, so the rule above them is
+          // what says the three levels in daily use are a group.
+          { kind: 'sep' },
+          into('Heading 4', 'h4'),
+          into('Heading 5', 'h5'),
+          into('Heading 6', 'h6'),
           into('Bullet list', 'bullet', 'Mod-Shift-8'),
           into('Numbered list', 'ordered', 'Mod-Shift-7'),
           into('Task list', 'task', 'Mod-Alt-4'),
           into('Quote', 'quote', 'Mod-Shift-9'),
           into('Code block', 'code', 'Mod-Alt-8'),
         ],
-      }
-    );
+      },
+      {
+        kind: 'item',
+        label: 'Edit Markdown',
+        keyHint: 'Mod-Alt-e',
+        disabled: !blockRangeAt(state, pos),
+        run: cmd((v) => void revealBlockAt(v, pos)),
+      },
+      { kind: 'sep' },
+      mark('Highlight', 'Mod-Shift-h', '==', fs.highlight),
+      mark('Inline code', 'Mod-e', '`', fs.code),
+      ...(link ? [] : [{ kind: 'item', label: 'Link', keyHint: 'Mod-k', disabled: noInline, run: cmd(insertLink) } as MenuItem]),
+      { kind: 'item', label: 'Clear formatting', disabled: noInline || (!selected.length && !anyMark), run: cmd(clearFormatting) },
+      { kind: 'sep' },
+      { kind: 'item', label: 'Copy ref', keyHint: copyRefKey(), run: cmd((v) => deps.copyToClipboard(buildRef(v, deps.getFileName()))) },
+      // Beside Copy ref, because it is the same reference going somewhere else: to the terminal's
+      // prompt rather than the clipboard. Absent where the host has not offered it.
+      ...(deps.sendRefToTerminal
+        ? [{ kind: 'item', label: 'Send to terminal', keyHint: 'Mod-Shift-Alt-t', run: cmd(() => deps.sendRefToTerminal!()) } as MenuItem]
+        : []),
+    ];
+    if (context.length) items.push({ kind: 'sep' }, ...context);
     return items;
   }
 
@@ -536,6 +552,15 @@ export function mountContextMenu(root: HTMLElement, deps: ContextMenuDeps): void
     watch(view);
     openOn = view;
     place(x, y);
+    // A menu opened again before the last one's frames came round starts its own
+    // count; the sequence number keeps a stale callback from arming a newer menu.
+    listeningForScroll = false;
+    const seq = ++openSeq;
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        if (seq === openSeq) listeningForScroll = true;
+      })
+    );
     if (focusFirst) itemsOf(menu)[0]?.focus();
     document.addEventListener('mousedown', onDocDown, true);
     document.addEventListener('keydown', onKeyDown, true);
@@ -589,17 +614,32 @@ export function mountContextMenu(root: HTMLElement, deps: ContextMenuDeps): void
         {
           kind: 'item',
           label: 'Copy ref',
+          keyHint: copyRefKey(),
           run: () => {
             if (unchanged(view, doc)) deps.copyToClipboard(tableRowRef(deps.getFileName(), ref));
             close(true);
           },
         },
+        ...(deps.sendRefToTerminal
+          ? [
+              {
+                kind: 'item',
+                label: 'Send to terminal',
+                keyHint: 'Mod-Shift-Alt-t',
+                run: () => {
+                  if (unchanged(view, doc)) deps.sendRefToTerminal!();
+                  close(true);
+                },
+              } as MenuItem,
+            ]
+          : []),
         ...(actions.length ? [{ kind: 'sep' } as MenuItem] : []),
         ...actions.flatMap((a): MenuItem[] => [
           ...(a.separator ? [{ kind: 'sep' } as MenuItem] : []),
           {
             kind: 'item',
             label: a.label,
+            keyHint: a.keyHint,
             run: () => {
               if (unchanged(view, doc)) a.run();
               close(true);

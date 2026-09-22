@@ -186,7 +186,7 @@ export const scenarios: Scenario[] = [
       const stillSelected = cells[0].classList.contains('is-focus') || cells[0].classList.contains('is-sel');
       const sameTable = tableOf(p) === table;
       mouse(cells[1], 'dblclick', { clientY: y });
-      const editing = !!cells[1].querySelector('input, textarea');
+      const editing = !!cells[1].querySelector('.sheaf-table-input');
       const untouched = p.doc() === DOC;
       p.destroy();
       return selected && shown && !move.defaultPrevented && stillSelected && sameTable && editing && untouched;

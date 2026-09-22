@@ -56,13 +56,43 @@ export const scenarios: Scenario[] = [
   {
     name: 'square brackets with no matching definition keep their brackets and are not links',
     run: () => {
-      const p = mountProse(P0 + 'A claim.[^1] See [1] and [draft].\n\n> [!NOTE]\n\n- [~] not valid');
+      // `[!NOTES]` after other text, because at the very start of a quote it
+      // opens an alert and is drawn as a callout label; prose/alerts.ts covers that.
+      const p = mountProse(P0 + 'A claim.[^1] See [1] and [draft].\n\n> See [!NOTES]\n\n- [~] not valid');
       // The leading spaces are the ones after `>` and `-`, which quote and list rendering keep.
       const ok =
         line(p, 2) === 'A claim.[^1] See [1] and [draft].' &&
-        line(p, 4) === ' [!NOTE]' &&
+        line(p, 4) === ' See [!NOTES]' &&
         line(p, 6) === '•  [~] not valid' &&
         texts(p, '.tok-link').length === 0;
+      p.destroy();
+      return ok;
+    },
+  },
+  {
+    name: 'brackets inside a link’s text are part of the link, as GitHub reads them',
+    run: () => {
+      const doc = P0 + 'A [link [with] brackets](https://example.com).\n\nAn [image ![alt](a.png) in](https://example.com/b) link.';
+      const p = mountProse(doc);
+      // A link may hold an image, so the second line is one link around its image, as before.
+      const ok =
+        line(p, 2) === 'A link [with] brackets.' &&
+        same(texts(p, '.tok-link'), ['link [with] brackets', 'image alt in']) &&
+        p.doc() === doc;
+      p.destroy();
+      return ok;
+    },
+  },
+  {
+    name: 'a real link inside brackets is still the link, and the brackets around it stay as written',
+    run: () => {
+      // CommonMark: a link may not hold a link, so the inner one wins and the outer
+      // brackets are text. That is unchanged by reading `[with]` as text above.
+      const p = mountProse(P0 + 'Say [a [b](https://example.com/b) c](https://example.com/v) now.');
+      // The outer `(…)` is text too, and its address is a bare URL, as it is on GitHub.
+      const ok =
+        line(p, 2) === 'Say [a b c](https://example.com/v) now.' &&
+        same(texts(p, '.tok-link'), ['b', 'https://example.com/v']);
       p.destroy();
       return ok;
     },

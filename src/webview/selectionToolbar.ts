@@ -7,6 +7,10 @@
  * visible pane, and both drop out of sight when their text scrolls away. Whether
  * each one shows is decided from editor state (floatingState.ts); the plugin here
  * feeds that state the facts only the DOM knows: pointer, focus and source mode.
+ *
+ * The toolbar leads with Edit Markdown, the same command the block handle menu and
+ * the right-click menu run, so the raw Markdown behind a selection is one click away
+ * from the surface a selection opens.
  */
 
 import { EditorState, Extension } from '@codemirror/state';
@@ -22,6 +26,8 @@ import {
 } from './toolbar';
 import { hint, registerShortcutGroup } from './shortcuts';
 import { floatingIcon, FloatingIcon } from './floatingIcons';
+import { blockRangeAt } from './blockModel';
+import { revealRange } from './revealBlock';
 import {
   floatingField,
   inlineLinkAt,
@@ -46,17 +52,56 @@ const titled = (label: string, key?: string): string => (key ? `${label} (${hint
 
 /* ---- Turn into ------------------------------------------------------------ */
 
-const BLOCKS: { kind: BlockKind; label: string; key?: string }[] = [
+/*
+ * Every kind the menu can set, in the order it lists them. Heading 4 to 6 carry no
+ * shortcut, since Mod-Alt-4 is Task list and the run of digits cannot continue; a
+ * rule above Heading 4 keeps the three levels in daily use together.
+ */
+const BLOCKS: { kind: BlockKind; label: string; key?: string; separator?: boolean }[] = [
   { kind: 'text', label: 'Text', key: 'Mod-Alt-0' },
   { kind: 'h1', label: 'Heading 1', key: 'Mod-Alt-1' },
   { kind: 'h2', label: 'Heading 2', key: 'Mod-Alt-2' },
   { kind: 'h3', label: 'Heading 3', key: 'Mod-Alt-3' },
+  { kind: 'h4', label: 'Heading 4', separator: true },
+  { kind: 'h5', label: 'Heading 5' },
+  { kind: 'h6', label: 'Heading 6' },
   { kind: 'bullet', label: 'Bullet list', key: 'Mod-Shift-8' },
   { kind: 'ordered', label: 'Numbered list', key: 'Mod-Shift-7' },
   { kind: 'task', label: 'Task list', key: 'Mod-Alt-4' },
   { kind: 'quote', label: 'Quote', key: 'Mod-Shift-9' },
   { kind: 'code', label: 'Code block', key: 'Mod-Alt-8' },
 ];
+
+/* ---- Edit Markdown -------------------------------------------------------- */
+
+const REVEAL_LABEL = 'Edit Markdown';
+const REVEAL_KEY = 'Mod-Alt-e';
+
+/**
+ * Whether Edit Markdown has something to open for the current selection: a block
+ * around where the selection starts, which is neither the front matter nor a table.
+ * Front matter is metadata rather than prose, and a table grid carries its own
+ * control for the pipes behind it.
+ */
+function revealableBlock(state: EditorState): { from: number; to: number } | null {
+  const block = blockRangeAt(state, state.selection.main.from);
+  if (!block || block.kind === 'frontmatter' || block.kind === 'table') return null;
+  return block;
+}
+
+/**
+ * Open the raw Markdown of the block the selection sits in, the way the right-click
+ * menu's item does, and put the toolbar away so it is not floating over what was
+ * just revealed. The caret stays in the selection, which is inside the revealed
+ * span; it only moves when the selection ran past the block's end.
+ */
+function runReveal(view: EditorView): void {
+  const block = revealableBlock(view.state);
+  if (!block) return;
+  revealRange(view, block);
+  view.dispatch({ effects: setDismissed.of({ toolbar: true }) });
+  view.focus();
+}
 
 /* ---- Toolbar -------------------------------------------------------------- */
 
@@ -109,6 +154,29 @@ function createSelectionToolbar(view: EditorView): TooltipView {
   dom.addEventListener('mousedown', (e) => e.preventDefault());
 
   const buttons: HTMLButtonElement[] = [];
+
+  /*
+   * A table cell edits in an editor of its own, and two of this bar's controls mean
+   * nothing there. A cell holds one line of inline Markdown: it has no block to show
+   * the source of, and turning it into a heading would write `# ` into the cell,
+   * which no reader of the table renders as a heading. Both are left out rather than
+   * hidden, so the arrow keys do not stop on a button that is not there.
+   */
+  const inCell = !!view.dom.closest('.sheaf-table-input');
+
+  // Edit Markdown leads the bar: reaching the raw Markdown of what you just
+  // selected is the move this editor is built around, and a selection is the
+  // moment people want it.
+  const reveal = toolbarButton('source', titled(REVEAL_LABEL, REVEAL_KEY));
+  reveal.dataset.cmd = 'reveal';
+  reveal.addEventListener('click', () => {
+    if (!reveal.disabled) runReveal(view);
+  });
+  if (!inCell) {
+    buttons.push(reveal);
+    dom.append(reveal, separator());
+  }
+
   const markButtons = new Map<MarkButton, HTMLButtonElement>();
   for (const def of MARKS) {
     if (def.cmd === 'clear') dom.appendChild(separator());
@@ -136,7 +204,7 @@ function createSelectionToolbar(view: EditorView): TooltipView {
   triggerLabel.className = 'sheaf-seltb-trigger-label';
   trigger.appendChild(triggerLabel);
   trigger.insertAdjacentHTML('beforeend', floatingIcon('chevron', 'sheaf-tb-caret'));
-  buttons.push(trigger);
+  if (!inCell) buttons.push(trigger);
 
   const menu = doc.createElement('div');
   menu.className = 'sheaf-tb-menu sheaf-seltb-menu';
@@ -144,6 +212,12 @@ function createSelectionToolbar(view: EditorView): TooltipView {
   menu.setAttribute('aria-label', 'Turn into');
   menu.hidden = true;
   const items = BLOCKS.map((block) => {
+    if (block.separator) {
+      const rule = doc.createElement('div');
+      rule.className = 'sheaf-tb-menu-sep';
+      rule.setAttribute('role', 'separator');
+      menu.appendChild(rule);
+    }
     const item = doc.createElement('button');
     item.type = 'button';
     item.className = 'sheaf-tb-menu-item';
@@ -165,7 +239,7 @@ function createSelectionToolbar(view: EditorView): TooltipView {
     return item;
   });
   wrap.append(trigger, menu);
-  dom.appendChild(wrap);
+  if (!inCell) dom.appendChild(wrap);
 
   const onDocDown = (e: MouseEvent): void => {
     if (!wrap.contains(e.target as Node)) closeMenu(false);
@@ -192,14 +266,24 @@ function createSelectionToolbar(view: EditorView): TooltipView {
   // A click with no pointer detail came from the keyboard, which should land in the menu.
   trigger.addEventListener('click', (e) => (menu.hidden ? openMenu(e.detail === 0) : closeMenu(false)));
 
-  /** Roving focus: the focused button is the one Tab reaches. */
-  const focusButton = (index: number): void => {
+  /** Roving focus: the focused button is the one Tab reaches. A disabled button is stepped over. */
+  const focusButton = (index: number, step: 1 | -1 = 1): void => {
     const n = buttons.length;
-    const at = ((index % n) + n) % n;
+    let at = ((index % n) + n) % n;
+    for (let tries = 0; tries < n && buttons[at].disabled; tries++) at = (at + step + n) % n;
+    if (buttons[at].disabled) return;
     buttons.forEach((b, i) => (b.tabIndex = i === at ? 0 : -1));
     buttons[at].focus();
   };
   buttons[0].tabIndex = 0;
+
+  /** Keep the one tabbable button a button that can take focus. */
+  const syncRoving = (): void => {
+    const at = buttons.findIndex((b) => b.tabIndex === 0);
+    if (at >= 0 && !buttons[at].disabled) return;
+    const next = buttons.findIndex((b) => !b.disabled);
+    buttons.forEach((b, i) => (b.tabIndex = i === next ? 0 : -1));
+  };
 
   dom.addEventListener('keydown', (e) => {
     const claim = (): void => {
@@ -219,10 +303,10 @@ function createSelectionToolbar(view: EditorView): TooltipView {
       return;
     }
     const i = buttons.indexOf(active as HTMLButtonElement);
-    if (e.key === 'ArrowRight') claim(), focusButton(i < 0 ? 0 : i + 1);
-    else if (e.key === 'ArrowLeft') claim(), focusButton(i < 0 ? 0 : i - 1);
-    else if (e.key === 'Home') claim(), focusButton(0);
-    else if (e.key === 'End') claim(), focusButton(buttons.length - 1);
+    if (e.key === 'ArrowRight') claim(), focusButton(i < 0 ? 0 : i + 1, 1);
+    else if (e.key === 'ArrowLeft') claim(), focusButton(i < 0 ? 0 : i - 1, -1);
+    else if (e.key === 'Home') claim(), focusButton(0, 1);
+    else if (e.key === 'End') claim(), focusButton(buttons.length - 1, -1);
     else if (e.key === 'ArrowDown' && active === trigger) claim(), openMenu(true);
     else if (e.key === 'Escape') {
       claim();
@@ -233,6 +317,8 @@ function createSelectionToolbar(view: EditorView): TooltipView {
 
   const refresh = (state: EditorState): void => {
     const s = formatStateAt(state);
+    reveal.disabled = revealableBlock(state) === null;
+    syncRoving();
     for (const [def, btn] of markButtons) {
       if (def.active) {
         const on = def.active(s);
@@ -249,7 +335,7 @@ function createSelectionToolbar(view: EditorView): TooltipView {
     link.setAttribute('aria-label', linkLabel);
 
     const kind = blockKindOf(s);
-    const label = kind ? BLOCKS.find((b) => b.kind === kind)!.label : `Heading ${s.heading}`;
+    const label = BLOCKS.find((b) => b.kind === kind)!.label;
     triggerLabel.textContent = label;
     trigger.setAttribute('aria-label', `Turn into: ${label}`);
     items.forEach((item, i) => item.setAttribute('aria-checked', String(BLOCKS[i].kind === kind)));
@@ -285,7 +371,13 @@ function visibleSpace(view: EditorView): Rect {
   const doc = view.dom.ownerDocument;
   const win = doc.defaultView ?? window;
   const space = { left: 0, top: 0, right: win.innerWidth, bottom: win.innerHeight };
-  for (let el = view.dom.parentElement; el && el !== doc.body; el = el.parentElement) {
+  // A table cell's editor sits inside the document's editor, in a grid that scrolls
+  // sideways (and so computes as scrolling both ways). Measured from there, the
+  // space would be the table's own frame, with no room above the first row. The
+  // cell's toolbar is placed in the document's visible space instead, like any other.
+  let outer = view.dom;
+  for (let up = outer.parentElement?.closest('.cm-editor'); up; up = up.parentElement?.closest('.cm-editor')) outer = up as HTMLElement;
+  for (let el = outer.parentElement; el && el !== doc.body; el = el.parentElement) {
     const overflow = win.getComputedStyle(el).overflowY;
     if (overflow !== 'auto' && overflow !== 'scroll') continue;
     const r = el.getBoundingClientRect();

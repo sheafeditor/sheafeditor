@@ -168,6 +168,39 @@ export const scenarios: Scenario[] = [
     },
   },
   {
+    name: 'with reveal syntax on line, a list item selected to the start of the next one leaves the next one rendered',
+    run: () =>
+      withRevealOnLine(true, () => {
+        // Triple-clicking an item, or dragging to the end of it, selects its line
+        // break too, so the selection ends at the start of the next item.
+        const doc = '.\n\n- **Documents.** Prose here.\n- **Datatables.** Grids here.\n\nAfter.';
+        const p = mountProse(doc);
+        p.select(doc.indexOf('- **Documents'), doc.indexOf('- **Datatables'));
+        const lineOnly = line(p, 2) === '- **Documents.** Prose here.' && line(p, 3) === '•  Datatables. Grids here.';
+        // Dragged the other way, the same span reveals the same lines.
+        p.select(doc.indexOf('- **Datatables'), doc.indexOf('- **Documents'));
+        const backwards = line(p, 2) === '- **Documents.** Prose here.' && line(p, 3) === '•  Datatables. Grids here.';
+        // One character into the next item does reach it, so it shows as Markdown.
+        p.select(doc.indexOf('- **Documents'), doc.indexOf('- **Datatables') + 1);
+        const intoNext = line(p, 3) === '- **Datatables.** Grids here.';
+        const ok = lineOnly && backwards && intoNext && p.doc() === doc;
+        p.destroy();
+        return ok;
+      }),
+  },
+  {
+    name: 'with reveal syntax on line, a heading selected to the start of the line below leaves that line rendered',
+    run: () =>
+      withRevealOnLine(true, () => {
+        const doc = '.\n\n# Heading **one**\nNext *two*.';
+        const p = mountProse(doc);
+        p.select(doc.indexOf('# Heading'), doc.indexOf('Next'));
+        const ok = line(p, 2) === '# Heading **one**' && line(p, 3) === 'Next two.' && p.doc() === doc;
+        p.destroy();
+        return ok;
+      }),
+  },
+  {
     name: 'with reveal syntax on line off, a caret in a quote reveals nothing',
     run: () =>
       withRevealOnLine(false, () => {

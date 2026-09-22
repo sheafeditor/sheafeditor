@@ -5,5 +5,5 @@
  */
 
 export { activate, MARKDOWN_EXTENSIONS } from '../src/extension';
-export { MarkdownEditorProvider } from '../src/markdownEditorProvider';
+export { MarkdownEditorProvider, tableOfContentsOn } from '../src/markdownEditorProvider';
 export { syncDefaultEditorAssociation, PATTERNS } from '../src/defaultEditor';

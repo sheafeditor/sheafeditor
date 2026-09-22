@@ -13,6 +13,14 @@ Served on the last night of every month, and on any night the tender is cancelle
 | Spring onion | 1 stalk | 2 stalk | 3 stalk | 4 stalk | 6 stalk |
 | Real egg, if the tender brought any | 1 | 2 | 3 | 4 | 6 |
 
+<p align="center"><img src="tour/galley.svg" alt="The galley, with the noodle stores" width="420"></p>
+
+Everything below happens at that counter, in the pot on the left.
+
+![Three seats, two crew, one cat](<tour/mess deck.svg> "Quill's seat is the one facing the hatch")
+
+It is eaten at that table, which seats three and has never needed to.
+
 ## Method
 
 1. Bring the water to the boil. At station pressure that is 94 °C, so add a minute to everything.

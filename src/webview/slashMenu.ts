@@ -4,8 +4,15 @@
  *
  * `/` is an ordinary Markdown character, so the menu never gets in the way of a
  * slash typed on purpose. It opens only at a line start or right after whitespace
- * (a URL, a path or a fraction mid-word never opens it), Escape closes it and
- * leaves the typed text alone, and a filter that matches nothing closes it too.
+ * (a URL, a path or a fraction mid-word never opens it), and Escape closes it and
+ * leaves the typed text alone.
+ *
+ * A filter that matches nothing keeps the menu open and says so, because the usual
+ * reason for it is a typo: closing on the mistyped letter would make the person
+ * delete the whole command and start again, while staying open means one backspace
+ * brings the list back. What does close it for good is a sign the person has gone
+ * back to writing prose: a leading space, a second space, a newline, or a query
+ * long enough that it is no longer a command.
  */
 
 import { EditorSelection, EditorState, Extension, Prec, StateEffect, StateField } from '@codemirror/state';
@@ -14,29 +21,52 @@ import { syntaxTree } from '@codemirror/language';
 import { insertCsvTable, insertPipeTable } from './tables';
 import { insertDivider } from './toolbar';
 import { TurnIntoKind, replaceAndConvert } from './blockModel';
+import { FloatingIcon, floatingIcon } from './floatingIcons';
 
 export interface SlashItem {
   id: TurnIntoKind | 'table' | 'csv' | 'divider';
   label: string;
   keywords: string;
+  /** The icon the toolbar gives this command, so both surfaces read as one system. */
+  icon: FloatingIcon;
+  /**
+   * The Markdown a pick writes, shown at the right of the row so that reaching for
+   * the menu teaches the syntax rather than hiding it. It is the marker the command
+   * actually inserts; a command whose markup has no single spelling carries no hint,
+   * because an approximate one would teach the wrong thing.
+   */
+  hint?: string;
 }
 
 export const SLASH_ITEMS: SlashItem[] = [
-  { id: 'text', label: 'Text', keywords: 'paragraph plain' },
-  { id: 'h1', label: 'Heading 1', keywords: 'h1 # title' },
-  { id: 'h2', label: 'Heading 2', keywords: 'h2 ## subheading' },
-  { id: 'h3', label: 'Heading 3', keywords: 'h3 ###' },
-  { id: 'bullet', label: 'Bullet list', keywords: 'unordered ul -' },
-  { id: 'ordered', label: 'Numbered list', keywords: 'ordered ol 1.' },
-  { id: 'task', label: 'Task list', keywords: 'todo checkbox checklist [ ]' },
-  { id: 'quote', label: 'Quote', keywords: 'blockquote >' },
-  { id: 'code', label: 'Code block', keywords: 'fenced pre ```' },
-  { id: 'table', label: 'Table', keywords: 'pipe grid' },
-  { id: 'csv', label: 'CSV data table', keywords: 'tsv spreadsheet data grid' },
-  { id: 'divider', label: 'Divider', keywords: 'hr rule horizontal line ---' },
+  { id: 'text', label: 'Text', keywords: 'paragraph plain', icon: 'paragraph' },
+  { id: 'h1', label: 'Heading 1', keywords: 'h1 # title', icon: 'heading1', hint: '#' },
+  { id: 'h2', label: 'Heading 2', keywords: 'h2 ## subheading', icon: 'heading2', hint: '##' },
+  { id: 'h3', label: 'Heading 3', keywords: 'h3 ###', icon: 'heading3', hint: '###' },
+  // The deep levels have no shortcut, so typing the command is how they are reached
+  // from the keyboard. A person who types /h4 and gets nothing has met the same
+  // refusal as a menu that stops at three.
+  { id: 'h4', label: 'Heading 4', keywords: 'h4 ####', icon: 'heading4', hint: '####' },
+  { id: 'h5', label: 'Heading 5', keywords: 'h5 #####', icon: 'heading5', hint: '#####' },
+  { id: 'h6', label: 'Heading 6', keywords: 'h6 ######', icon: 'heading6', hint: '######' },
+  { id: 'bullet', label: 'Bullet list', keywords: 'unordered ul -', icon: 'bulletList', hint: '-' },
+  { id: 'ordered', label: 'Numbered list', keywords: 'ordered ol 1.', icon: 'orderedList', hint: '1.' },
+  { id: 'task', label: 'Task list', keywords: 'todo checkbox checklist [ ]', icon: 'taskList', hint: '- [ ]' },
+  { id: 'quote', label: 'Quote', keywords: 'blockquote >', icon: 'quote', hint: '>' },
+  { id: 'code', label: 'Code block', keywords: 'fenced pre ```', icon: 'codeBlock', hint: '```' },
+  { id: 'table', label: 'Table', keywords: 'pipe grid', icon: 'table', hint: '|' },
+  // The data table is a fenced block with a language on it, so what a pick writes is
+  // the fence and `csv` together. Neither half alone is the syntax, so the row is bare.
+  { id: 'csv', label: 'CSV data table', keywords: 'tsv spreadsheet data grid', icon: 'dataTable' },
+  { id: 'divider', label: 'Divider', keywords: 'hr rule horizontal line ---', icon: 'divider', hint: '---' },
 ];
 
-/** The items whose label or keywords have a word starting with each word of `query`. */
+/*
+ * The items whose label or keywords have a word starting with each word of `query`.
+ * The Markdown hint is there to be read, never to be matched: a person typing `|`
+ * after the slash is not asking for a table, and searching the hints would pull up
+ * rows with nothing on them to explain the match.
+ */
 export function filterSlashItems(query: string): SlashItem[] {
   const tokens = query.toLowerCase().split(/\s+/).filter(Boolean);
   return SLASH_ITEMS.filter((item) => {
@@ -125,11 +155,13 @@ export const slashField = StateField.define<SlashState | null>({
     if (state.doc.lineAt(head).number !== state.doc.lineAt(value.from).number) return null;
     if (value.queryFrom > value.from && state.doc.sliceString(value.from, value.queryFrom) !== '/') return null;
     const query = state.doc.sliceString(value.queryFrom, head);
-    if (!validQuery(query) || filterSlashItems(query).length === 0) return null;
+    if (!validQuery(query)) return null;
     let selected = query === value.query ? value.selected : 0;
     for (const e of tr.effects) if (e.is(moveSlash)) selected = e.value;
+    // A changed query starts back at the first item, so a backspace that brings
+    // the list back comes back with that item highlighted and ready for Enter.
     const n = filterSlashItems(query).length;
-    selected = ((selected % n) + n) % n;
+    selected = n === 0 ? 0 : ((selected % n) + n) % n;
     return { ...value, query, selected };
   },
 });
@@ -172,15 +204,41 @@ function whenOpen(run: (view: EditorView, menu: NonNullable<ReturnType<typeof sl
   };
 }
 
+/** Insert the highlighted item. False when there is nothing listed, so the key falls through. */
+function pickHighlighted(view: EditorView): boolean {
+  const menu = slashMenuOf(view.state);
+  if (!menu || menu.items.length === 0) return false;
+  pickSlashItem(view, menu.items[menu.selected]);
+  return true;
+}
+
 const slashKeymap = Prec.highest(
   keymap.of([
+    // The arrows and Tab belong to the menu while it is open, whether or not it
+    // lists anything: with nothing listed they do nothing rather than move the
+    // caret or indent the line out from under it.
     { key: 'ArrowDown', run: whenOpen((v, m) => v.dispatch({ effects: moveSlash.of(m.selected + 1) })) },
     { key: 'ArrowUp', run: whenOpen((v, m) => v.dispatch({ effects: moveSlash.of(m.selected - 1) })) },
-    { key: 'Enter', run: whenOpen((v, m) => pickSlashItem(v, m.items[m.selected])) },
-    { key: 'Tab', run: whenOpen((v, m) => pickSlashItem(v, m.items[m.selected])) },
+    { key: 'Tab', run: (v) => pickHighlighted(v) || slashMenuOf(v.state) !== null },
+    // Enter is the exception. With nothing to insert it is left to the document,
+    // so it breaks the line as it would anywhere else and the menu closes with it.
+    { key: 'Enter', run: pickHighlighted },
     { key: 'Escape', run: whenOpen((v) => v.dispatch({ effects: closeSlash.of(null) })) },
   ])
 );
+
+/**
+ * Put a list that opened at the caret just below the line at `coords`, or above it
+ * when there is no room below, kept inside the window, with its highlighted row in view.
+ */
+export function placeListAt(dom: HTMLElement, coords: { left: number; top: number; bottom: number }): void {
+  const height = dom.offsetHeight;
+  const below = coords.bottom + 4;
+  const top = below + height > window.innerHeight && coords.top - height - 4 > 0 ? coords.top - height - 4 : below;
+  dom.style.left = `${Math.max(4, Math.min(coords.left, window.innerWidth - dom.offsetWidth - 4))}px`;
+  dom.style.top = `${Math.max(4, top)}px`;
+  dom.querySelector('.is-selected')?.scrollIntoView?.({ block: 'nearest' });
+}
 
 /** Draws the open menu next to the caret. */
 const slashView = ViewPlugin.fromClass(
@@ -208,12 +266,37 @@ const slashView = ViewPlugin.fromClass(
       }
       const dom = this.dom;
       dom.replaceChildren();
+      if (menu.items.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'sheaf-slash-empty';
+        empty.setAttribute('role', 'option');
+        empty.setAttribute('aria-disabled', 'true');
+        empty.setAttribute('aria-selected', 'false');
+        empty.textContent = 'No matching blocks';
+        dom.appendChild(empty);
+      }
       menu.items.forEach((item, index) => {
         const row = document.createElement('div');
         row.className = 'sheaf-slash-item' + (index === menu.selected ? ' is-selected' : '');
         row.setAttribute('role', 'option');
         row.setAttribute('aria-selected', String(index === menu.selected));
-        row.textContent = item.label;
+        // The icon and the hint are decoration. A screen reader reads the row as its
+        // label alone, which is the name the person is looking for in the list.
+        const icon = document.createElement('span');
+        icon.className = 'sheaf-slash-icon';
+        icon.setAttribute('aria-hidden', 'true');
+        icon.innerHTML = floatingIcon(item.icon);
+        const label = document.createElement('span');
+        label.className = 'sheaf-slash-label';
+        label.textContent = item.label;
+        row.append(icon, label);
+        if (item.hint) {
+          const hint = document.createElement('span');
+          hint.className = 'sheaf-slash-hint';
+          hint.setAttribute('aria-hidden', 'true');
+          hint.textContent = item.hint;
+          row.appendChild(hint);
+        }
         row.addEventListener('mousedown', (e) => {
           e.preventDefault();
           pickSlashItem(this.view, item);
@@ -229,13 +312,7 @@ const slashView = ViewPlugin.fromClass(
           }
         },
         write: (coords) => {
-          if (!coords || !this.dom) return;
-          const height = this.dom.offsetHeight;
-          const below = coords.bottom + 4;
-          const top = below + height > window.innerHeight && coords.top - height - 4 > 0 ? coords.top - height - 4 : below;
-          this.dom.style.left = `${Math.max(4, Math.min(coords.left, window.innerWidth - this.dom.offsetWidth - 4))}px`;
-          this.dom.style.top = `${Math.max(4, top)}px`;
-          this.dom.querySelector('.is-selected')?.scrollIntoView?.({ block: 'nearest' });
+          if (coords && this.dom) placeListAt(this.dom, coords);
         },
       });
     }

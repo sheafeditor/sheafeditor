@@ -20,10 +20,16 @@
  *     nothing goes above front matter. Inside code, in front matter, on a blank line
  *     and with a text selection they still move lines, but never across a front
  *     matter fence, since a line crossing one changes what the front matter holds.
+ *
+ * One click enters block selection too: a click on a drawn rule selects the rule
+ * as a block, since a caret beside its hidden characters would put typing inside
+ * them.
  */
 
-import { EditorState, Extension, Prec } from '@codemirror/state';
+import { EditorSelection, EditorState, Extension, Prec } from '@codemirror/state';
 import { EditorView, keymap } from '@codemirror/view';
+import { syntaxTree } from '@codemirror/language';
+import { SyntaxNode } from '@lezer/common';
 import { formatStateAt } from './formatState';
 import { registerShortcutGroup } from './shortcuts';
 import {
@@ -35,6 +41,7 @@ import {
   moveBlock,
   navigateBlocks,
   selectBlockAt,
+  setBlockSelection,
 } from './blockModel';
 import { slashMenu } from './slashMenu';
 import { blockHandle } from './blockHandle';
@@ -161,4 +168,96 @@ const caretKeymap = keymap.of([
   { key: 'Alt-ArrowDown', run: altMove(1) },
 ]);
 
-export const blockEditing: Extension = [blockSelectionField, slashMenu, blockModeKeymap, caretKeymap, blockHandle];
+/**
+ * The span a click on the line `target` is in selects, when that line draws a
+ * rule: the rule's block, or for a rule inside a quote or a list item, where the
+ * block is the whole quote or item, the rule's own characters. Null when the line
+ * draws no rule. A line that draws a rule holds nothing else a press could be aimed
+ * at, so the whole line counts, not only the thin `hr` inside it.
+ */
+function ruleClickSpan(view: EditorView, target: EventTarget | null): { from: number; to: number } | null {
+  const el = target as Element | null;
+  if (!el || typeof el.closest !== 'function') return null;
+  const line = el.closest('.cm-line');
+  // A cell editor nested inside this one answers its own presses.
+  if (!line || line.closest('.cm-content') !== view.contentDOM) return null;
+  const hr = line.querySelector('hr.md-hr');
+  if (!hr) return null;
+  let pos: number;
+  try {
+    pos = view.posAtDOM(hr);
+  } catch {
+    return null;
+  }
+  for (let node: SyntaxNode | null = syntaxTree(view.state).resolveInner(pos, 1); node; node = node.parent) {
+    if (node.name !== 'HorizontalRule') continue;
+    const block = blockRangeAt(view.state, node.from);
+    return block && block.kind === 'rule' ? { from: block.from, to: block.to } : { from: node.from, to: node.to };
+  }
+  return null;
+}
+
+/**
+ * A click on a drawn rule selects the rule as a block, as Escape on its line does.
+ * The rule's characters are hidden, so a caret at either end of them is a caret
+ * inside Markdown nobody can see: typing there wrote `Z---` and the rule became
+ * text, and Edit Markdown had nothing to open because the press never reached the
+ * editor. Selected, the rule shows it is selected, Edit Markdown shows its dashes,
+ * typing replaces it, and Backspace deletes it.
+ *
+ * It is a selection style rather than a mousedown handler that dispatches, for the
+ * reason given at paragraphTripleClick: a selection made inside CodeMirror's own
+ * gesture is written to the DOM by CodeMirror, so nothing stale is read back after
+ * it. ruleSelectedAsBlock then marks that selection as the rule's block. A drag
+ * that starts on the rule and leaves it selects from the rule to the pointer. Only
+ * a plain single click is taken; Shift, a modifier, or a second click is
+ * CodeMirror's, as anywhere else.
+ */
+const ruleClick = EditorView.mouseSelectionStyle.of((view, event) => {
+  if (event.button !== 0 || event.detail > 1 || event.shiftKey || event.metaKey || event.ctrlKey || event.altKey) {
+    return null;
+  }
+  const found = ruleClickSpan(view, event.target);
+  if (!found) return null;
+  let { from, to } = found;
+  return {
+    get: (e) => {
+      const whole = EditorSelection.single(from, to);
+      if (e.clientX === event.clientX && e.clientY === event.clientY) return whole;
+      const pos = view.posAtCoords({ x: e.clientX, y: e.clientY });
+      if (pos == null || (pos >= from && pos <= to)) return whole;
+      return pos < from ? EditorSelection.single(to, pos) : EditorSelection.single(from, pos);
+    },
+    update: (update) => {
+      if (update.docChanged) {
+        from = update.changes.mapPos(from, 1);
+        to = update.changes.mapPos(to, -1);
+      }
+      return false;
+    },
+  };
+});
+
+/** A pointer selection that is exactly a rule's block enters block selection mode on it. */
+const ruleSelectedAsBlock = EditorState.transactionExtender.of((tr) => {
+  if (!tr.selection || tr.docChanged || !tr.isUserEvent('select.pointer')) return null;
+  const { ranges, main } = tr.selection;
+  if (ranges.length !== 1 || main.empty) return null;
+  const state = tr.startState;
+  const line = state.doc.lineAt(main.from);
+  if (line.from !== main.from || line.to !== main.to) return null;
+  const block = blockRangeAt(state, main.from);
+  if (!block || block.kind !== 'rule' || block.from !== main.from || block.to !== main.to) return null;
+  const span = { from: block.from, to: block.to };
+  return { effects: setBlockSelection.of({ anchor: span, head: span }) };
+});
+
+export const blockEditing: Extension = [
+  blockSelectionField,
+  slashMenu,
+  blockModeKeymap,
+  caretKeymap,
+  blockHandle,
+  ruleClick,
+  ruleSelectedAsBlock,
+];

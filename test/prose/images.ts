@@ -13,6 +13,7 @@ import {
   setResourceBaseUri,
   setupImageIngestion,
 } from '../../src/webview/images';
+import { setLivePreviewConfig } from '../../src/webview/livePreview';
 
 type P = ReturnType<typeof mountProse>;
 
@@ -20,6 +21,23 @@ type P = ReturnType<typeof mountProse>;
 const mount = (doc: string): P => {
   setResourceBaseUri('https://res.test/');
   return mountProse(doc);
+};
+
+/**
+ * Mount with the setting Sheaf ships, where a selection shows no syntax. The
+ * suite otherwise runs with the opt-in that reveals a selected line's source,
+ * which would turn a selected image back into its Markdown.
+ */
+const mountShipped = (doc: string): P => {
+  setLivePreviewConfig({ revealSyntaxOnLine: false });
+  const p = mount(doc);
+  return {
+    ...p,
+    destroy: () => {
+      p.destroy();
+      setLivePreviewConfig({ revealSyntaxOnLine: true });
+    },
+  };
 };
 
 /** Mount against `base`, restoring the suite's own base once `fn` has run. */
@@ -85,15 +103,36 @@ const insertImage = (p: P, name: string, savedAs: string): Promise<void> => {
   return insertImageFiles(p.view, [pngFile(name)]);
 };
 
-/** Open the Alt editor on a rendered image, type `value` and press Enter. */
-const setAlt = (p: P, value: string): boolean => {
-  if (!clickToolbar(p, 'Alt')) return false;
+/** Insert `name` at the caret, with the host refusing the save for `reason`. */
+const insertRefusedImage = (p: P, name: string, reason: string): Promise<void> => {
+  setupImageIngestion(p.view, (message) => {
+    handleImageSaved((message as { id: string }).id, undefined, reason);
+  });
+  return insertImageFiles(p.view, [pngFile(name)]);
+};
+
+/** Click a toolbar button by its tooltip, for the ones drawn as an icon. */
+const clickTitled = (p: P, title: string): boolean => {
+  const button = Array.from(p.view.contentDOM.querySelectorAll<HTMLElement>('.md-img-btn')).find(
+    (el) => el.title === title
+  );
+  if (!button) return false;
+  button.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+  return true;
+};
+
+/** Type `value` into the inline editor the named toolbar button opens, then press Enter. */
+const setText = (p: P, button: string, value: string): boolean => {
+  if (!clickToolbar(p, button)) return false;
   const input = p.view.contentDOM.querySelector<HTMLInputElement>('.md-img-input');
   if (!input) return false;
   input.value = value;
   input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
   return true;
 };
+
+/** Open the Alt editor on a rendered image, type `value` and press Enter. */
+const setAlt = (p: P, value: string): boolean => setText(p, 'Alt', value);
 
 export const scenarios: Scenario[] = [
   {
@@ -160,6 +199,18 @@ export const scenarios: Scenario[] = [
         p.doc() === doc;
       p.destroy();
       return ok;
+    },
+  },
+  {
+    name: 'an image under a list item shows as the picture, with its controls',
+    run: () => {
+      const doc = '- Item:\n\n  ![T](t.png)\n\n- Last\n';
+      const p = mount(doc);
+      p.select(doc.indexOf('Last') + 2);
+      const n = images(p).length;
+      const buttons = p.view.contentDOM.querySelectorAll('.md-img-btn').length;
+      p.destroy();
+      return n === 1 && buttons > 0;
     },
   },
   {
@@ -369,6 +420,127 @@ export const scenarios: Scenario[] = [
     },
   },
   {
+    name: 'captioning a centred image leaves it centred',
+    run: () => {
+      const doc =
+        'Before.\n\n<p align="center"><img src="assets/rye-loaf.png" alt="Loaf" width="300"></p>\n\nAfter.\n';
+      const p = mount(doc);
+      p.select(doc.indexOf('After.') + 2);
+      const typed = setText(p, 'Caption', 'Cap');
+      const ok =
+        typed &&
+        p.doc() ===
+          'Before.\n\n<div align="center"><figure><img src="assets/rye-loaf.png" alt="Loaf" width="300"><figcaption>Cap</figcaption></figure></div>\n\nAfter.\n' &&
+        wraps(p)[0].classList.contains('md-img-align-center') &&
+        p.view.contentDOM.querySelector('.md-figcaption')?.textContent === 'Cap';
+      p.destroy();
+      return ok;
+    },
+  },
+  {
+    name: 'aligning a captioned image writes the alignment, rather than leaving the file as it was',
+    run: () => {
+      const doc =
+        'Before.\n\n<figure><img src="assets/rye-loaf.png" alt="Loaf" width="300"><figcaption>Cap</figcaption></figure>\n\nAfter.\n';
+      const p = mount(doc);
+      p.select(doc.indexOf('After.') + 2);
+      const clicked = clickTitled(p, 'Align center');
+      const ok =
+        clicked &&
+        p.doc() ===
+          'Before.\n\n<div align="center"><figure><img src="assets/rye-loaf.png" alt="Loaf" width="300"><figcaption>Cap</figcaption></figure></div>\n\nAfter.\n';
+      p.destroy();
+      return ok;
+    },
+  },
+  {
+    name: 'a captioned image shows the alignment its wrapper carries, and gives the wrapper back untouched',
+    run: () => {
+      const doc =
+        'Before.\n\n<div align="center"><figure><img src="assets/rye-loaf.png" alt="Loaf" width="300"><figcaption>Cap</figcaption></figure></div>\n\nAfter.\n';
+      const p = mount(doc);
+      p.select(doc.indexOf('After.') + 2);
+      const ok =
+        images(p).length === 1 &&
+        wraps(p)[0].classList.contains('md-img-align-center') &&
+        p.view.contentDOM.querySelector('.md-figcaption')?.textContent === 'Cap' &&
+        !screen(p).includes('<div align') &&
+        p.doc() === doc;
+      p.destroy();
+      return ok;
+    },
+  },
+  {
+    name: 'a captioned image written over several lines inside an aligned wrapper shows as the picture',
+    run: () => {
+      const doc =
+        'Before.\n\n<div align="center">\n  <figure>\n    <img src="assets/rye-loaf.png" alt="Loaf" width="300">\n    <figcaption>Cap</figcaption>\n  </figure>\n</div>\n\nAfter.\n';
+      const p = mount(doc);
+      p.select(doc.indexOf('After.') + 2);
+      const ok =
+        images(p).length === 1 &&
+        wraps(p)[0].classList.contains('md-img-align-center') &&
+        p.view.contentDOM.querySelector('.md-figcaption')?.textContent === 'Cap' &&
+        p.doc() === doc;
+      p.destroy();
+      return ok;
+    },
+  },
+  {
+    name: 'turning the alignment off a captioned image takes the wrapper away with it',
+    run: () => {
+      const doc =
+        'Before.\n\n<div align="center"><figure><img src="assets/rye-loaf.png" alt="Loaf" width="300"><figcaption>Cap</figcaption></figure></div>\n\nAfter.\n';
+      const p = mount(doc);
+      p.select(doc.indexOf('After.') + 2);
+      const clicked = clickTitled(p, 'Align center');
+      const ok =
+        clicked &&
+        p.doc() ===
+          'Before.\n\n<figure><img src="assets/rye-loaf.png" alt="Loaf" width="300"><figcaption>Cap</figcaption></figure>\n\nAfter.\n';
+      p.destroy();
+      return ok;
+    },
+  },
+  {
+    name: 'taking the caption off a centred figure leaves the paragraph form that centres a lone image',
+    run: () => {
+      const doc =
+        'Before.\n\n<div align="center"><figure><img src="assets/rye-loaf.png" alt="Loaf" width="300"><figcaption>Cap</figcaption></figure></div>\n\nAfter.\n';
+      const p = mount(doc);
+      p.select(doc.indexOf('After.') + 2);
+      const typed = setText(p, 'Caption ✓', '');
+      const ok =
+        typed &&
+        p.doc() ===
+          'Before.\n\n<p align="center"><img src="assets/rye-loaf.png" alt="Loaf" width="300"></p>\n\nAfter.\n';
+      p.destroy();
+      return ok;
+    },
+  },
+  {
+    name: 'an image the host cannot save links nothing and says why, rather than doing nothing',
+    run: async () => {
+      const doc = 'Paste here\n\nAfter the image.\n';
+      const p = mount(doc);
+      p.select(doc.indexOf('\n'));
+      const reason = 'Sheaf: save the document before pasting images.';
+      const { ok, said } = await (async () => {
+        const collected: string[] = [];
+        const previous = console.warn;
+        console.warn = (...args: unknown[]): void => void collected.push(args.map(String).join(' '));
+        try {
+          await insertRefusedImage(p, 'image.png', reason);
+          return { ok: p.doc() === doc, said: collected };
+        } finally {
+          console.warn = previous;
+        }
+      })();
+      p.destroy();
+      return ok && said.length === 1 && said[0].includes(reason);
+    },
+  },
+  {
     name: 'an image resolves against a base written as a plain path',
     run: () => {
       const doc = 'Intro.\n\n![Loaf](assets/rye-loaf.png)\n\n![Rooted](/shared/dot.png)\n\nAfter.\n';
@@ -431,6 +603,141 @@ export const scenarios: Scenario[] = [
       p.select(doc.indexOf('\n') + 1);
       await insertImage(p, 'image.png', 'assets/image.png');
       const ok = p.doc() === 'Paste here\n![image](assets/image.png)\n\nAfter the image.\n';
+      p.destroy();
+      return ok;
+    },
+  },
+  {
+    // jsdom has no layout, so the look of the grip and its hit area are a real
+    // window's to judge. What is checked is what assistive technology reads and
+    // what the grip is drawn from: a corner bracket over a halo.
+    name: 'the resize handle is a named corner grip, drawn as a bracket over a halo',
+    run: () => {
+      const doc = 'Before.\n\n![A loaf](assets/rye-loaf.png)\n\nAfter.\n';
+      const p = mount(doc);
+      p.select(doc.indexOf('After.') + 2);
+      const handle = p.view.contentDOM.querySelector<HTMLElement>('.md-img-handle');
+      const grip = handle?.querySelector('svg.md-img-grip');
+      const ok =
+        !!handle &&
+        handle.getAttribute('aria-label') === 'Resize image' &&
+        handle.getAttribute('role') === 'button' &&
+        !!grip &&
+        grip.getAttribute('aria-hidden') === 'true' &&
+        grip.querySelector('.md-img-grip-halo') !== null &&
+        grip.querySelector('.md-img-grip-line') !== null &&
+        p.doc() === doc;
+      p.destroy();
+      return ok;
+    },
+  },
+  {
+    name: 'the resize grip of a captioned image sits on the picture, not beside the caption',
+    run: () => {
+      const doc =
+        'Before.\n\n<figure><img src="assets/rye-loaf.png" alt="A loaf" width="400"><figcaption>Seeded rye</figcaption></figure>\n\nAfter.\n';
+      const p = mount(doc);
+      p.select(doc.indexOf('After.') + 2);
+      const handle = p.view.contentDOM.querySelector<HTMLElement>('.md-img-handle');
+      const frame = handle?.parentElement;
+      const ok =
+        !!frame &&
+        frame.classList.contains('md-img-frame') &&
+        frame.querySelector('img.md-img') !== null &&
+        frame.querySelector('.md-figcaption') === null &&
+        p.doc() === doc;
+      p.destroy();
+      return ok;
+    },
+  },
+  {
+    // The editor paints a selection behind the content, where an opaque
+    // picture covers it, so a selected image is marked for a ring drawn on top.
+    // jsdom checks the mark; how the ring looks over a picture is a real window's.
+    name: 'selecting an image marks it as selected, and moving the selection off clears the mark',
+    run: () => {
+      const image = '![A loaf](assets/rye-loaf.png)';
+      const doc = `Before.\n\n${image}\n\nAfter.\n`;
+      const p = mountShipped(doc);
+      const from = doc.indexOf(image);
+      p.select(doc.indexOf('After.') + 2);
+      const before = wraps(p)[0]?.classList.contains('is-selected');
+      p.select(from, from + image.length);
+      const selected = wraps(p)[0]?.classList.contains('is-selected');
+      p.select(doc.indexOf('After.') + 2);
+      const cleared = wraps(p)[0]?.classList.contains('is-selected');
+      const ok = before === false && selected === true && cleared === false && p.doc() === doc;
+      p.destroy();
+      return ok;
+    },
+  },
+  {
+    name: 'a selection across words and an image in a sentence marks the image, and only the image',
+    run: () => {
+      const image = '![dot](assets/dot.png)';
+      const doc = `Intro.\n\nHere is a dot ${image} mid-paragraph ${image} again.\n\nAfter.\n`;
+      const p = mountShipped(doc);
+      const first = doc.indexOf(image);
+      // From inside "dot" to inside "mid": the first image whole, the second not at all.
+      p.select(first - 2, first + image.length + 4);
+      const [inside, outside] = wraps(p);
+      const across =
+        wraps(p).length === 2 &&
+        inside.classList.contains('is-selected') &&
+        !outside.classList.contains('is-selected') &&
+        p.view.contentDOM.querySelectorAll('.is-selected').length === 1;
+      // A selection that covers only part of the image's source does not select it.
+      p.select(first + 3, first + image.length + 4);
+      const partial = !wraps(p).some((w) => w.classList.contains('is-selected'));
+      const ok = across && partial && p.doc() === doc;
+      p.destroy();
+      return ok;
+    },
+  },
+  {
+    name: 'a selected captioned image is marked around the picture and its caption',
+    run: () => {
+      const figure =
+        '<figure><img src="assets/rye-loaf.png" alt="A loaf" width="400"><figcaption>Seeded rye</figcaption></figure>';
+      const doc = `Before.\n\n${figure}\n\nAfter.\n`;
+      const p = mountShipped(doc);
+      const from = doc.indexOf(figure);
+      p.select(from, from + figure.length);
+      const wrap = wraps(p)[0];
+      const ok =
+        !!wrap &&
+        wrap.classList.contains('is-selected') &&
+        wrap.querySelector('.md-img-fig .md-figcaption')?.textContent === 'Seeded rye' &&
+        p.doc() === doc;
+      p.destroy();
+      return ok;
+    },
+  },
+  {
+    name: 'a selected image written over several lines of HTML is marked',
+    run: () => {
+      const block = '<p align="center">\n  <img src="assets/loaf.png" alt="Centred" width="400">\n</p>';
+      const doc = `Intro.\n\n${block}\n\nAfter.\n`;
+      const p = mountShipped(doc);
+      const from = doc.indexOf(block);
+      // Selecting the paragraph around it takes the image with it.
+      p.select(0, from + block.length + 2);
+      const ok = wraps(p)[0]?.classList.contains('is-selected') === true && p.doc() === doc;
+      p.destroy();
+      return ok;
+    },
+  },
+  {
+    name: 'Backspace on a selected image deletes the image and nothing else',
+    run: () => {
+      const image = '![A loaf](assets/rye-loaf.png)';
+      const doc = `Before.\n\n${image}\n\nAfter.\n`;
+      const p = mountShipped(doc);
+      const from = doc.indexOf(image);
+      p.select(from, from + image.length);
+      const marked = wraps(p)[0]?.classList.contains('is-selected') === true;
+      p.press('Backspace');
+      const ok = marked && p.doc() === 'Before.\n\n\n\nAfter.\n' && wraps(p).length === 0;
       p.destroy();
       return ok;
     },

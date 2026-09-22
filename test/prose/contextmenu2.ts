@@ -44,48 +44,43 @@ async function keyboardPaste(doc: string, at: number, text: string): Promise<str
   return out;
 }
 
-/** The document after choosing Paste from the right-click menu with `text` on the clipboard. */
-async function menuPaste(doc: string, at: number, text: string): Promise<string> {
-  const p = mountProse(doc);
-  p.select(at);
-  const m = openMenu(p, { readClipboard: async () => text });
-  m.item('Paste')!.click();
-  await tick();
-  await tick();
-  const out = p.doc();
-  m.close();
-  p.destroy();
-  return out;
-}
-
 export const scenarios: Scenario[] = [
   {
-    name: 'menu Paste turns a copied spreadsheet range into a pipe table, as Cmd+V does',
+    name: 'Cmd+V turns a copied spreadsheet range into a pipe table, and the menu offers no Paste of its own',
     run: async () => {
       const range = 'fruit\tqty\nkiwi\t2';
       const doc = 'Numbers below\n';
-      const byMenu = await menuPaste(doc, doc.length, range);
       const byKeys = await keyboardPaste(doc, doc.length, range);
-      const table = byMenu.includes('| fruit | qty |') && !byMenu.includes('\t') && byMenu === byKeys;
-      // Inside a code block both leave the tab-separated text as it is.
+      const table = byKeys.includes('| fruit | qty |') && !byKeys.includes('\t');
+      // Inside a code block the tab-separated text is left as it is.
       const code = '```\n\n```';
-      const inCodeByMenu = await menuPaste(code, 4, range);
-      const inCodeByKeys = await keyboardPaste(code, 4, range);
-      const codeKept = inCodeByMenu === '```\nfruit\tqty\nkiwi\t2\n```' && inCodeByMenu === inCodeByKeys;
+      const codeKept = (await keyboardPaste(code, 4, range)) === '```\nfruit\tqty\nkiwi\t2\n```';
       // Plain text still lands at the caret.
-      const plain = (await menuPaste('hello ', 6, 'world')) === 'hello world';
-      return table && codeKept && plain;
+      const plain = (await keyboardPaste('hello ', 6, 'world')) === 'hello world';
+      // Pasting is the keyboard's and the platform menu bar's, so the right-click menu drops it.
+      const p = mountProse(doc);
+      p.select(doc.length);
+      const m = openMenu(p);
+      const noItem = !m.item('Paste');
+      m.close();
+      p.destroy();
+      return table && codeKept && plain && noItem;
     },
   },
   {
     name: 'the right-click menu closes when the document scrolls, and stays open while the menu itself scrolls',
-    run: () => {
+    run: async () => {
+      // The scrolls here are the person's, so each one waits past the grace the
+      // menu gives the gesture that opened it. Scrolling inside that window is the
+      // opening click's own doing and is covered by its own scenario.
+      const settle = (): Promise<void> => new Promise((r) => setTimeout(r, 60));
       const p = mountProse('# Title\n\nA paragraph of text.\n\n- [ ] a task');
       p.select(12);
       const m = openMenu(p);
       const openBefore = m.shown();
       // Scrolling a long submenu, or the menu itself, keeps it open.
       m.item('Turn into')!.click();
+      await settle();
       for (const el of Array.from(document.querySelectorAll<HTMLElement>('.sheaf-ctx-menu'))) {
         el.dispatchEvent(new G.Event('scroll'));
       }
@@ -96,6 +91,7 @@ export const scenarios: Scenario[] = [
       // A menu opened again closes on the next scroll as well.
       const m2 = openMenu(p);
       const reopened = m2.shown();
+      await settle();
       p.view.scrollDOM.dispatchEvent(new G.Event('scroll'));
       const closedAgain = !m2.shown();
       m2.close();

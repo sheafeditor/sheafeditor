@@ -14,6 +14,7 @@ import { scenarios as contextmenu } from './prose/contextmenu';
 import { scenarios as contextmenu2 } from './prose/contextmenu2';
 import { scenarios as marks } from './prose/marks';
 import { scenarios as turnInto } from './prose/turnInto';
+import { scenarios as headingLevels } from './prose/headingLevels';
 import { scenarios as slash } from './prose/slash';
 import { scenarios as slashInBlocks } from './prose/slashInBlocks';
 import { scenarios as linkPopoverMoves } from './prose/linkPopoverMoves';
@@ -21,17 +22,32 @@ import { scenarios as altArrow } from './prose/altArrow';
 import { scenarios as blockModelFixes } from './prose/blockModelFixes';
 import { scenarios as keys } from './prose/keys';
 import { scenarios as renderInline } from './prose/renderInline';
+import { scenarios as inlineHtml } from './prose/inlineHtml';
 import { scenarios as lineToggles } from './prose/lineToggles';
 import { scenarios as codeLanguages } from './prose/codeLanguages';
 import { scenarios as tableGrip } from './prose/tableGrip';
+import { scenarios as tableStyling } from './prose/tableStyling';
 import { scenarios as renderBlocks } from './prose/renderBlocks';
 import { scenarios as insertCommands } from './prose/insertCommands';
 import { scenarios as blockDrag } from './prose/blockDrag';
 import { scenarios as linkOpen } from './prose/linkOpen';
+import { scenarios as linkPaste } from './prose/linkPaste';
 import { scenarios as shortcutsOverlay } from './prose/shortcutsOverlay';
 import { scenarios as images } from './prose/images';
 import { scenarios as hardBreaks } from './prose/hardBreaks';
 import { scenarios as revealBlock } from './prose/revealBlock';
+import { scenarios as tripleClick } from './prose/tripleClick';
+import { scenarios as selectionExtent } from './prose/selectionExtent';
+import { scenarios as sourceMode } from './prose/sourceMode';
+import { scenarios as strikethrough } from './prose/strikethrough';
+import { scenarios as codeBlockSelection } from './prose/codeBlockSelection';
+import { scenarios as toolbarControls } from './prose/toolbarControls';
+import { scenarios as contentWidth } from './prose/contentWidth';
+import { scenarios as alerts } from './prose/alerts';
+import { scenarios as tableOfContents } from './prose/tableOfContents';
+import { scenarios as maths } from './prose/maths';
+import { scenarios as changeMarks } from './prose/changeMarks';
+import { scenarios as linkComplete } from './prose/linkComplete';
 
 interface Result {
   name: string;
@@ -52,6 +68,7 @@ export async function runAll(): Promise<Result[]> {
     ...contextmenu2,
     ...marks,
     ...turnInto,
+    ...headingLevels,
     ...slash,
     ...slashInBlocks,
     ...linkPopoverMoves,
@@ -59,17 +76,32 @@ export async function runAll(): Promise<Result[]> {
     ...blockModelFixes,
     ...keys,
     ...renderInline,
+    ...inlineHtml,
     ...lineToggles,
     ...codeLanguages,
     ...tableGrip,
+    ...tableStyling,
     ...renderBlocks,
     ...insertCommands,
     ...blockDrag,
     ...linkOpen,
+    ...linkPaste,
     ...shortcutsOverlay,
     ...images,
     ...hardBreaks,
     ...revealBlock,
+    ...tripleClick,
+    ...selectionExtent,
+    ...sourceMode,
+    ...strikethrough,
+    ...codeBlockSelection,
+    ...toolbarControls,
+    ...contentWidth,
+    ...alerts,
+    ...tableOfContents,
+    ...maths,
+    ...changeMarks,
+    ...linkComplete,
   ] as Scenario[]) {
     try {
       const ok = await s.run();

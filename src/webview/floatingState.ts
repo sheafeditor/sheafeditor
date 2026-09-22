@@ -13,7 +13,7 @@ export interface FloatingState {
   pointerDown: boolean;
   /** The editor shows raw Markdown (`.source-mode` on an ancestor). */
   sourceMode: boolean;
-  /** Escape or a focus change closed the toolbar; it comes back when the selection changes. */
+  /** Escape or a focus change closed the toolbar; it comes back when the selection changes or is made again. */
   toolbarDismissed: boolean;
   /** Escape or a focus change closed the link popover; it comes back when the selection changes. */
   popoverDismissed: boolean;
@@ -36,6 +36,11 @@ export const floatingField = StateField.define<FloatingState>({
     if (tr.docChanged && next.hoverLink != null) patch({ hoverLink: tr.changes.mapPos(next.hoverLink, 1) });
     if (tr.selection && !tr.selection.eq(tr.startState.selection)) {
       patch({ toolbarDismissed: false, popoverDismissed: false, hoverLink: null });
+    } else if (tr.selection && tr.isUserEvent('select')) {
+      // Selecting again what is already selected (Cmd+A over text that is all
+      // selected, a double-click on the selected word) is still a selection someone
+      // made, so the toolbar comes back for it.
+      patch({ toolbarDismissed: false });
     }
     for (const effect of tr.effects) {
       if (effect.is(setPointerDown)) patch({ pointerDown: effect.value });
@@ -65,13 +70,16 @@ function enclosing(state: EditorState, pos: number, match: (node: Node) => boole
   return null;
 }
 
-/** A pipe table or a ```csv / ```tsv block, both of which render as an editable grid. */
+/**
+ * A pipe table, a ```csv / ```tsv block or a ```view block, each of which renders as a
+ * grid. The language is the first word of the info string, so ```csv id=tasks counts.
+ */
 function isGrid(state: EditorState, node: Node): boolean {
   if (node.name === 'Table') return true;
   if (node.name !== 'FencedCode') return false;
   const m = /^\s*(?:`{3,}|~{3,})[ \t]*([^\n`]*)/.exec(state.sliceDoc(node.from, node.to));
-  const info = m ? m[1].trim().toLowerCase() : '';
-  return info === 'csv' || info === 'tsv';
+  const lang = m ? m[1].trim().split(/[ \t]+/)[0].toLowerCase() : '';
+  return lang === 'csv' || lang === 'tsv' || lang === 'view';
 }
 
 const isCode = (node: Node): boolean => node.name === 'FencedCode' || node.name === 'CodeBlock';

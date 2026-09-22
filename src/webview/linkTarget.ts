@@ -129,6 +129,9 @@ export function headingPosition(state: EditorState, id: string): number | null {
   const wanted = headingSlug(id);
   if (!wanted) return null;
   let found = null as number | null;
+  // A heading whose name repeats an earlier one answers to that name with `-1`, `-2`
+  // after it, the way GitHub numbers them, so each of them can be linked to.
+  const seen = new Map<string, number>();
   syntaxTree(state).iterate({
     enter: (node) => {
       if (found !== null) return false;
@@ -139,7 +142,10 @@ export function headingPosition(state: EditorState, id: string): number | null {
         .split('\n')[0]
         .replace(/^#+\s*/, '')
         .replace(/\s+#+\s*$/, '');
-      if (headingSlug(text) === wanted) found = node.from;
+      const slug = headingSlug(text);
+      const count = seen.get(slug) ?? 0;
+      seen.set(slug, count + 1);
+      if ((count === 0 ? slug : `${slug}-${count}`) === wanted) found = node.from;
       return false;
     },
   });

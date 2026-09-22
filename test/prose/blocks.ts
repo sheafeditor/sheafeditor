@@ -355,13 +355,13 @@ export const scenarios: Scenario[] = [
       p.destroy();
       return (
         all.join('|') ===
-          'Text|Heading 1|Heading 2|Heading 3|Bullet list|Numbered list|Task list|Quote|Code block|Table|CSV data table|Divider' &&
-        headings.join('|') === 'Heading 1|Heading 2|Heading 3'
+          'Text|Heading 1|Heading 2|Heading 3|Heading 4|Heading 5|Heading 6|Bullet list|Numbered list|Task list|Quote|Code block|Table|CSV data table|Divider' &&
+        headings.join('|') === 'Heading 1|Heading 2|Heading 3|Heading 4|Heading 5|Heading 6'
       );
     },
   },
   {
-    name: 'Escape dismisses the slash menu and keeps the typed text, and no match dismisses it',
+    name: 'Escape dismisses the slash menu and keeps the typed text, and no match leaves it open with nothing listed',
     run: () => {
       const p = mountProse('');
       type(p, '/hea');
@@ -370,11 +370,11 @@ export const scenarios: Scenario[] = [
       p.destroy();
       const q = mountProse('');
       type(q, '/zzz');
-      const none = slashMenuOf(q.view.state) === null && q.doc() === '/zzz';
+      const none = slashMenuOf(q.view.state)?.items.length === 0 && q.doc() === '/zzz';
       type(q, 'a');
-      const staysClosed = slashMenuOf(q.view.state) === null;
+      const staysOpen = slashMenuOf(q.view.state)?.items.length === 0;
       q.destroy();
-      return escaped && none && staysClosed;
+      return escaped && none && staysOpen;
     },
   },
   {
@@ -461,7 +461,9 @@ export const scenarios: Scenario[] = [
       const single = copied;
       setBlockRefHost(null);
       p.destroy();
-      return !without && multi === 'docs/guide.md:3-4\n\n```\npara one\nline two\n```\n' && single === 'docs/guide.md:1\n';
+      // A one-line block carries its line too, so the ref says what is there as
+      // well as where it is.
+      return !without && multi === 'docs/guide.md:3-4\n\n```\npara one\nline two\n```\n' && single === 'docs/guide.md:1\n\n```\n# A\n```\n';
     },
   },
   {
@@ -491,7 +493,7 @@ export const scenarios: Scenario[] = [
       const p = mountProse(doc);
       insertParagraphBelow(p.view, blockRangeAt(p.view.state, 0)!);
       const added = p.doc() === '# A\n\n\n\n# B' && p.view.state.selection.main.head === 5;
-      const open = slashMenuOf(p.view.state)?.items.length === 12;
+      const open = slashMenuOf(p.view.state)?.items.length === 15;
       type(p, 'h1');
       p.press('Enter');
       const converted = p.doc() === '# A\n\n# \n\n# B';

@@ -23,6 +23,10 @@ xychart-beta
     bar [3.2, 3.3, 5.3, 4]
 ```
 
+<img src="tour/stores.svg" alt="The stores locker, bin \[8\] empty" width="240" align="right">
+
+Bin 8 has been empty since the 17th. The yard acknowledged the request and has not scheduled it.
+
 ## Work plan
 
 ```mermaid
@@ -44,6 +48,12 @@ gantt
         Calibrate feed                :         c2,     2244-12-07, 1d
         Calibrate feed                :         c3,     2245-01-04, 1d
 ```
+
+<figure><img src="tour/bench.svg" alt="Bench 2, with the good multimeter" width="640"><figcaption>Bench 2. The good multimeter is the one that reads to four places, and it does not leave this bench.</figcaption></figure>
+
+<img src="tour/moth.svg" alt="MOTH-3" height="90">
+
+MOTH-3 does the outside half of this schedule. Six legs, one opinion, and a service interval nobody has ever met.
 
 ## Calibration schedule
 

@@ -64,4 +64,40 @@ export const scenarios: Scenario[] = [
       });
     },
   },
+  {
+    name: 'the shortcut that opens the overlay closes it again, from inside the panel where the editor cannot hear it',
+    run: () => {
+      // Opening moves focus into the panel, so the editor's keymap is never offered
+      // this key. It has to be answered where the focus actually is.
+      const press = (el: HTMLElement, init: Record<string, unknown>): boolean =>
+        el.dispatchEvent(new (globalThis as any).KeyboardEvent('keydown', { key: '/', bubbles: true, cancelable: true, ...init }));
+      const closesWith = (init: Record<string, unknown>): boolean => {
+        const s = setup();
+        s.overlay.toggle();
+        const opened = s.overlay.isOpen();
+        const wentOn = press(s.panel, init);
+        const ok = opened && !s.overlay.isOpen() && s.inDocument() && !wentOn;
+        s.destroy();
+        return ok;
+      };
+      const staysWith = (init: Record<string, unknown>): boolean => {
+        const s = setup();
+        s.overlay.toggle();
+        const ok = s.overlay.isOpen();
+        press(s.panel, init);
+        const still = s.overlay.isOpen();
+        s.destroy();
+        return ok && still;
+      };
+      return (
+        closesWith({ metaKey: true }) &&
+        closesWith({ ctrlKey: true }) &&
+        // A slash on its own is a slash, and the modified spellings belong to
+        // whatever else claims them.
+        staysWith({}) &&
+        staysWith({ metaKey: true, shiftKey: true }) &&
+        staysWith({ metaKey: true, altKey: true })
+      );
+    },
+  },
 ];

@@ -7,7 +7,8 @@
 import { EditorState, Extension, Prec } from '@codemirror/state';
 import { EditorView, keymap, drawSelection, dropCursor, highlightActiveLine } from '@codemirror/view';
 import { history, historyKeymap, defaultKeymap } from '@codemirror/commands';
-import { markdown, markdownLanguage, markdownKeymap, insertNewlineContinueMarkupCommand } from '@codemirror/lang-markdown';
+import { markdown, commonmarkLanguage, markdownKeymap, insertNewlineContinueMarkupCommand } from '@codemirror/lang-markdown';
+import { markdownDialect } from './markdownDialect';
 import { formatStateAt } from './formatState';
 import { languages } from '@codemirror/language-data';
 import { indentUnit, LanguageDescription } from '@codemirror/language';
@@ -15,11 +16,13 @@ import { livePreview, revealField } from './livePreview';
 import { tables } from './tables';
 import { notionTheme } from './theme';
 import { buildEditingKeymap } from './shortcuts';
-import { Highlight } from './highlight';
 import { searchSupport } from './search';
 import { selectionToolbar } from './selectionToolbar';
+import { textSelectionLayer } from './selectionHighlight';
 import { blockEditing } from './blocks';
 import { pendingMarks } from './toolbar';
+import { changeMarks } from './changeMarks';
+import { linkComplete } from './linkComplete';
 
 /**
  * Short fence names people write for common languages, mapped to a name the
@@ -124,11 +127,20 @@ function endEmptyBlock(view: EditorView): boolean {
 export function editorExtensions(onShowShortcuts: () => void): Extension[] {
   return [
     history(),
+    // drawSelection() draws the cursor and hides the native selection; its
+    // selection boxes are replaced by one confined to the selected text.
     drawSelection(),
+    textSelectionLayer,
     dropCursor(),
     highlightActiveLine(),
     EditorState.allowMultipleSelections.of(true),
-    markdown({ base: markdownLanguage, codeLanguages: codeLanguageFor, extensions: [Highlight], addKeymap: false }),
+    // `pasteURLAsLink` is off because Sheaf answers that paste itself, in
+    // linkPaste.ts, and two handlers for one gesture is two sets of rules. The
+    // one here reads any address-shaped text, so a clipboard holding several
+    // lines that happen to start with a scheme is written into a destination
+    // that cannot hold them, and it escapes nothing, so a bracket in the chosen
+    // words ends the label early.
+    markdown({ base: commonmarkLanguage, codeLanguages: codeLanguageFor, extensions: markdownDialect, addKeymap: false, pasteURLAsLink: false }),
     // Markdown's Enter and Backspace, at the high precedence markdown() would give
     // them, with Sheaf's Enter for an empty list item or quote line ahead of them.
     Prec.high(keymap.of([{ key: 'Enter', run: endEmptyBlock, stopPropagation: true }, ...markdownKeymap])),
@@ -142,7 +154,9 @@ export function editorExtensions(onShowShortcuts: () => void): Extension[] {
     searchSupport,
     selectionToolbar,
     blockEditing,
+    linkComplete,
     pendingMarks,
+    changeMarks(),
     notionTheme,
     // Our editing shortcuts win first (Tab indent, headings, marks), then
     // Markdown's Enter/Backspace list continuation, then CM defaults.

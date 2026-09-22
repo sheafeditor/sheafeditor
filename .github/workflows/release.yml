@@ -44,6 +44,14 @@ jobs:
             exit 1
           fi
 
+      # People who watch the repository for releases receive the release notes
+      # and nothing else, so the notes are the version's CHANGELOG.md entry.
+      # Checked before the build so a tag with no entry fails before anything
+      # is published.
+      - name: Extract the release notes from CHANGELOG.md
+        if: github.ref_type == 'tag'
+        run: node scripts/changelog-notes.mjs "$GITHUB_REF_NAME" > "$RUNNER_TEMP/release-notes.md"
+
       - name: Install dependencies
         run: npm ci
 
@@ -79,7 +87,7 @@ jobs:
             "${{ steps.vsix.outputs.path }}" \
             "${{ steps.attest.outputs.bundle-path }}#provenance.sigstore.json" \
             --title "$GITHUB_REF_NAME" \
-            --generate-notes
+            --notes-file "$RUNNER_TEMP/release-notes.md"
 
       # The `secrets` context cannot be read from a step `if:`, so the presence
       # of the token becomes a step output the condition below can see. This

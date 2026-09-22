@@ -9,6 +9,7 @@ Open any of these in the Extension Development Host (<kbd>F5</kbd>) with **Sheaf
 | Directory | What it is for |
 | :--- | :--- |
 | [`sample/`](.) | One file per construct family. The fastest way to check a specific feature. |
+| [`sample/dialect/`](dialect/) | Every construct, split by dialect: plain CommonMark, what GitHub adds on top, what Sheaf adds on top of that. The three together are the fastest way to eyeball a change, and the place to decide whether a difference against another renderer is a bug or a dialect. |
 | [`sample/docs/`](docs/) | Realistic documents of the kinds people actually keep in a repo. Read these to judge whether the editor feels right, not just whether it parses. |
 | [`sample/edge/`](edge/) | Ambiguous, hostile, and non-ASCII input. Where rendering bugs live. |
 | [`sample/stress/`](stress/) | Generated bulk — long documents, big tables, thousands of rows. Performance, not correctness. |
@@ -22,7 +23,9 @@ Open any of these in the Extension Development Host (<kbd>F5</kbd>) with **Sheaf
 | File | Covers |
 | :--- | :--- |
 | [welcome.md](welcome.md) | The first-run document; opens automatically on <kbd>F5</kbd> |
-| [kitchen-sink.md](kitchen-sink.md) | Every construct at least once, in one screen-and-a-bit |
+| [dialect/commonmark.md](dialect/commonmark.md) | CommonMark 0.31.2 and nothing else; should render identically anywhere |
+| [dialect/github.md](dialect/github.md) | Only what GFM adds, with the spec extensions separated from the site conventions |
+| [dialect/sheaf.md](dialect/sheaf.md) | Only what Sheaf adds: highlight, one-tilde strike, emoji, data blocks, maths, image attributes |
 | [text-formatting.md](text-formatting.md) | Inline emphasis, code, links, escapes |
 | [blocks.md](blocks.md) | Headings, quotes, rules, front matter |
 | [lists.md](lists.md) | Bullets, ordered lists, nesting, tasks |

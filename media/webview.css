@@ -4,6 +4,16 @@
  * whatever color theme the user runs.
  */
 
+/*
+ * KaTeX's metrics and fonts, for typeset maths. The file is written into media/
+ * by the build from the copy in node_modules, with the font paths pointed at
+ * media/katex-fonts/, and both ship inside the extension: a webview has no
+ * network to rely on, and an equation has to look the same however the machine
+ * is connected. It is imported here rather than linked from the page because
+ * relative font URLs resolve against the stylesheet that names them.
+ */
+@import url('katex.css');
+
 :root {
   /* Notion's live text column is ~708px; react-notion-x uses 720px. */
   --md-content-width: 708px;
@@ -58,6 +68,29 @@ body {
   flex: 1 1 auto;
   min-height: 0;
   overflow: auto;
+  /* The table-of-contents rail is positioned against this box, which is exactly the
+     area below the toolbar, so the rail starts where the document does. */
+  position: relative;
+}
+
+/* ---- A .csv or .tsv file shown as one grid -------------------------------- */
+
+/* The whole page is the grid. What edits prose has nothing to act on here. */
+.sheaf-csv-mode .sheaf-toolbar,
+.sheaf-csv-mode .sheaf-block-handle,
+.sheaf-csv-mode .sheaf-block-drop,
+.sheaf-csv-mode .sheaf-seltb,
+.sheaf-csv-mode .sheaf-slash-menu {
+  display: none !important;
+}
+
+/* Said in place of the editor, for a file too large to open in one. */
+.sheaf-notice {
+  max-width: 60ch;
+  margin: 48px auto;
+  padding: 0 24px;
+  color: var(--md-muted);
+  line-height: 1.5;
 }
 
 /* ---- Formatting toolbar -------------------------------------------------- */
@@ -74,8 +107,10 @@ body {
   position: relative;
   z-index: 2;
   user-select: none;
-  /* A narrow window wraps the buttons onto a second row; nothing scrolls out of
-     reach and the dropdown menus are never clipped by the bar. */
+  /* A genuinely narrow window wraps the buttons onto a second row; nothing scrolls
+     out of reach and the dropdown menus are never clipped by the bar. Spacing gives
+     way first: the tightening at 900px below is what keeps an ordinary pane on one
+     row. */
   flex-wrap: wrap;
   row-gap: 2px;
 }
@@ -142,6 +177,116 @@ body {
   flex: 1 1 auto;
 }
 
+/* ---- Table of contents --------------------------------------------------- */
+
+/*
+ * The rail listing the document's headings, in the page margin CodeMirror's centred
+ * column already leaves empty on the right.
+ *
+ * It is positioned out of flow on purpose. The column's width is a setting and its
+ * position is arithmetic CodeMirror does in its own theme, so anything that took
+ * horizontal space here would move the text the moment the panel opened. Out of flow,
+ * the text is where it was and the rail simply covers margin.
+ *
+ * `--sheaf-toc-top` is the scroller's own top padding (theme.ts), so the first entry
+ * sits level with the first line of text. `--sheaf-toc-width` is the width
+ * tableOfContents.ts measures the margin against; the two have to be the same number.
+ */
+:root {
+  --sheaf-toc-width: 220px;
+  --sheaf-toc-top: 56px;
+}
+
+.sheaf-toc {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: var(--sheaf-toc-width);
+  padding: var(--sheaf-toc-top) 14px 32px 8px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  font-family: var(--md-font);
+  font-size: 12.5px;
+  line-height: 1.45;
+  /* Above the text it sits beside, and below the toolbar's menus (z-index 2). */
+  z-index: 1;
+}
+
+.sheaf-toc[hidden] {
+  display: none;
+}
+
+.sheaf-toc-entry {
+  display: block;
+  padding: 3px 6px 3px 10px;
+  border-left: 2px solid transparent;
+  border-radius: 0 4px 4px 0;
+  color: var(--md-muted);
+  text-decoration: none;
+  cursor: pointer;
+  /* One line each: a long heading is cut short and its full text is in the tooltip. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sheaf-toc-entry:hover {
+  color: var(--md-text);
+  background: color-mix(in srgb, var(--md-text) 8%, transparent);
+}
+
+.sheaf-toc-entry:focus-visible {
+  outline: 1px solid var(--md-link);
+  outline-offset: -1px;
+}
+
+/* The heading being read: the normal foreground, and an accent bar down its left edge. */
+.sheaf-toc-entry.is-current {
+  color: var(--md-text);
+  border-left-color: var(--md-link);
+}
+
+/* Depth, as indentation. H1 sits flush; each level in by one step. */
+.sheaf-toc-h2 {
+  padding-left: 24px;
+}
+.sheaf-toc-h3 {
+  padding-left: 38px;
+}
+
+.sheaf-toc-empty {
+  margin: 0;
+  padding: 3px 6px 3px 10px;
+  color: var(--md-muted);
+  font-style: italic;
+}
+
+/*
+ * Too narrow for a rail: the list becomes a panel over the right-hand edge of the
+ * text, opened from the toolbar and closed by picking an entry or pressing Escape.
+ */
+.sheaf-toc.is-overlay {
+  background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+  border-left: 1px solid var(--vscode-editorWidget-border, var(--md-rule));
+  box-shadow: -4px 0 12px var(--vscode-widget-shadow, transparent);
+  transform: translateX(100%);
+}
+
+.sheaf-toc.is-overlay.is-open {
+  transform: translateX(0);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .sheaf-toc.is-overlay {
+    transition: transform 140ms ease-out;
+  }
+  /* Only while an entry is being followed, so nothing else in the editor glides. */
+  .sheaf-toc-gliding {
+    scroll-behavior: smooth;
+  }
+}
+
 /* ---- Heading dropdown ---------------------------------------------------- */
 
 .sheaf-tb-dropdown {
@@ -187,6 +332,13 @@ body {
 .sheaf-tb-menu-item:hover {
   background: color-mix(in srgb, var(--md-text) 10%, transparent);
 }
+/* The same rule the right-click and block menus draw, so a break between groups
+   looks the same wherever a menu is reached from. */
+.sheaf-tb-menu-sep {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--md-rule);
+}
 .sheaf-tb-menu-key {
   flex: 0 0 auto;
   font-family: var(--md-mono);
@@ -208,17 +360,108 @@ body {
      vertical caret motion near the table to the wrong line. */
   padding: 0.5em 0;
 }
+/* A table inside a blockquote: the grid replaces the quoted lines, so it carries
+   the quote's bar, the same rule and indent as the lines around it. */
+.sheaf-table.is-quoted {
+  border-left: 3px solid var(--md-rule);
+  padding-left: 0.9em;
+}
 .sheaf-table-grid {
   overflow-x: auto;
   /* Contribute no intrinsic width to the editor: a table wider than the text
      column scrolls inside its own frame instead of widening the whole editor. */
   contain: inline-size;
 }
+/*
+ * Once its columns are laid out and found to fit, the frame stops being a
+ * scroller. An element that scrolls on one axis is a scroll container on both,
+ * and a sticky header row inside one sticks to it rather than to the editor. A
+ * table that fits has nothing to scroll sideways, so this is what lets its header
+ * stay in view as the editor scrolls past (see `thead tr` below). A table wider
+ * than the pane keeps its scrolling frame, and tables.ts lifts its header instead.
+ */
+.sheaf-table.has-widths:not(.is-scroll-x) > .sheaf-table-grid {
+  overflow-x: visible;
+}
+/* Opaque, and above the rows, so the rows it passes over do not show through it. */
+.sheaf-table thead tr {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  background: var(--vscode-editor-background);
+}
+.sheaf-table thead tr.is-stuck > th {
+  box-shadow: 0 1px 0 var(--md-rule);
+}
+/*
+ * The width here is the starting point and usually not the finishing one. As
+ * soon as the frame has been laid out, columnLayout.ts measures the columns and
+ * replaces both of these with a pixel width and a `<colgroup>`, which is what
+ * makes `table-layout: fixed` take effect and what lets the frame above scroll.
+ * Until then, and in a webview that has never been shown, the table is drawn the
+ * way it always was.
+ */
 .sheaf-table table {
   border-collapse: collapse;
   width: 100%;
   font-size: 0.92em;
   line-height: 1.5;
+}
+
+/*
+ * The throwaway copy the columns are measured from: the header row and the few
+ * widest cells of each column, drawn with the same rules as the grid so the
+ * widths it reads are the grid's own. It is laid out and never seen.
+ *
+ * It takes no space at all. The table inside is asked to be as wide as its
+ * widest row, which for a table of sentences is far wider than the editor, and
+ * an element that size would put a scrollbar across the whole document for the
+ * frame it exists in. Clipping it to nothing keeps it out of everything's
+ * scrollable area while leaving its own layout, which is the only thing being
+ * read, untouched.
+ */
+.sheaf-table-probe {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+/* Said aloud, shown to nobody: the frame scrolls and there is more to the side. */
+.sheaf-table-note {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/*
+ * A table too wide for its frame fades out at whichever edge has more table
+ * beyond it, so a column cut off mid-word reads as "there is more this way"
+ * rather than as a rendering fault. Only ever set on a table that really does
+ * scroll, so an ordinary table pays nothing for it.
+ *
+ * A mask reads nothing but the alpha channel of the gradient it is given, so
+ * the colour in these is there to be opaque and is never drawn. `currentColor`
+ * keeps the rule from carrying a colour value that does not mean anything.
+ */
+.sheaf-table.is-scroll-end .sheaf-table-grid {
+  mask-image: linear-gradient(to right, currentColor calc(100% - 28px), transparent);
+}
+.sheaf-table.is-scroll-start .sheaf-table-grid {
+  mask-image: linear-gradient(to left, currentColor calc(100% - 28px), transparent);
+}
+.sheaf-table.is-scroll-start.is-scroll-end .sheaf-table-grid {
+  mask-image: linear-gradient(to right, transparent, currentColor 28px, currentColor calc(100% - 28px), transparent);
 }
 .sheaf-table th,
 .sheaf-table td {
@@ -234,36 +477,60 @@ body {
   padding: 6px 12px;
 }
 /*
- * Wrap cell text at word boundaries only. The editor's line wrapping allows a
- * break anywhere, which let a squeezed column shrink to one character a line
- * ("Reg / ion"). A table too wide for the column scrolls sideways instead.
+ * Wrap between words, and break inside one only when the word is wider than the
+ * column it is in and there is nowhere else for it to go.
+ *
+ * `break-word` is doing something precise here and `anywhere` would not do. Both
+ * stop a long word overflowing its cell, but only `anywhere` also lowers the
+ * column's minimum width, all the way down to one character. That minimum is
+ * what tells the layout how narrow a column may be squeezed before the table has
+ * to scroll instead, so with `anywhere` there would be no width at which it ever
+ * scrolled, and every column would go on shrinking into the stack of single
+ * syllables this rule used to say it was avoiding. `break-word` leaves the
+ * minimum at the column's longest word, which is exactly the number the layout
+ * wants.
  */
 .sheaf-table th,
 .sheaf-table td {
-  overflow-wrap: normal;
+  overflow-wrap: break-word;
   word-break: normal;
+  /* At least one line of text and its padding, even in a row with nothing in it. */
+  height: calc(1.5em + 12px);
+}
+
+/*
+ * A cell whose text runs past four lines is drawn at four (tables.ts decides
+ * which, from the layout). The clamp is on the text's own element and never on
+ * the cell: it needs `display: -webkit-box` and `overflow: hidden`, which on the
+ * cell would clip its border and the controls it carries, and which would cut off
+ * the caret in an open cell, so the active cell and an open one are never clamped.
+ * Its whole text is its tooltip. `line-clamp` is the standard spelling and ships
+ * beside the prefixed one that browsers read today.
+ */
+.sheaf-table .is-clamped > .sheaf-table-text {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+  line-clamp: 4;
+  overflow: hidden;
+}
+
+/* A column of numbers draws every digit at one width, so its figures line up. */
+.sheaf-table td.is-numeric {
+  font-variant-numeric: tabular-nums;
 }
 .sheaf-table th {
   font-weight: 600;
   background: color-mix(in srgb, var(--md-text) 5%, transparent);
-}
-.sheaf-table tbody tr:nth-child(even) td {
-  background: color-mix(in srgb, var(--md-text) 3%, transparent);
 }
 .sheaf-table th:hover,
 .sheaf-table td:hover {
   background: color-mix(in srgb, var(--md-link) 8%, transparent);
 }
 
-/* A CSV field's own line breaks show as line breaks. */
+/* A CSV field is drawn as its exact text: its line breaks and its spaces show as written. */
 .sheaf-table.is-csv td,
 .sheaf-table.is-csv th {
-  white-space: pre-line;
-}
-.sheaf-table-input.is-multiline {
-  display: block;
-  resize: none;
-  line-height: inherit;
   white-space: pre-wrap;
 }
 
@@ -293,21 +560,39 @@ body {
   outline-offset: -2px;
 }
 
-/* Row-number gutter and top-left corner double as row/column/all selectors. */
-.sheaf-table-gutter,
-.sheaf-table-corner {
+/*
+ * Row-number gutter and top-left corner double as row/column/all selectors. They
+ * are the frame around the grid rather than part of it, so both the fill and the
+ * digits stay under the weight of the cell text beside them: a margin down the
+ * side of the table, not another column of data. The digits fade toward the page
+ * they sit on, which is the same colour the fill is laid over.
+ *
+ * Nothing paints beneath them, so the fill can stay translucent. It is faint
+ * enough to vanish in a high-contrast theme, and that is deliberate: there the
+ * frame is the cell border every `th` and `td` already draws in `--md-rule`,
+ * which such a theme sets to a colour it picked to be seen.
+ *
+ * The `.sheaf-table` prefix is what lifts these past two rules that would
+ * otherwise outrank them: the header background, which the corner is a `th` and
+ * would take, and the cell padding, which is wider than a row number needs.
+ */
+.sheaf-table .sheaf-table-gutter,
+.sheaf-table .sheaf-table-corner {
   width: 1px;
   padding: 4px 8px;
   text-align: center;
-  color: var(--md-muted);
-  background: color-mix(in srgb, var(--md-text) 7%, transparent);
+  color: color-mix(in srgb, var(--md-muted) 65%, var(--vscode-editor-background));
+  background: color-mix(in srgb, var(--md-text) 4%, transparent);
   font-size: 0.8em;
   cursor: pointer;
   user-select: none;
 }
-/* A row number can be dragged to move its row. The selector outranks the text
-   cursor every table cell gets. */
-.sheaf-table td.sheaf-table-gutter {
+/* A selected row or column is what a drag on its row number or header moves; an
+   unselected one is what such a drag selects. The hand appears only on the
+   selected ones, so the cursor never promises a move that would select instead.
+   Both selectors outrank the text cursor every table cell gets. */
+.sheaf-table td.sheaf-table-gutter.is-sel-whole,
+.sheaf-table th.is-sel-whole {
   cursor: grab;
 }
 .sheaf-table tr.is-row-dragging td {
@@ -329,9 +614,21 @@ body {
 .sheaf-table tr.is-drop-after td {
   box-shadow: inset 0 -2px 0 var(--md-link);
 }
-.sheaf-table-gutter:hover,
-.sheaf-table-corner:hover {
+.sheaf-table .sheaf-table-gutter:hover,
+.sheaf-table .sheaf-table-corner:hover {
   background: color-mix(in srgb, var(--md-link) 20%, transparent);
+  color: var(--md-link);
+}
+
+/* The row numbers and column headers the selection spans, so a block of cells
+   shows in the gutter and the header row which rows and columns it covers. This
+   is the weaker mark of the two, and it is text colour alone: a fill on the
+   header and the row number read as two more things selected, louder than the
+   one cell that was. A header that is itself selected is drawn by the rule below,
+   with its fill. Both selectors carry more than the hover above, so a marked row
+   or column keeps its colour under the pointer. */
+.sheaf-table td.sheaf-table-gutter.is-sel-axis,
+.sheaf-table th.is-sel-axis {
   color: var(--md-link);
 }
 
@@ -346,10 +643,28 @@ body {
   outline-offset: -2px;
 }
 
-/* In-cell edit field: fills the cell, borderless, inherits table typography. */
+/*
+ * In-cell edit field: it covers the cell, borderless, and wraps its value exactly
+ * as the drawn cell wraps its text, so opening a cell leaves the row's height and
+ * the column's width where they were. The sizer holds the same text and is what
+ * the table measures; the field lies over it, out of the flow, so it contributes
+ * nothing of its own. A form control asks for about twenty characters whatever it
+ * holds, and in the flow that width widened the column it opened in and squeezed
+ * the rest of the table.
+ */
+.sheaf-table th.is-editing,
+.sheaf-table td.is-editing {
+  position: relative;
+}
+.sheaf-table-sizer {
+  display: block;
+  visibility: hidden;
+  white-space: pre-wrap;
+}
 .sheaf-table-input {
-  width: 100%;
-  margin: -6px -12px;
+  position: absolute;
+  inset: 0;
+  margin: 0;
   padding: 6px 12px;
   border: none;
   outline: 2px solid var(--md-link);
@@ -358,7 +673,54 @@ body {
   background: var(--vscode-editor-background);
   color: var(--md-text);
   font: inherit;
-  box-sizing: content-box;
+  line-height: inherit;
+  text-align: inherit;
+  /* Wrap where the cell wraps: a text area breaks inside a word by default, and
+     the cells around it break only between words. */
+  white-space: pre-wrap;
+  overflow-wrap: inherit;
+  overflow: hidden;
+  resize: none;
+  box-sizing: border-box;
+}
+
+/*
+ * A pipe-table cell edits in a small editor rather than a text box, so its
+ * Markdown stays drawn while it is typed into. The frame is the same box the
+ * plain field draws; the editor fills it and takes the cell's own font, wrapping
+ * and alignment, so opening a cell changes nothing about how it reads. Nothing
+ * here clips: the selection toolbar and the link popover are drawn inside the
+ * editor and have to be able to stand outside the cell.
+ */
+.sheaf-table-input.is-markdown {
+  padding: 0;
+  overflow: visible;
+}
+.sheaf-table-input.is-markdown .cm-editor {
+  height: 100%;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  line-height: inherit;
+}
+.sheaf-table-input.is-markdown .cm-editor.cm-focused {
+  outline: none;
+}
+.sheaf-table-input.is-markdown .cm-scroller {
+  font: inherit;
+  line-height: inherit;
+  overflow: visible;
+  /* The document's theme pads its scroller top and bottom for the page; a cell's
+     editor carries the same theme, and without this its text sat 56px below the cell. */
+  padding: 0;
+}
+.sheaf-table-input.is-markdown .cm-content {
+  padding: 6px 12px;
+  text-align: inherit;
+  caret-color: var(--md-text);
+}
+.sheaf-table-input.is-markdown .cm-line {
+  padding: 0;
 }
 
 /* Controls appear on hover / while editing; reserve height to avoid jump. */
@@ -368,6 +730,9 @@ body {
   gap: 4px;
   height: 26px;
   margin-bottom: 3px;
+  /* What the bar cannot fit is clipped rather than shown half-drawn, and clipping
+     is also what makes scrollWidth say how much room the whole bar wanted. */
+  overflow: hidden;
   opacity: 0;
   transition: opacity 0.1s ease;
 }
@@ -375,9 +740,36 @@ body {
 .sheaf-table:focus-within .sheaf-table-controls {
   opacity: 1;
 }
+/* Nothing on the bar may wrap or squash: too little room collapses the middle of
+   it into the overflow instead, which is what `is-collapsed` below does. */
+.sheaf-table-controls > * {
+  flex: 0 0 auto;
+}
+.sheaf-table-ctrl-fit {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+/* Narrower than the whole bar needs: the row and column buttons go, and the
+   overflow holding the same commands, the format badge and `</>` stay. */
+.sheaf-table-controls.is-collapsed .sheaf-table-ctrl-fit,
+.sheaf-table-controls.is-collapsed .sheaf-table-ctrl-fit + .sheaf-table-ctrl-sep {
+  display: none;
+}
+/* The line between a bar's groups: rows, then columns, then the rest. */
+.sheaf-table-ctrl-sep {
+  width: 1px;
+  height: 14px;
+  margin: 0 2px;
+  background: var(--md-rule);
+}
 .sheaf-table-ctrl {
+  display: flex;
+  align-items: center;
+  justify-content: center;
   height: 22px;
-  padding: 0 8px;
+  min-width: 22px;
+  padding: 0 3px;
   border: 1px solid var(--md-rule);
   border-radius: 5px;
   background: var(--vscode-editorWidget-background, transparent);
@@ -387,9 +779,202 @@ body {
   line-height: 1;
   cursor: pointer;
 }
-.sheaf-table-ctrl:hover {
+.sheaf-table-ctrl:hover:not(.is-disabled) {
   color: var(--md-text);
   background: color-mix(in srgb, var(--md-text) 10%, transparent);
+}
+/* A command that cannot run here keeps its place on the bar, so the bar never
+   changes shape under the pointer and the command is still there to be read. */
+.sheaf-table-ctrl.is-disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+/* The icons the bar and the menus draw: the main toolbar's size and weight. */
+.sheaf-table-icon {
+  width: 16px;
+  height: 16px;
+  display: block;
+  pointer-events: none;
+}
+
+/*
+ * The mark on a column header that opens that column's menu.
+ *
+ * It is taken out of flow, and that is the whole point: a column's width is
+ * decided by a measuring pass that never sees this button, and a column that
+ * measured one width and then held another would move the whole allocation.
+ * Out of flow it adds nothing to measure. Header cells are the only ones given a
+ * position, so nothing else in the grid becomes a containing block.
+ *
+ * The width is what keeps it out of the way of the header's own click. A click
+ * aimed at a cell lands in the middle of it, so the rule is that this button
+ * never reaches the middle: `50% - 4px` holds its left edge clear of the centre
+ * whatever the column measures, and 13px is as wide as it grows after that. A
+ * fixed width would swallow the centre of a narrow column, which is how the row
+ * numbers lost their own chevron.
+ */
+.sheaf-table th {
+  position: relative;
+}
+.sheaf-table-chevron {
+  position: absolute;
+  top: 50%;
+  right: 1px;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: min(13px, calc(50% - 4px));
+  height: 14px;
+  padding: 0;
+  overflow: hidden;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--md-muted);
+  cursor: pointer;
+  /* Shown on hover or once the column is selected. Until then it is not there to
+     be hit either, so the header's own click and its drag keep the whole cell. */
+  opacity: 0;
+  pointer-events: none;
+}
+.sheaf-table-chevron .sheaf-table-icon {
+  width: 12px;
+  height: 12px;
+}
+.sheaf-table th:hover > .sheaf-table-chevron,
+.sheaf-table th.is-sel-axis > .sheaf-table-chevron,
+/* Alt+F10 walks the keyboard onto one of these, and it has to be on screen when
+   it gets there, whether or not the pointer is anywhere near it. */
+.sheaf-table .sheaf-table-chevron:focus {
+  opacity: 1;
+  pointer-events: auto;
+}
+.sheaf-table .sheaf-table-chevron:focus-visible,
+.sheaf-table .sheaf-table-ctrl:focus-visible {
+  outline: 2px solid var(--md-link);
+  outline-offset: 1px;
+}
+.sheaf-table-chevron:hover {
+  color: var(--md-link);
+  background: color-mix(in srgb, var(--md-text) 14%, transparent);
+}
+/* A cell being typed into is all editor, and the chevron would sit over the text. */
+.sheaf-table th.is-editing > .sheaf-table-chevron {
+  display: none;
+}
+
+/*
+ * The grip on a header's right border, which sets that column's width by hand.
+ * It straddles the border so it can be caught from either side, and it is out of
+ * flow, so it adds nothing to what a column measures as. The last column's grip
+ * stays inside its cell, because one hanging past the table's edge would give the
+ * frame something to scroll to. The line it draws shows only under the pointer or
+ * while dragging; at the narrowest a column may be it turns the warning colour and
+ * the cursor says the border can only go one way now.
+ */
+.sheaf-table-resize {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: -4px;
+  width: 7px;
+  z-index: 2;
+  cursor: col-resize;
+  touch-action: none;
+}
+.sheaf-table th:last-child > .sheaf-table-resize {
+  right: 0;
+  width: 4px;
+}
+.sheaf-table-resize::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 3px;
+  width: 2px;
+  background: transparent;
+}
+.sheaf-table th:last-child > .sheaf-table-resize::after {
+  right: 0;
+}
+.sheaf-table-resize:hover::after,
+.sheaf-table-resize.is-dragging::after {
+  background: var(--md-link);
+}
+.sheaf-table.is-resizing,
+.sheaf-table.is-resizing * {
+  cursor: col-resize;
+  user-select: none;
+}
+.sheaf-table .sheaf-table-resize.is-at-floor {
+  cursor: e-resize;
+}
+.sheaf-table .sheaf-table-resize.is-at-floor::after {
+  background: var(--vscode-editorWarning-foreground, var(--md-muted));
+}
+
+/*
+ * The overflow and chevron menus. Drawn to match the right-click menu, with its
+ * own classes: it carries an icon on each item and keeps a place for a command
+ * that cannot run here, and two menus answering to one selector cannot be told
+ * apart by anything reading the page.
+ */
+.sheaf-table-menu {
+  position: fixed;
+  z-index: 12;
+  min-width: 180px;
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  border: 1px solid var(--md-rule);
+  border-radius: 8px;
+  background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+  /* The shadow the running theme gives its own popups, rather than a black this
+     file picked: a light theme and a dark one want different ones. */
+  box-shadow: 0 8px 28px var(--vscode-widget-shadow, transparent);
+}
+.sheaf-table-menu-item {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--md-text);
+  font-family: var(--md-font);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.sheaf-table-menu-item:hover:not([aria-disabled='true']) {
+  background: color-mix(in srgb, var(--md-text) 10%, transparent);
+}
+.sheaf-table-menu-item[aria-disabled='true'] {
+  color: var(--md-muted);
+  opacity: 0.55;
+  cursor: default;
+}
+.sheaf-table-menu-sep {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--md-rule);
+}
+/* What a menu that asks a question is asking, such as which column to group by. */
+.sheaf-table-menu-title {
+  padding: 4px 8px 2px;
+  color: var(--md-muted);
+  font-family: var(--md-font);
+  font-size: 11px;
+  font-weight: 600;
+}
+@media (pointer: coarse) {
+  .sheaf-table-menu-item {
+    min-height: 40px;
+  }
 }
 
 /* On touch screens the table controls and menu items are big enough to hit with a finger. */
@@ -418,6 +1003,499 @@ body {
   font-family: var(--md-mono);
   font-size: 10px;
   letter-spacing: 0.04em;
+}
+
+/*
+ * The name of a data block (```csv id=tasks), above its grid and always shown,
+ * with an error beside it when another block has the same name.
+ */
+.sheaf-table-caption {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 2px;
+  font-size: 12px;
+}
+.sheaf-table-caption[hidden] {
+  display: none;
+}
+.sheaf-table-id {
+  color: var(--md-muted);
+  font-family: var(--md-mono);
+}
+/* The name is a control that opens a field to rename the block. */
+.sheaf-table-id[role='button'] {
+  border-radius: 3px;
+  cursor: text;
+}
+.sheaf-table-id[role='button']:hover {
+  color: var(--md-text);
+}
+.sheaf-table-id[role='button']:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder, var(--md-link));
+  outline-offset: 1px;
+}
+.sheaf-table-rename {
+  min-width: 12ch;
+  padding: 0 4px;
+  border: 1px solid var(--vscode-focusBorder, var(--md-link));
+  border-radius: 3px;
+  background: var(--vscode-input-background, transparent);
+  color: var(--vscode-input-foreground, var(--md-text));
+  font-family: var(--md-mono);
+  font-size: 12px;
+}
+.sheaf-table-rename[aria-invalid='true'] {
+  border-color: var(--vscode-inputValidation-errorBorder, var(--vscode-errorForeground, var(--md-code-text)));
+}
+.sheaf-table-caption.is-duplicate .sheaf-table-id,
+.sheaf-table-error {
+  color: var(--vscode-errorForeground, var(--vscode-editorError-foreground, var(--md-code-text)));
+}
+
+/* ---- A view block (```view): a query's result drawn as a grid ------------- */
+
+.sheaf-view {
+  /* Padding, not margin, for the same height-map reason as .sheaf-table. */
+  padding: 0.5em 0;
+}
+/* A view inside a blockquote carries the quote's bar, as a table there does. */
+.sheaf-view.is-quoted {
+  border-left: 3px solid var(--md-rule);
+  padding-left: 0.9em;
+}
+.sheaf-view-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 26px;
+  margin-bottom: 3px;
+  font-size: 12px;
+  color: var(--md-muted);
+}
+.sheaf-view-from {
+  font-family: var(--md-mono);
+}
+.sheaf-view-count {
+  margin-right: auto;
+}
+.sheaf-view-edit,
+.sheaf-view-inline {
+  padding: 2px 8px;
+  border: 1px solid var(--md-rule);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--md-muted);
+  font: inherit;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.1s ease;
+}
+.sheaf-view:hover .sheaf-view-edit,
+.sheaf-view-edit:focus-visible,
+.sheaf-view:hover .sheaf-view-inline,
+.sheaf-view-inline:focus-visible {
+  opacity: 1;
+}
+.sheaf-view-inline[hidden] {
+  display: none;
+}
+.sheaf-view-inline.is-disabled {
+  cursor: default;
+  color: var(--md-faint, var(--md-muted));
+}
+.sheaf-view-notes[hidden] {
+  display: none;
+}
+.sheaf-view-notes p {
+  margin: 0 0 4px;
+  font-size: 12px;
+}
+.sheaf-view-error {
+  color: var(--vscode-errorForeground, var(--vscode-editorError-foreground, var(--md-code-text)));
+}
+.sheaf-view-note,
+.sheaf-view-empty {
+  color: var(--md-muted);
+}
+.sheaf-view-empty {
+  margin: 6px 0 0;
+  font-size: 12px;
+}
+
+/*
+ * A note about something a command just did, such as the file a block moved to.
+ * It sits at the foot of the pane, clear of the text, and a note goes by itself
+ * after a few seconds while an error stays until it is dismissed.
+ */
+.sheaf-page-note {
+  position: fixed;
+  left: 50%;
+  bottom: 16px;
+  z-index: 30;
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  max-width: min(560px, calc(100vw - 32px));
+  padding: 8px 12px;
+  transform: translateX(-50%);
+  border: 1px solid var(--vscode-notifications-border, var(--md-rule));
+  border-radius: 6px;
+  background: var(--vscode-notifications-background, var(--vscode-editorWidget-background, var(--vscode-editor-background, #fff)));
+  color: var(--vscode-notifications-foreground, var(--md-text));
+  box-shadow: 0 2px 8px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.2));
+  font-size: 12px;
+  line-height: 1.5;
+}
+.sheaf-page-note.is-error span {
+  color: var(--vscode-errorForeground, var(--vscode-editorError-foreground, var(--md-code-text)));
+}
+.sheaf-page-note-close {
+  flex: none;
+  padding: 0 4px;
+  border: none;
+  background: transparent;
+  color: var(--md-link);
+  font: inherit;
+  cursor: pointer;
+}
+.sheaf-view-grid {
+  overflow-x: auto;
+  contain: inline-size;
+}
+.sheaf-view table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 0.92em;
+  line-height: 1.5;
+}
+.sheaf-view th,
+.sheaf-view td {
+  border: 1px solid var(--md-rule);
+  padding: 6px 12px;
+  text-align: left;
+  vertical-align: top;
+  overflow-wrap: break-word;
+  white-space: pre-wrap;
+}
+.sheaf-view th {
+  font-weight: 600;
+  background: color-mix(in srgb, var(--md-text) 4%, transparent);
+}
+.sheaf-view table:focus {
+  outline: none;
+}
+/* A header is its sort button, which fills it, and the button for its menu. */
+.sheaf-view {
+  position: relative;
+}
+.sheaf-view th {
+  padding: 0;
+}
+.sheaf-view-sort {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  box-sizing: border-box;
+  max-width: calc(100% - 26px);
+  padding: 6px 2px 6px 12px;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  white-space: pre-wrap;
+  cursor: pointer;
+}
+.sheaf-view-sort-mark {
+  color: var(--md-link);
+  font-size: 0.85em;
+}
+.sheaf-view-filter {
+  float: right;
+  width: 20px;
+  height: 20px;
+  margin: 5px 4px 0 0;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--md-muted);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.1s ease;
+}
+/* Always there once the column is filtered, so the filter can be seen from the header. */
+.sheaf-view th:hover .sheaf-view-filter,
+.sheaf-view-filter:focus-visible,
+.sheaf-view-filter[aria-expanded='true'],
+.sheaf-view-filter.is-active {
+  opacity: 1;
+}
+.sheaf-view-filter.is-active {
+  color: var(--md-link);
+}
+.sheaf-view-filter:hover {
+  background: color-mix(in srgb, var(--md-text) 8%, transparent);
+}
+.sheaf-view-sort:focus-visible,
+.sheaf-view-filter:focus-visible {
+  outline: 2px solid var(--vscode-focusBorder, var(--md-link));
+  outline-offset: -2px;
+}
+.sheaf-view-sort[aria-disabled='true'],
+.sheaf-view-filter[aria-disabled='true'] {
+  cursor: default;
+}
+.sheaf-view-menu {
+  position: absolute;
+  z-index: 12;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 200px;
+  padding: 8px;
+  border: 1px solid var(--md-rule);
+  border-radius: 8px;
+  background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+  box-shadow: 0 8px 28px var(--vscode-widget-shadow, transparent);
+  font-size: 12px;
+  color: var(--md-text);
+}
+.sheaf-view-menu-title {
+  margin: 0;
+  color: var(--md-muted);
+}
+.sheaf-view-menu select,
+.sheaf-view-menu input {
+  padding: 3px 6px;
+  border: 1px solid var(--vscode-input-border, var(--md-rule));
+  border-radius: 4px;
+  background: var(--vscode-input-background, transparent);
+  color: var(--vscode-input-foreground, inherit);
+  font: inherit;
+}
+.sheaf-view-menu input[hidden] {
+  display: none;
+}
+.sheaf-view-menu-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.sheaf-view-menu-actions + .sheaf-view-menu-actions {
+  padding-top: 6px;
+  border-top: 1px solid var(--md-rule);
+}
+.sheaf-view-menu button {
+  padding: 2px 8px;
+  border: 1px solid var(--md-rule);
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.sheaf-view-menu .sheaf-view-menu-apply {
+  border-color: var(--vscode-button-background, var(--md-link));
+  background: var(--vscode-button-background, var(--md-link));
+  color: var(--vscode-button-foreground, #fff);
+}
+.sheaf-view-menu button.is-disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.sheaf-view td {
+  cursor: cell;
+}
+.sheaf-view td.is-focus {
+  outline: 2px solid var(--vscode-focusBorder, var(--md-link));
+  outline-offset: -2px;
+}
+/* An edited row that no longer matches the view: still shown, visibly set apart. */
+.sheaf-view tr.is-unmatched td {
+  opacity: 0.6;
+  background: repeating-linear-gradient(
+    -45deg,
+    transparent 0 6px,
+    color-mix(in srgb, var(--md-text) 5%, transparent) 6px 12px
+  );
+}
+.sheaf-view tr.is-unmatched td:first-child {
+  box-shadow: inset 3px 0 0 var(--md-muted);
+}
+/* A row started with + New row, not in the table until something is typed into it. */
+.sheaf-view tr.is-draft td {
+  color: var(--md-muted);
+  border-style: dashed;
+}
+.sheaf-view-input {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 1.5em;
+  margin: 0;
+  padding: 0;
+  border: none;
+  outline: none;
+  resize: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  line-height: inherit;
+}
+.sheaf-view-add,
+.sheaf-view-redraw,
+.sheaf-view-create {
+  padding: 2px 8px;
+  border: 1px solid var(--md-rule);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--md-muted);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+/* Offered beside the error that says the file is missing, so it reads as the way out of it. */
+.sheaf-view-create {
+  color: var(--md-link);
+}
+.sheaf-view-create.is-disabled {
+  color: var(--md-faint, var(--md-muted));
+  cursor: default;
+}
+.sheaf-view-add {
+  margin-top: 6px;
+}
+.sheaf-view-add[hidden] {
+  display: none;
+}
+
+/* A view with layout: board. One column per value of the grouping column, each
+   a stack of cards; the board scrolls sideways inside the view when it is wider. */
+.sheaf-board {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding-bottom: 4px;
+  font-size: 0.92em;
+  line-height: 1.45;
+}
+.sheaf-board-col {
+  flex: 0 0 240px;
+  min-width: 0;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--md-text) 4%, transparent);
+}
+.sheaf-board-col.is-drop-target {
+  box-shadow: inset 0 0 0 2px var(--md-link);
+  background: color-mix(in srgb, var(--md-link) 10%, transparent);
+}
+.sheaf-board-col-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 6px 10px 4px;
+  font-size: 12px;
+  font-weight: 600;
+}
+.sheaf-board-col-name.is-empty-value {
+  color: var(--md-muted);
+  font-style: italic;
+}
+.sheaf-board-col-count {
+  color: var(--md-muted);
+  font-weight: 400;
+}
+.sheaf-board-cards {
+  list-style: none;
+  margin: 0;
+  padding: 2px 6px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 28px;
+}
+.sheaf-board-card {
+  padding: 6px 10px;
+  border: 1px solid var(--md-rule);
+  border-radius: 5px;
+  background: var(--vscode-editor-background);
+  cursor: grab;
+  user-select: none;
+  /* A finger that presses a card drags it rather than scrolling the page. */
+  touch-action: none;
+}
+.sheaf-board-card:focus {
+  outline: none;
+}
+.sheaf-board-card:focus-visible,
+.sheaf-board-card:focus-within {
+  outline: 2px solid var(--vscode-focusBorder, var(--md-link));
+  outline-offset: -1px;
+}
+.sheaf-board-card.is-dragging {
+  opacity: 0.45;
+  cursor: grabbing;
+}
+.sheaf-board-card.is-unmatched {
+  opacity: 0.6;
+  border-style: dashed;
+}
+.sheaf-board-title {
+  font-weight: 600;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+.sheaf-board-field {
+  display: flex;
+  gap: 6px;
+  font-size: 12px;
+}
+.sheaf-board-label {
+  flex: none;
+  color: var(--md-muted);
+}
+.sheaf-board-value {
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+.sheaf-board-card .sheaf-view-input {
+  user-select: text;
+}
+
+/* A pipe table shown as a board. The grid stays built under it, hidden, and the
+   bar's row and column buttons go with it, since a board has no cells to act on. */
+.sheaf-table-grid[hidden],
+.sheaf-table-board[hidden],
+.sheaf-table-board-note[hidden],
+.sheaf-table-ctrl-fit[hidden] {
+  display: none;
+}
+.sheaf-table-board {
+  overflow-x: auto;
+  padding: 4px 0;
+  outline: none;
+}
+/* Why a table that was a board is a grid again. */
+.sheaf-table-board-note {
+  margin: 4px 0;
+  color: var(--md-muted);
+  font-size: 12px;
+}
+.sheaf-table-board-note-dismiss {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--md-link);
+  font: inherit;
+  cursor: pointer;
+}
+.sheaf-table-board-note-dismiss:hover {
+  text-decoration: underline;
 }
 
 /* ---- Right-click context menu ------------------------------------------- */
@@ -631,6 +1709,30 @@ body {
 .tok-strike { text-decoration: line-through; opacity: 0.75; }
 .tok-highlight { background: color-mix(in srgb, #ffd43b 38%, transparent); border-radius: 2px; padding: 0 1px; }
 
+/* Inline HTML formatting tags in prose, drawn as a browser draws them. A key
+   cap takes the code chip's colours and the theme's border, with a heavier
+   bottom edge so it reads as a key; in a high-contrast theme the border is the
+   theme's own contrast colour. */
+.tok-html-kbd {
+  font-family: var(--md-mono);
+  font-size: 0.85em;
+  padding: 0.1em 0.4em;
+  border: 1px solid var(--vscode-contrastBorder, var(--md-rule));
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  background: var(--md-code-chip);
+  color: var(--md-text);
+  white-space: nowrap;
+}
+.tok-html-sub { vertical-align: sub; font-size: 0.75em; line-height: 0; }
+.tok-html-sup { vertical-align: super; font-size: 0.75em; line-height: 0; }
+.tok-html-abbr { text-decoration: underline dotted; text-underline-offset: 2px; cursor: help; }
+.tok-html-mark { background: color-mix(in srgb, #ffd43b 38%, transparent); border-radius: 2px; padding: 0 1px; }
+.tok-html-small { font-size: 0.85em; }
+.tok-html-ins,
+.tok-html-u { text-decoration: underline; }
+.tok-html-del { text-decoration: line-through; opacity: 0.75; }
+
 /* Notion inline code: tinted chip, contrasting text, 85% size, 3px radius. */
 .tok-inline-code {
   font-family: var(--md-mono);
@@ -658,6 +1760,65 @@ body {
   color: var(--md-text);
 }
 
+/* ---- Alerts -------------------------------------------------------------- */
+
+/*
+ * A quote that opens with `> [!NOTE]` is a callout: the rule takes the type's
+ * colour and the marker line is drawn as an icon and a label.
+ *
+ * Each type names a VS Code theme variable rather than a colour of its own, so
+ * the five follow the theme and a high-contrast theme gets the colours it chose
+ * for the same meanings. Note, Warning and Caution lead with the variable the
+ * editor already uses for that severity. Tip and Important have no severity in
+ * the editor, so they lead with the chart colour closest to what a reader
+ * expects. The last name in each chain is the link colour, for a theme that
+ * defines none of the others.
+ */
+.tok-alert {
+  border-left-color: var(--md-alert);
+}
+
+.tok-alert-note {
+  --md-alert: var(--vscode-editorInfo-foreground, var(--vscode-charts-blue, var(--md-link)));
+}
+
+.tok-alert-tip {
+  --md-alert: var(--vscode-charts-green, var(--vscode-testing-iconPassed, var(--md-link)));
+}
+
+.tok-alert-important {
+  --md-alert: var(--vscode-charts-purple, var(--vscode-textLink-activeForeground, var(--md-link)));
+}
+
+.tok-alert-warning {
+  --md-alert: var(--vscode-editorWarning-foreground, var(--vscode-charts-yellow, var(--md-link)));
+}
+
+.tok-alert-caution {
+  --md-alert: var(--vscode-editorError-foreground, var(--vscode-charts-red, var(--md-link)));
+}
+
+/* The icon and label standing in for the marker line. */
+.md-alert-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4em;
+  color: var(--md-alert, currentColor);
+  font-weight: 600;
+}
+
+.md-alert-icon {
+  width: 1.05em;
+  height: 1.05em;
+  flex: 0 0 auto;
+}
+
+/* A title can be a whole sentence: let it wrap beside the icon. */
+.md-alert-name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 /* Dim the raw Markdown markers when they are shown alongside rendered text. */
 .tok-mark {
   color: var(--md-faint);
@@ -668,11 +1829,34 @@ body {
   color: var(--md-muted);
 }
 
-/* Fenced code block. */
+/*
+ * Fenced code block. The tint is painted by a pseudo-element behind the line, not
+ * by the line's own background, because two other things share that background:
+ *
+ *   - The drawn selection (selectionHighlight.ts) is a layer under the content,
+ *     so a background on the line paints over it and the selected code looks
+ *     untouched. The pseudo-element sits one step further back (z-index -2,
+ *     against the layer's -1 pinned in theme.ts), leaving the selection between
+ *     the tint and the text.
+ *   - `.cm-activeLine` is a CodeMirror theme rule and outranks this stylesheet,
+ *     so whichever line held the caret lost its tint and cut the block in two.
+ *     A pseudo-element is out of that rule's reach.
+ *
+ * `inset: 0` needs the line positioned; `z-index: auto` keeps it out of the
+ * stacking context the layers live in, which is the whole point.
+ */
 .tok-code-block {
-  background: var(--md-code-bg);
+  position: relative;
   font-family: var(--md-mono);
   font-size: 0.88em;
+}
+.tok-code-block::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -2;
+  background: var(--md-code-bg);
+  pointer-events: none;
 }
 .tok-code-fence {
   color: var(--md-faint);
@@ -695,6 +1879,59 @@ body {
   border-top: 1px solid var(--md-rule);
   padding: 0.3em 0;
   vertical-align: middle;
+}
+
+/* ---- Maths ---------------------------------------------------------------
+ *
+ * KaTeX draws in the inherited colour, so typeset maths takes the editor's own
+ * foreground in light, dark and high-contrast themes rather than the near-black
+ * it would be given on a web page. The imported stylesheet brings the metrics
+ * and the fonts; the rules here are about how an equation sits in the column.
+ */
+.md-math {
+  color: var(--md-text);
+}
+
+/* An inline equation is part of its sentence and never breaks across lines. */
+.md-math-inline {
+  white-space: nowrap;
+}
+
+.md-math-block {
+  margin: 0.7em 0;
+}
+
+/* The spacing around a block equation is this file's, not KaTeX's. */
+.md-math-block .katex-display {
+  margin: 0;
+}
+
+/*
+ * A block equation is easily wider than an editor pane, and it is not something
+ * a reader can reflow, so it scrolls inside its own box rather than being cut
+ * off or pushing the text column sideways. The box is focusable so that
+ * scrolling is reachable from the keyboard, which is why it needs a focus ring.
+ */
+.md-math-scroll {
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0.2em 0;
+}
+.md-math-scroll:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder, var(--md-link));
+  outline-offset: 2px;
+}
+
+/*
+ * Maths that does not typeset keeps its source and is marked the way an editor
+ * marks anything it could not make sense of, with KaTeX's message in the
+ * tooltip. Every equation looks like this for a moment while it is being
+ * written, so it is a squiggle and nothing louder.
+ */
+.md-math-error {
+  text-decoration: underline wavy var(--vscode-editorError-foreground, #e5534b);
+  text-decoration-skip-ink: none;
+  text-underline-offset: 0.2em;
 }
 
 /* ---- Rendered image widget ---------------------------------------------- */
@@ -753,21 +1990,58 @@ body {
 }
 .md-img-wrap.is-broken .md-img { display: none; }
 
-/* Resize handle (bottom-right); shown on hover. */
+/* The picture's own box, caption excluded: what the resize grip is pinned to. */
+.md-img-frame {
+  display: block;
+  position: relative;
+  width: fit-content;
+  max-width: 100%;
+}
+
+/* Resize handle (bottom-right), shown with the toolbar on hover or focus. The
+   element is a transparent 20px hit box carrying the cursor; the corner bracket
+   drawn inside it is the link colour over an editor-background halo, so it
+   reads on a white, a black or a busy picture. It stays under the toolbar, which
+   wins where the two would meet on a very small image. */
 .md-img-handle {
   position: absolute;
-  right: 4px;
-  bottom: 4px;
-  width: 14px;
-  height: 14px;
-  border-radius: 3px;
-  background: var(--md-link);
-  border: 2px solid var(--vscode-editor-background);
+  right: 2px;
+  bottom: 2px;
+  z-index: 2;
+  width: 20px;
+  height: 20px;
   cursor: nwse-resize;
   opacity: 0;
   transition: opacity 0.1s ease;
 }
-.md-img-wrap:hover .md-img-handle { opacity: 0.9; }
+.md-img-grip {
+  display: block;
+  width: 100%;
+  height: 100%;
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  pointer-events: none;
+}
+.md-img-grip-halo { stroke: var(--vscode-editor-background); stroke-width: 4px; }
+.md-img-grip-line { stroke: var(--md-link); stroke-width: 2px; }
+.md-img-wrap:hover .md-img-handle,
+.md-img-wrap:focus-within .md-img-handle,
+.md-img-wrap.is-selected .md-img-handle { opacity: 1; }
+.md-img-wrap.is-broken .md-img-handle { display: none; }
+
+/* A selected image. The editor paints a selection behind the content, where an
+   opaque picture hides it, so the selection is drawn on top: a ring in the
+   grip's colour and weight around the picture and its caption, with the gap
+   inside it and a hairline outside it in the editor's background colour, so the
+   ring holds against a white, a black or a busy picture and against the
+   selected text beside an image in a sentence. */
+.md-img-wrap.is-selected .md-img-fig {
+  border-radius: 8px;
+  outline: 2px solid var(--md-link);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 5px var(--vscode-editor-background);
+}
 
 /* Floating control strip (top-left); shown on hover. */
 .md-img-toolbar {
@@ -1022,6 +2296,15 @@ body {
   background-color: var(--vscode-editor-findMatchBackground, rgba(81, 92, 106, 0.6));
   outline: 1px solid var(--vscode-editor-findMatchBorder, transparent);
 }
+/* A grid draws a match as the whole cell holding it, tinted with the same colours.
+   The current match's cell is also the active cell, and keeps the active cell's ring. */
+.cm-editor .cm-content .sheaf-table .cm-searchMatch {
+  border-radius: 0;
+}
+.cm-editor .cm-content .sheaf-table .cm-searchMatch-selected.is-focus {
+  outline: 2px solid var(--md-link);
+  outline-offset: -2px;
+}
 
 /* ---- Toolbar state and context menu ---- */
 
@@ -1065,9 +2348,38 @@ body {
   outline-offset: -1px;
 }
 
+/*
+ * The toolbar holds a fixed set of controls, so it has a fixed width, and an editor
+ * pane with the Explorer on one side and a panel on the other is narrow enough to
+ * push the last two buttons onto a second row, which moves the document a whole row
+ * down for two buttons' worth of overflow.
+ *
+ * Spacing is what gives way first. Below this width the gaps between the buttons, the
+ * rules between the groups and the buttons' own side padding all tighten, which takes
+ * around ninety pixels off the bar without taking a single control out of reach or
+ * costing anyone a second click. Wrapping is left for the pane widths where two rows
+ * are genuinely the better shape.
+ */
+@media (max-width: 900px) {
+  .sheaf-toolbar {
+    gap: 1px;
+  }
+  .sheaf-tb-btn {
+    min-width: 26px;
+    padding: 0 4px;
+  }
+  .sheaf-tb-sep {
+    margin: 4px 2px;
+  }
+  .sheaf-tb-dd-trigger {
+    padding: 0 3px;
+  }
+}
+
 @media (max-width: 560px) {
   .sheaf-toolbar {
     padding: 3px 4px;
+    gap: 0;
   }
   .sheaf-tb-btn {
     min-width: 26px;
@@ -1075,7 +2387,7 @@ body {
     padding: 0 4px;
   }
   .sheaf-tb-sep {
-    margin: 4px 2px;
+    margin: 4px 1px;
   }
   .sheaf-find {
     padding: 6px;
@@ -1330,6 +2642,9 @@ body {
   overflow-y: auto;
 }
 .sheaf-slash-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   padding: 6px 8px;
   border-radius: 5px;
   color: var(--md-text);
@@ -1337,11 +2652,48 @@ body {
   font-size: 13px;
   cursor: pointer;
 }
+/* A column the width of one toolbar icon, held open whether or not a row fills it,
+   so every label starts at the same place. */
+.sheaf-slash-icon {
+  flex: 0 0 16px;
+  height: 16px;
+}
+.sheaf-slash-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+/* The Markdown the pick writes, at the right edge of the row, in the muted monospace
+   the toolbar's menus already give their shortcut keys. */
+.sheaf-slash-hint {
+  flex: 0 0 auto;
+  margin-left: 24px;
+  font-family: var(--md-mono);
+  font-size: 11px;
+  line-height: 1;
+  color: var(--md-muted);
+  white-space: pre;
+}
 .sheaf-slash-item:hover {
   background: color-mix(in srgb, var(--md-text) 7%, transparent);
 }
 .sheaf-slash-item.is-selected {
   background: color-mix(in srgb, var(--md-text) 12%, transparent);
+}
+/* A link's address completion wears the slash menu's look. Its rows are paths, which
+   run longer than block names, so it may grow wider before a label is cut short. */
+.sheaf-link-complete {
+  max-width: min(480px, calc(100vw - 8px));
+}
+/* Shown in place of the list while the filter matches nothing: not a row you can pick. */
+.sheaf-slash-empty {
+  padding: 6px 8px;
+  color: var(--md-muted);
+  font-family: var(--md-font);
+  font-size: 13px;
+  cursor: default;
 }
 
 @media (pointer: coarse) {
@@ -1354,4 +2706,104 @@ body {
   .sheaf-slash-item {
     min-height: 40px;
   }
+}
+
+/* ---- Lines written from outside ----------------------------------------- */
+
+/*
+ * A line an agent, a branch switch or another editor just wrote carries a bar in
+ * the margin beside it, the way a change bar sits beside a line in a code editor,
+ * and a faint tint of the same colour. A write that only removed lines leaves a
+ * short tick where they were. The colours are the theme's own gutter colours for
+ * modified and deleted lines; a high-contrast theme draws the bar in its contrast
+ * border colour instead.
+ *
+ * The bar is a pseudo-element hung outside the line's box, in the page margin, so
+ * nothing in the text column moves. `::after`, because a fenced code block already
+ * paints its background with the line's `::before`. The tint is a background image
+ * so it lies over a background the line already has rather than replacing it.
+ */
+:root {
+  --sheaf-arrived: var(--vscode-editorGutter-modifiedBackground, var(--vscode-focusBorder, var(--md-link)));
+  --sheaf-arrived-deleted: var(--vscode-editorGutter-deletedBackground, var(--vscode-editorError-foreground, #e5534b));
+}
+body.vscode-high-contrast,
+body.vscode-high-contrast-light {
+  --sheaf-arrived: var(--vscode-contrastActiveBorder, var(--vscode-editorGutter-modifiedBackground, var(--vscode-focusBorder, var(--md-link))));
+}
+.cm-line.sheaf-arrived,
+.cm-line.sheaf-arrived-deleted {
+  position: relative;
+}
+.cm-line.sheaf-arrived {
+  background-image: linear-gradient(
+    color-mix(in srgb, var(--sheaf-arrived) 8%, transparent),
+    color-mix(in srgb, var(--sheaf-arrived) 8%, transparent)
+  );
+}
+.cm-line.sheaf-arrived::after,
+.cm-line.sheaf-arrived-deleted::after {
+  content: '';
+  position: absolute;
+  left: -7px;
+  pointer-events: none;
+}
+.cm-line.sheaf-arrived::after {
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--sheaf-arrived);
+}
+.cm-line.sheaf-arrived-deleted:not(.sheaf-arrived)::after {
+  top: -1px;
+  left: -11px;
+  width: 8px;
+  height: 2px;
+  background: var(--sheaf-arrived-deleted);
+}
+.cm-line.sheaf-arrived-deleted-below:not(.sheaf-arrived)::after {
+  top: auto;
+  bottom: -1px;
+}
+
+/*
+ * The same marks on a table's rows. The grid stands in for the table's lines, so
+ * it marks the row a marked line holds: the tint over every cell of it, and the
+ * bar or tick on the row number (the corner, for the header). The frame scrolls
+ * sideways and clips anything hung outside it, so the bar sits on the inside edge
+ * of the row number, where nothing else is drawn and nothing moves to make room.
+ */
+.sheaf-table tr.sheaf-arrived > td,
+.sheaf-table tr.sheaf-arrived > th {
+  background-image: linear-gradient(
+    color-mix(in srgb, var(--sheaf-arrived) 8%, transparent),
+    color-mix(in srgb, var(--sheaf-arrived) 8%, transparent)
+  );
+}
+.sheaf-table tr.sheaf-arrived > :first-child,
+.sheaf-table tr.sheaf-arrived-deleted > :first-child {
+  position: relative;
+}
+.sheaf-table tr.sheaf-arrived > :first-child::after,
+.sheaf-table tr.sheaf-arrived-deleted > :first-child::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  pointer-events: none;
+}
+.sheaf-table tr.sheaf-arrived > :first-child::after {
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--sheaf-arrived);
+}
+.sheaf-table tr.sheaf-arrived-deleted:not(.sheaf-arrived) > :first-child::after {
+  top: 0;
+  width: 8px;
+  height: 2px;
+  background: var(--sheaf-arrived-deleted);
+}
+.sheaf-table tr.sheaf-arrived-deleted-below:not(.sheaf-arrived) > :first-child::after {
+  top: auto;
+  bottom: 0;
 }

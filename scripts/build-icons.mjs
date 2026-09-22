@@ -249,7 +249,7 @@ body{width:1200px;height:630px;background:#faf8f3;display:flex;flex-direction:co
 .foot{font-family:Inter,system-ui,sans-serif;font-weight:500;font-size:30px;color:#7b8095;margin-top:52px}
 </style>
 <div class="top"><img src="${join(work, 'icon-small.svg')}" width="176" height="176"><span class="name">Sheaf</span></div>
-<div class="tag">Think in documents, build with agents. The specs, roadmaps and feature matrices your agents work from, as documents you type straight into.</div>
+<div class="tag">Think with agents, write it down together. The specs, READMEs and roadmaps in your repo, as documents you type straight into.</div>
 <div class="foot">sheafeditor.com</div>`,
   SITE && join(SITE, 'public/og.png'),
   'sheaf-site/public/og.png',

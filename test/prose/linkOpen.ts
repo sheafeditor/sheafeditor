@@ -196,6 +196,18 @@ export const scenarios: Scenario[] = [
     },
   },
   {
+    name: 'a repeated heading answers to its name with -1, -2 after it, as GitHub numbers them',
+    run: () => {
+      const doc = '# Notes\n\n## Setup\n\na\n\n## Setup\n\nb\n\n## Setup\n\nc\n';
+      const p = mountProse(doc);
+      const at = (id: string) => headingPosition(p.view.state, id);
+      const heads = [...doc.matchAll(/## Setup/g)].map((m) => m.index);
+      const ok = at('setup') === heads[0] && at('setup-1') === heads[1] && at('setup-2') === heads[2] && at('setup-3') === null;
+      p.destroy();
+      return ok;
+    },
+  },
+  {
     name: 'opening a fragment goes to the heading in this document and never reaches the host',
     run: () => {
       const posted: unknown[] = [];

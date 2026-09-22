@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
- * Generates sample/wren-4/: the repository of Wren-4, a fictional deep-space
- * navigation beacon. It is a themed corpus for demos and screenshots, built
+ * Generates sample/wren-4/: everything a fictional deep-space navigation beacon
+ * knows, kept as the files its crew write and read. It is a themed corpus for demos and screenshots, built
  * from one dataset so every table, chart and prose figure agrees with the rest.
  *
  * It covers the ways charts turn up in Markdown: SVG images (which render
@@ -36,6 +36,32 @@
  *   6. crew/fresnel.svg, fine detail. Zoom into the lens mark on the cat's
  *      chest for the message. The empty row at the end of the handover's
  *      message queue is for the reader's answer.
+ *
+ * Each stop on that arc also carries one of the content types Sheaf is for, so
+ * following the story is a tour of the product rather than a separate demo:
+ *
+ *   0. README.md            a callout, a table, an image, a document index
+ *   1. signals.md           a wide table, and the same counts as a Vega-Lite chart
+ *   2. crew/fresnel.md      a collapsed <details>, an image with a caption
+ *   3. log/incident-…       a csv sheet, a syntax-highlighted decoder, a hex dump,
+ *                           a Mermaid timeline and state diagram
+ *   3b. log/2244-11.md      front matter, a task list, an HTML comment
+ *   4. runbooks/…           an ordered procedure, a Mermaid flowchart
+ *   5. archive/…/handover   front matter, display maths, a task list
+ *   6. crew/fresnel.svg     an image that rewards zooming
+ *
+ * Pictures live in tour/ and are placed in whichever document already talks
+ * about that module, never collected on a page of their own. Their sizes,
+ * alignments and captions follow from the document: a panorama runs full width,
+ * a mast is tall and narrow beside its text, a locker is a small aside pushed
+ * to the edge, status lights sit inside table cells. Between them the documents
+ * cover every image form Sheaf reads and writes. Two forms are deliberately
+ * absent, a data: URL and the collapsed `![name][]` reference, because neither
+ * had a document it belonged in and coverage is not worth a nonsense sentence.
+ *
+ * The rule when adding to the corpus: a content type earns its place by being
+ * what a clue is hidden in, or what a person on that station would have written
+ * anyway. Nothing is here only to be a sample of itself.
  *
  *   node scripts/gen-wren4.mjs
  */
@@ -290,16 +316,15 @@ writeFileSync(join(ASSETS, 'ship-classes.svg'), pie({ title: 'Ships by class, No
 put('README.md', `
 # Wren-4 Beacon Station
 
-The working repository for Wren-4, a fictional two-crew navigation beacon at the trailing Lagrange point of the gas giant Vesna c. Ships crossing the Oriel Belt steer by its pulse. Everything the station records lives here as Markdown: the log, the space weather, the eclipse schedule, the traffic, the signals and the noodles.
+Wren-4 is a two-crew navigation beacon at the trailing Lagrange point of the gas giant Vesna c. Ships crossing the Oriel Belt steer by its pulse. This is everything the station knows, written down where the next crew can find it: the log, the space weather, the eclipse schedule, the traffic, the signals and the noodles.
 
-> [!IMPORTANT]
+![Wren-4 from the approach lane, Vesna c behind it](tour/panorama.svg)
+
 > **A note from Bray, for whoever reads this next.**
 >
 > Every 26 days since 2230, something out in the trailing cluster has sent this station a signal. Nobody knows what it is. Quill calls it instrument noise and has asked me to stop talking about it, so I am writing it down instead.
 >
 > If you want to find out, start with the *Unexplained narrowband* row on the [signals page](signals.md#detections). There is more hidden around this station than the documents table admits.
-
-![Solar wind speed through November](charts/solar-wind-november.svg)
 
 ## At a glance
 
@@ -316,6 +341,27 @@ The working repository for Wren-4, a fictional two-crew navigation beacon at the
 | Unexplained signals logged this year | ${sum(signals[13].counts)} |
 
 Solar wind this month: ${spark(days.map((x) => x.sw))}
+
+![Solar wind speed through November](charts/solar-wind-november.svg)
+
+## The station
+
+<img src="tour/hab.svg" alt="The hab ring, fourteen windows and four spokes" width="640">
+
+Fourteen windows, four spokes, one hub. Three of the windows have been shuttered since 2238. The hub does not turn, which is where you sleep and where the good chair is not.
+
+## Standing orders
+
+1. Two people for anything outside. No exceptions, and none have ever been asked for.
+2. The beacon comes first. If you are choosing between the beacon and the hydroponics, shed the hydroponics.
+3. Log the watch before you sleep, not after you wake. Quill will know.
+4. If the beacon goes quiet, open the [runbook](runbooks/beacon-silent.md) before you open the panel.
+
+The one command worth memorising, because it answers most of the questions the panel does:
+
+\`\`\`sh
+beaconctl status --watch
+\`\`\`
 
 ## Documents
 
@@ -335,12 +381,33 @@ Solar wind this month: ${spark(days.map((x) => x.sw))}
 
 ## Crew
 
+<img src="tour/badge.svg" alt="The station badge" width="28"> Commissioned 2229, crewed continuously since.
+
 | Name | Role | Aboard since | Notes |
 | :--- | :--- | :---: | :--- |
 | Ada Quill | Station chief | 2231 | Writes the log. Owns the good multimeter. |
 | Tomas Bray | Systems technician | 2242 | Recalibrates the antenna more than it needs. |
 | MOTH-3 | Maintenance drone | 2238 | Six legs, one opinion, several spare parts. |
 | [Fresnel](crew/fresnel.md) | Cat | 2240 | Not on the manifest. Has never missed a watch. |
+
+## How these files are kept
+
+You will add to this, so here is what the conventions are. All of it is still text, and none of it needs a program this station does not already have.
+
+> [!NOTE]
+> A block written like this is a callout, and the runbook uses them for the steps that will bite you. It is the one piece of formatting worth reaching for when something is genuinely dangerous.
+
+- Numbers you might want to sort, plot or hand to something else go in a \`csv\` block rather than a table. [Every eclipse this month](eclipses.md#every-eclipse-this-month) is kept that way, and so is the receiver log for the night of the 17th.
+- Diagrams are written as Mermaid, so they still read as text when nothing is there to draw them. The [work plan](maintenance.md#work-plan) is a Gantt chart written in about twelve lines.
+- Where the working matters more than the answer, write the working. The [link budget](beacon.md#link-budget) keeps the free-space term as $20\\log_{10}(4\\pi d / \\lambda)$ rather than a number, because the number is wrong the moment the geometry moves.
+- ==Highlight the one line that matters== instead of bolding half a paragraph. The incident report does it once, on the sentence the whole case rests on.
+- A chart that needs its numbers beside it is Vega-Lite, which is what the [signals](signals.md) page uses.
+
+Before you hand over to the crew after you:
+
+- [ ] Read the runbook front to back, not the summary
+- [ ] Walk the ring once with the outgoing chief
+- [ ] Find out what the narrowband is
 
 <!-- The documents table does not list every room. -->
 `);
@@ -370,6 +437,17 @@ ${logRows}
 
 ![Ships logged per day, stacked by class](../charts/traffic-by-day.svg)
 
+The pane that cracked on the 17th is the third bay up on ![Mast 1][mast], which is also where the dish mount is, so both jobs wait on the same EVA.
+
+<div align="center">
+  <figure>
+    <img src="../tour/mast.svg" alt="Mast 1, third bay up" width="200">
+    <figcaption>Mast 1 from the cupola, the morning after.</figcaption>
+  </figure>
+</div>
+
+Quill's photograph of the same mast, taken before the storm, is ![mast] for comparison; nothing in it looks different.
+
 Eclipses lengthen as the station's orbit tilts toward the planet's shadow:
 
 \`\`\`mermaid
@@ -388,10 +466,13 @@ ${days.filter((x) => x.blackout).map((x) => `${DATE(x.d)}  ${'█'.repeat(x.blac
 
 ## Remarks
 
-- [x] Log countersigned by the inspector on ${DATE(12)}
+- [x] Log countersigned by the inspector on ${DATE(12)} :heavy_check_mark:
+- [ ] Return the inspector's coffee cup :coffee: (Bray says it is ours now)
 - [x] Incident report filed for ${DATE(STORM)}
 - [ ] Order a spare sensor-mast pane before the next storm
-- [ ] Ask the tender for more oranges
+- [x] ~~Ask the tender for more oranges~~ The tender brought them unasked, which has never happened before
+
+[mast]: ../tour/mast.svg "Mast 1, sensor bay three"
 
 <!-- Bray: Quill, if you ever read this file raw, the reserved bits are not radiation. They say the same thing every ten seconds. -->
 `);
@@ -475,6 +556,23 @@ stateDiagram-v2
     Dark --> Dark: backup cryocooler cold
 \`\`\`
 
+## What the receiver heard while the beacon was dark
+
+The dish listens between pulses and keeps its own log. These are the detections either side of the silence. ==The station transmitted nothing between 02:14 and 02:41==, so nothing in this window is the station hearing itself.
+
+\`\`\`csv
+time,band,freq_mhz,snr_db,seconds,note
+01:48,Hydrogen line,1420.4057,7.2,12,routine
+02:02,Decametric burst,22.5,9.1,40,Vesna c
+02:06,Hydrogen line,1420.4057,6.8,9,routine
+02:19,Unexplained narrowband,1420.4058,57.1,70,"beacon dark, nothing transmitting"
+02:33,Decametric burst,22.5,8.4,26,Vesna c
+02:58,Hydrogen line,1420.4057,7.0,11,routine
+03:41,Water maser,22.2350,12.6,18,routine
+\`\`\`
+
+The 02:19 row is the one to look at. Fifty-seven decibels over the noise floor, on the bearing of the trailing cluster, seventy seconds long, five minutes into a silence nobody outside this station knew about yet.
+
 ## Last frames before the silence
 
 The transmitter monitor keeps the last ten frames it sent. The fields are those of the [pulse format](../beacon.md#pulse-format): sync word, station ID, epoch, sub-second, hazard flags, CRC.
@@ -484,6 +582,23 @@ ${frames.join('\n')}
 \`\`\`
 
 During a storm with a blackout forecast the hazard byte should read \`06\`. Bray has pointed out, more than once, that it does not. Quill puts it down to radiation damage in the capture buffer. Every CRC checks.
+
+Bray wrote this and left it in the log. He has not said what it prints.
+
+\`\`\`python
+# Hazard byte, last ten frames before the silence. In a storm every one of
+# these should read 0x06. Bits 3 to 7 carry something else.
+FRAMES = [${[...OUTBOUND].map((ch) => '0x' + hex(hazardByte(ch), 2)).join(', ')}]
+
+def letter(hazard_byte):
+    """Bits 3 to 7, as a letter. A = 1."""
+    return chr((hazard_byte >> 3) + ord("@"))
+
+assert all(b & 0x07 == 0x06 for b in FRAMES), "storm flags intact"
+print("".join(letter(b) for b in FRAMES))
+\`\`\`
+
+<figure><img src="../tour/cryo.svg" alt="The backup transmitter cryocooler, reading 18 K and warm" width="420"><figcaption>The cryocooler at 02:20, reading 18 K. It needs 4 K, and forty minutes to get there.</figcaption></figure>
 
 ## Why the backup failed
 
@@ -511,6 +626,8 @@ put('beacon.md', `
 # Beacon specification
 
 Wren-4 transmits a timing pulse that ships use for position and a slow data channel that carries the belt's hazard bulletin.
+
+<div align="left"><figure><img src="tour/mast.svg" alt="Mast 1, twelve lattice bays and the beacon on top" width="200"><figcaption>Mast 1. Twelve bays, two guy runs, and the only structure aboard nobody touches alone.</figcaption></figure></div>
 
 ## Pulse format
 
@@ -551,6 +668,10 @@ struct wren_pulse {
 | Bulletin | 8.455 GHz | 250 kHz | 50 W | Hazard bulletin, 1 kbit/s |
 | Backup | 2.290 GHz | 2 MHz | 40 W | Timing only, when the main chain fails |
 | Distress | 406.0 MHz | 3 kHz | 5 W | Omnidirectional tone |
+
+<img src="tour/dish.svg" alt="The receiver dish, aimed at the trailing cluster" width="320" align="right">
+
+Between pulses the same aperture listens, which is why the budget below is written for the transmit path and read for both.
 
 ## Link budget
 
@@ -738,6 +859,8 @@ ${weeks.map(([a, b]) => {
 > [!WARNING]
 > On ${DATE(STORM)} the storm-shelter heaters and the eclipse overlapped. Charge fell to ${socMin}%, and it took three days of sunlit orbits to climb back above 60%. Do not run the shelter heaters during an eclipse unless someone is in the shelter.
 
+<div align="center"><figure><img src="tour/power.svg" alt="Six cells on bus A, cell five at 39 percent" width="560"><figcaption>Bus A on the morning of the 18th. Cell five has not come back.</figcaption></figure></div>
+
 ## Power budget
 
 | Load | Sunlight (W) | Eclipse (W) | Storm (W) |
@@ -757,6 +880,12 @@ const regulars = [
   ['*Ormond Drift*', 'Tanker', 'Harrow Yard', 'Farside Depot', 'Called us during the storm'],
   ['*Pick of the Belt*', 'Ore hauler', 'Rock 2231-QK', 'Oriel Ring', 'Leaves at shift change, back by next'],
   ['*Tern*', 'Survey', 'Farside Depot', 'Trailing cluster', 'Counts rocks. Brought biscuits.'],
+  ['*鹮*', 'Liner', 'Wan-Ho Ring', 'Vesna c-II', 'Named for a bird nobody aboard has seen'],
+  ['*한빛*', 'Tender', 'Sejong Station', 'Oriel Ring', 'Brings the oranges ⭐'],
+  ['*نسيم*', 'Survey', 'Qasr Depot', 'Trailing cluster', 'Works the cluster edge and reports nothing'],
+  ['*נחשון*', 'Ore hauler', 'Beit Marr', 'Oriel Ring', 'First through the lane after a storm, always'],
+  ['*Zéphyr*', 'Liner', 'Harrow Yard', 'Farside Depot', 'Odd days only, and never late'],
+  ['*Rene\u0301e*', 'Survey', 'Harrow Yard', 'Rock 2231-QK', "Quill's first posting was aboard her"],
   ['*Unregistered, no transponder*', 'Unidentified', '?', '?', 'Twice this month, no lights, no reply'],
 ];
 put('traffic.md', `
@@ -779,6 +908,10 @@ pie showData
 ${classTotals.filter((c) => c.v).map((c) => `    "${c.name}" : ${c.v}`).join('\n')}
 \`\`\`
 
+<img src="tour/panorama.svg" alt="The approach lane, Wren-4 at station keeping" width="1200">
+
+This is the view from the lane, which is what a ship sees for about forty minutes on its way past.
+
 ## Where they were bound
 
 \`\`\`mermaid
@@ -797,11 +930,15 @@ Farside Depot,Trailing cluster,${classTotals[4].v}
 | ---: | ${CLASSES.map(() => '---:').join(' | ')} | ---: |
 ${days.map((x) => `| ${x.d} | ${CLASSES.map((c) => x.ships[c] || '·').join(' | ')} | ${shipTotal(x)} |`).join('\n')}
 
+<div align="center"><figure><img src="tour/cupola.svg" alt="The cupola, with the nav lock readout" width="420"><figcaption>The cupola. Every ship below is a number that appeared on that readout first.</figcaption></figure></div>
+
 ## Regulars
 
 | Ship | Class | From | To | Remarks |
 | :--- | :--- | :--- | :--- | :--- |
 ${regulars.map((x) => `| ${x.join(' | ')} |`).join('\n')}
+
+Names are kept as the registering port writes them, so the first column runs in five scripts and two directions. The yard's manifest software cannot line them up either.
 `);
 
 const months = monthly.map((x) => x.m);
@@ -812,6 +949,8 @@ put('signals.md', `
 Between pulses the beacon's dish listens. The receiver logs every detection above five sigma, sorted into bands. Most of it is molecules in the belt's gas and the planet's aurora. Some of it is the station hearing itself. One band we cannot explain.
 
 ![Signal detections as a heat map](charts/signals-heatmap.svg)
+
+<div align="right"><figure><img src="tour/dish.svg" alt="The receiver dish" width="240"><figcaption>Aimed at the trailing cluster since before either of us arrived. Nobody aboard aimed it.</figcaption></figure></div>
 
 ## Detections
 
@@ -827,6 +966,27 @@ ${signals.map((s) => `| ${s.name === 'Fresnel near a receiver' ? `[${s.name}](cr
 \`\`\`text
 ${''.padEnd(28)}${months.map((m) => m[0]).join(' ')}
 ${signals.map((s) => `${s.name.padEnd(28)}${s.counts.map((v) => heat(v, Math.max(...s.counts))).join(' ')}`).join('\n')}
+\`\`\`
+
+## The count, month by month
+
+The unexplained band on its own, which is the drawing Bray made to show Quill the counts were not random. She said a jagged line is exactly what random looks like.
+
+\`\`\`vega-lite
+{
+  "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+  "description": "Unexplained narrowband detections by month, Wren-4, 2244",
+  "data": {
+    "values": [
+      ${months.map((m, i) => `{"month": "${m}", "detections": ${signals[13].counts[i]}}`).join(',\n      ')}
+    ]
+  },
+  "mark": {"type": "bar", "tooltip": true},
+  "encoding": {
+    "x": {"field": "month", "type": "ordinal", "sort": null, "title": "Month"},
+    "y": {"field": "detections", "type": "quantitative", "title": "Detections"}
+  }
+}
 \`\`\`
 
 ## The signal year
@@ -900,6 +1060,10 @@ xychart-beta
     bar [${weeks.map(([a, b]) => round(sum(days.filter((x) => x.d >= a && x.d <= b).map((x) => x.sw)) / 900, 1)).join(', ')}]
 \`\`\`
 
+<img src="tour/stores.svg" alt="The stores locker, bin \\[8\\] empty" width="240" align="right">
+
+Bin 8 has been empty since the 17th. The yard acknowledged the request and has not scheduled it.
+
 ## Work plan
 
 \`\`\`mermaid
@@ -921,6 +1085,12 @@ gantt
         Calibrate feed                :         c2,     2244-12-07, 1d
         Calibrate feed                :         c3,     2245-01-04, 1d
 \`\`\`
+
+<figure><img src="tour/bench.svg" alt="Bench 2, with the good multimeter" width="640"><figcaption>Bench 2. The good multimeter is the one that reads to four places, and it does not leave this bench.</figcaption></figure>
+
+<img src="tour/moth.svg" alt="MOTH-3" height="90">
+
+MOTH-3 does the outside half of this schedule. Six legs, one opinion, and a service interval nobody has ever met.
 
 ## Calibration schedule
 
@@ -955,13 +1125,17 @@ flowchart TD
     J --> K
 \`\`\`
 
+<img src="../tour/airlock.svg" alt="EVA 1" width="180" align="left">
+
+Step 6 is the only one that takes you outside. Nobody does it alone, and nobody does it during a blackout forecast.
+
 ## Steps
 
 1. Check the amplifier is powered. The bay fans are audible from the hatch.
 2. If it is silent, check the bus panel:
    - Bus above 110 V: reset breaker **P7**.
    - Bus below 110 V: shed the hydroponics lights, then check again.
-3. Watch for the controller heartbeat LED. If it is dark for more than 5 seconds, power-cycle the controller.
+3. Watch for the controller heartbeat LED. ~Wait a full minute before power-cycling.~ Superseded 2244-11-18: if it is dark for more than 5 seconds, power-cycle the controller.
 4. If phase lock will not go green, switch to the backup chain:
    \`\`\`sh
    beaconctl chain --select backup --confirm
@@ -969,6 +1143,50 @@ flowchart TD
    \`\`\`
 5. If the backup will not key either, key the beacon by hand from the manual panel and keep time from the reference clock. Wake the other crew member.
 6. Write what you did in the [log](../log/2244-11.md).
+
+## Keying by hand
+
+Step 5 in full. Do not start this without the other crew member awake and in the cupola.
+
+### Before you key
+
+#### At the panel
+
+Set the mode switch to MANUAL and confirm the interlock lamp is out. If it is lit the chain is still live and keying by hand will back-feed the amplifier.
+
+The interlock will not clear from the console. Hold <kbd>Alt</kbd> + <kbd>Break</kbd> on the panel keypad for three seconds, which is the only thing on this station that still needs a key combination.
+
+#### At the reference clock
+
+Take the time from the caesium reference, not from the console. The console clock is disciplined by the beacon, so during an outage it drifts with whatever you are about to send.
+
+### Keying
+
+Ten seconds on, fifty off, on the minute. Count with the reference, not in your head.
+
+#### If you lose count
+
+Stop. A gap is recoverable and a wrong pulse is not, because a ship that locks onto a wrong pulse steers on it for the next four hours.
+
+##### Recovering the count
+
+Wait for the next whole minute on the reference and start again from there. Note the gap in the log with the minute it started.
+
+###### What the yard needs from you afterwards
+
+The start minute, the gap length in whole seconds, and the reference serial. Nothing else. They will ask for the console log and it is the one thing that is worthless here.
+
+## If none of that works
+
+Call the yard, which is Harrow Yard Refit &amp; Overhaul on the paperwork and never on the radio. The duty desk is <duty@oriel-yard.example> and answers inside four hours on a working day, longer during a storm. The escalation form is at https://oriel-yard.example/forms/beacon-outage and wants the fault code from the table below. It will accept the code in the address instead, as \`?code=E12&station=WREN4\`, which saves a page. The pulse format it asks you to confirm is published at <https://oriel-yard.example/std/BCN-4.pdf>.
+
+### The line to put in your shell profile
+
+Fenced with tildes because the line itself is full of backticks, and a backtick fence would end halfway through it.
+
+~~~sh
+alias bstat='echo "\$(beaconctl status --once)" && echo "ref \`refclk --serial\`"'
+~~~
 
 ## Fault codes
 
@@ -999,6 +1217,14 @@ Served on the last night of every month, and on any night the tender is cancelle
 | :--- | ${[1, 2, 3, 4, 6].map(() => '---:').join(' | ')} |
 ${noodles.map(([n, q, u]) => `| ${n} | ${[1, 2, 3, 4, 6].map((k) => `${round(q * k, 1)} ${u}`.trim()).join(' | ')} |`).join('\n')}
 
+<p align="center"><img src="tour/galley.svg" alt="The galley, with the noodle stores" width="420"></p>
+
+Everything below happens at that counter, in the pot on the left.
+
+![Three seats, two crew, one cat](<tour/mess deck.svg> "Quill's seat is the one facing the hatch")
+
+It is eaten at that table, which seats three and has never needed to.
+
 ## Method
 
 1. Bring the water to the boil. At station pressure that is 94 °C, so add a minute to everything.
@@ -1023,8 +1249,8 @@ pie title Where the 12 minutes go
 /* --------------------------------------------------------------- meeting -- */
 
 // The morning after the outage. The site demo opens on this document, so it is
-// the ordinary kind of page most people keep in a repo, with the mystery left
-// as one line in the parking lot.
+// the ordinary kind of page anyone would keep alongside their work, with the
+// mystery left as one line in the parking lot.
 {
   const byName = Object.fromEntries(stores.map(([item, unit, cap, onHand, reorder]) => [item, { unit, onHand, reorder }]));
   const storeRows = [
@@ -1068,6 +1294,10 @@ ${storeRows.join('\n')}
 
 Xenon and waveguide gaskets are also below their reorder levels and are already on the next tender. The full list is in [maintenance](../maintenance.md#stores).
 
+![](../tour/stores.svg)
+
+Bray put this on the screen rather than reading the list out.
+
 ## 3. Tender schedule
 
 | Tender | Date | Carrying |
@@ -1086,9 +1316,9 @@ Xenon and waveguide gaskets are also below their reorder levels and are already 
 
 | # | Action | Owner | Due | Status |
 | ---: | :--- | :--- | :--- | :--- |
-| 1 | Put the backup cryocooler in warm standby | Bray | 2244-11-18 | Done |
-| 2 | Add the full-power backup test to the weekly checklist | Quill | 2244-11-20 | Open |
-| 3 | Order hardened controller boards | Quill | 2244-11-21 | Open |
+| 1 | Put the backup cryocooler in warm standby | Bray | 2244-11-18 | ![done](../tour/pip-green.svg) Done |
+| 2 | Add the full-power backup test to the weekly checklist | Quill | 2244-11-20 | ![open](../tour/pip-amber.svg) Open |
+| 3 | Order hardened controller boards | Quill | 2244-11-21 | ![blocked](../tour/pip-red.svg) Blocked on the yard |
 | 4 | Fit the replacement sensor-mast pane | Bray | 2244-11-21 | Open |
 | 5 | Send the storm write-up to the forecast office | MOTH-3 | 2244-11-22 | Open |
 
@@ -1121,6 +1351,8 @@ put('crew/fresnel.md', `
 | Found | Asleep in the waveguide access port, warm |
 | On the manifest | No |
 
+<figure><img src="../tour/waveguide.svg" alt="WG-2 access port, hatch open" width="420"><figcaption>WG-2. She came out of this at 02:14 with no ship docked.</figcaption></figure>
+
 ## Favourite places
 
 | Place | How often | Notes |
@@ -1139,6 +1371,16 @@ put('crew/fresnel.md', `
 - Refused the medic's treats. Accepted Bray's.
 
 </details>
+
+The two she actually uses, in order:
+
+<img src="../tour/bunk.svg" alt="The hub bunk" width="300" height="169"> <img src="../tour/airlock.svg" alt="The EVA hatch, with a suit beside it" width="300">
+
+The bunk because it does not turn, and the hatch because the suit is warm.
+
+[![The lens mark on her chest, close enough to read](<../tour/lens (detail).svg>)](fresnel.svg)
+
+The mark on her chest is a lens, etched not printed. Nobody at the yard chips a cat with a lens.
 
 ## Rules
 
@@ -1173,9 +1415,30 @@ Welcome to Wren-4. The station is in good order and most of what you need is in 
 
 ## 2. Quirks
 
-- The waveguide access port is always warm, even in eclipse. I never found out why.
-- If you find a moth, it did not come on the tender.
-- The receiver logs a narrowband signal from the trailing cluster every 26.3 days. Section 3 explains it, as far as I can.
+* The waveguide access port is always warm, even in eclipse. I never found out why.
+* If you find a moth, it did not come on the tender.
+* The receiver logs a narrowband signal from the trailing cluster every 26.3 days. Section 3 explains it, as far as I can.
+
+The three that will cost you time if nobody tells you, written out properly because the runbooks do not cover them:
+
++ _Scrubber 3._ It whistles above 60% load and the whistle is not the fault. The fault is the mount, which resonates. Shim it and you will lose a week finding out the whistle is still there.
+
++ _The hydroponics timer._ It is set to station time, which the beacon disciplines. During an outage it drifts with the beacon, so after any long silence the lights come on late and the tomatoes notice before you do.
+
++ _The tender's manifest._ It arrives as a printout and the printout is authoritative, whatever the file says. I lost an argument about this in 2224 and the yard has never revisited it.
+
+___
+
+Two things I was told on my own first day, which I pass on:
+
+1) Never trust a reading you have not taken twice, and never take the second one the same way.
+2) The station will outlast you. Write for whoever is here in forty years, ***not*** for the yard's next audit.
+
+> The chief before me put it better:
+>
+> > You are not keeping a beacon lit. You are keeping a promise somebody made to people you will never meet.
+>
+> She was right, and I have never improved on it.
 
 ## 3. The reserved bits
 
@@ -1186,7 +1449,11 @@ In June 2229 I was alone for eclipse season, and I did something the specificati
 | Value | ${code.join(' | ')} |
 | Hazard byte in a storm | ${[...OUTBOUND].map((ch) => hex(hazardByte(ch), 2)).join(' | ')} |
 
-Nobody noticed, because nobody reads reserved bits. On 2230-08-02 at 02:14 station time, something answered.
+Nobody noticed, because nobody reads reserved bits. If you want to see it for yourself, the monitor will dump the byte on its own:
+
+    beaconctl monitor --field hazard --raw
+
+On 2230-08-02 at 02:14 station time, something answered. I had been running it for fourteen months by then and had stopped expecting anything, which is the only reason I can tell you exactly what I was doing when it came in, because it was nothing at all, and I have gone over that hour so many times since that it has worn smooth in the way a memory does when you handle it too often, and I can no longer swear to the parts that matter most.
 
 | | |
 | :--- | :--- |
@@ -1195,6 +1462,19 @@ Nobody noticed, because nobody reads reserved bits. On 2230-08-02 at 02:14 stati
 | Duration | 70 seconds |
 | Repeats | Every 26.3 days |
 | Direction | The trailing cluster |
+
+What settles it is the arithmetic, and the arithmetic has not moved in fifteen years. Against this receiver, in a one-hertz channel:
+
+$$
+N = k\\,T_\\text{sys}\\,B = -214.1\\ \\mathrm{dBW}
+\\qquad (T_\\text{sys} = 28\\,\\mathrm{K}, B = 1\\,\\mathrm{Hz})
+$$
+
+$$
+\\mathrm{SNR} = P_r - N = -157.0 - (-214.1) = 57.1\\ \\mathrm{dB}
+$$
+
+Noise does not arrive at fifty-seven decibels above the floor, on one bearing, every 26.3 days, for fifteen years.
 
 I reported it once. The yard sent a psychologist and a month of leave, and I stopped reporting it.
 
@@ -1217,7 +1497,9 @@ The bits are still set. I could not bring myself to clear them. If you want to a
 - [ ] Tell the next chief in person
 - [ ] Find out what they want
 
-Wynn
+Wynn Achterberg  
+Station chief, 2229 to 2231\\
+Forwarding address: the tender knows
 `);
 
 // Fresnel's portrait. The lens mark on her chest carries a message in type too
@@ -1264,6 +1546,514 @@ ${message}
 `;
   mkdirSync(join(OUT, 'crew'), { recursive: true });
   writeFileSync(join(OUT, 'crew', 'fresnel.svg'), portrait);
+}
+
+// ---- Station tour: the pictures -------------------------------------------
+//
+// One illustration per module, drawn at a spread of shapes so the tour page can
+// put the same picture machinery through every size and alignment: a panorama
+// wider than any column, a mast taller than the window, a square galley, and
+// pips small enough to sit inside a line of text. Two are filed under names
+// that Markdown cannot write plainly, a space in one and parentheses in the
+// other, because an address is part of the picture too.
+{
+  const TOUR = join(OUT, 'tour');
+  mkdirSync(TOUR, { recursive: true });
+  const s = rng(22441118);
+  const stars = (w, h, n) =>
+    Array.from(
+      { length: n },
+      () =>
+        `<circle cx="${round(s() * w, 1)}" cy="${round(s() * h, 1)}" r="${round(0.4 + s() * 1.2, 2)}" fill="#e8ecf4" fill-opacity="${round(0.25 + s() * 0.65, 2)}"/>`
+    ).join('\n');
+  const pic = (w, h, title, body, stamp = true) =>
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${w} ${h}" width="${w}" height="${h}" font-family="ui-monospace, monospace">
+<title>${title}</title>
+<rect width="${w}" height="${h}" fill="#12162a"/>
+${stars(w, h, Math.max(18, Math.round((w * h) / 3200)))}
+${body}
+${stamp ? `<text x="${round(w - w / 40, 1)}" y="${round(h - h / 26, 1)}" text-anchor="end" font-size="${round(Math.min(w, h) / 26, 1)}" fill="#5b6270">${w} x ${h}</text>` : ''}
+</svg>
+`;
+
+  // Vesna c's limb, placed by the caller. The bands are clipped to the disc, and
+  // the offsets are given as fractions of the radius so a picture that shows
+  // only the top cap of the planet can put its banding where the cap is.
+  const vesna = (id, cx, cy, r, offs = [0.34, 0.12, -0.12]) => `
+<defs><clipPath id="${id}"><circle cx="${cx}" cy="${cy}" r="${r}"/></clipPath></defs>
+<circle cx="${cx}" cy="${cy}" r="${r}" fill="#b98a5e"/>
+<g clip-path="url(#${id})">
+${offs
+  .map((o, i) => {
+    const y = round(cy - r * o, 1);
+    return `<path d="M${round(cx - r * 1.1, 1)} ${y} Q${cx} ${round(y - r * 0.1, 1)} ${round(cx + r * 1.1, 1)} ${y}" stroke="${i % 2 ? '#8f6644' : '#d9b184'}" stroke-width="${round(r / (18 + i * 7), 1)}" fill="none"/>`;
+  })
+  .join('\n')}
+</g>`;
+
+  // A solar wing: a framed panel ruled into cells.
+  const wing = (x, y, w, h, cols) => {
+    const cw = w / cols;
+    const rules = Array.from(
+      { length: cols - 1 },
+      (_, i) => `<path d="M${round(x + cw * (i + 1), 1)} ${y} L${round(x + cw * (i + 1), 1)} ${y + h}" stroke="#5b6270" stroke-width="1"/>`
+    ).join('');
+    return `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="#243056" stroke="#7d8594" stroke-width="2"/>${rules}<path d="M${x} ${round(y + h / 2, 1)} L${x + w} ${round(y + h / 2, 1)}" stroke="#5b6270" stroke-width="1"/>`;
+  };
+
+  // 1600 x 360. The whole station on the approach lane. Wider than any column
+  // the editor can give it, which is the point of having it.
+  writeFileSync(
+    join(TOUR, 'panorama.svg'),
+    pic(
+      1600,
+      360,
+      'Wren-4 from the approach lane',
+      `${vesna('vesna-pano', 250, 600, 390, [0.9, 0.81, 0.72, 0.63])}
+<g stroke-linecap="round">
+${wing(560, 110, 170, 74, 6)}
+${wing(560, 212, 170, 74, 6)}
+<path d="M730 152 L790 190 M730 244 L790 206" stroke="#7d8594" stroke-width="4" fill="none"/>
+<path d="M790 182 L1040 182 M790 214 L1040 214" stroke="#7d8594" stroke-width="5"/>
+<path d="M790 182 L822 214 L854 182 L886 214 L918 182 L950 214 L982 182 L1014 214 L1040 196" stroke="#5b6270" stroke-width="3" fill="none"/>
+<ellipse cx="900" cy="198" rx="96" ry="34" fill="none" stroke="#7d8594" stroke-width="11"/>
+<ellipse cx="900" cy="198" rx="96" ry="34" fill="none" stroke="#9aa2b0" stroke-width="2"/>
+<circle cx="832" cy="186" r="4" fill="#c8d65a"/><circle cx="868" cy="178" r="4" fill="#c8d65a"/><circle cx="932" cy="178" r="4" fill="#c8d65a"/><circle cx="968" cy="186" r="4" fill="#f0c56a"/>
+<rect x="1040" y="168" width="120" height="56" rx="8" fill="#2b3350" stroke="#7d8594" stroke-width="3"/>
+<path d="M1160 196 L1300 196" stroke="#7d8594" stroke-width="6"/>
+<path d="M1160 196 L1196 176 L1232 216 L1268 176 L1300 196" stroke="#5b6270" stroke-width="2.5" fill="none"/>
+<circle cx="1312" cy="196" r="13" fill="#c8d65a"/>
+<circle cx="1312" cy="196" r="24" fill="none" stroke="#c8d65a" stroke-width="2" stroke-opacity="0.55"/>
+<circle cx="1312" cy="196" r="38" fill="none" stroke="#c8d65a" stroke-width="1.5" stroke-opacity="0.28"/>
+<path d="M1352 196 L1560 196" stroke="#c8d65a" stroke-width="1.5" stroke-opacity="0.35" stroke-dasharray="14 10"/>
+</g>`
+    )
+  );
+
+  // 800 x 600. The cupola from inside: the window is the picture.
+  writeFileSync(
+    join(TOUR, 'cupola.svg'),
+    pic(
+      800,
+      600,
+      'The cupola',
+      `<defs><clipPath id="cup"><circle cx="400" cy="290" r="232"/></clipPath></defs>
+<g clip-path="url(#cup)">
+${stars(800, 600, 90)}
+${vesna('vesna-cup', 210, 560, 300, [0.5, 0.34, 0.18, 0.02])}
+<circle cx="640" cy="120" r="6" fill="#e8ecf4"/>
+</g>
+<circle cx="400" cy="290" r="246" fill="none" stroke="#5b6270" stroke-width="28"/>
+<circle cx="400" cy="290" r="246" fill="none" stroke="#9aa2b0" stroke-width="3"/>
+<circle cx="400" cy="290" r="232" fill="none" stroke="#7d8594" stroke-width="5"/>
+<g stroke="#7d8594" stroke-width="7">
+<path d="M400 58 L400 522"/><path d="M168 290 L632 290"/>
+</g>
+<circle cx="400" cy="290" r="118" fill="none" stroke="#7d8594" stroke-width="5"/>
+<rect x="132" y="512" width="536" height="64" rx="10" fill="#1b2138" stroke="#5b6270" stroke-width="3"/>
+<circle cx="184" cy="544" r="9" fill="#c8d65a"/><circle cx="220" cy="544" r="9" fill="#c8d65a"/><circle cx="256" cy="544" r="9" fill="#f0c56a"/>
+<rect x="300" y="532" width="340" height="24" rx="5" fill="#12162a" stroke="#5b6270" stroke-width="2"/>
+<text x="470" y="549" text-anchor="middle" font-size="14" fill="#9aa2b0">NAV LOCK 31.4 Mm</text>`
+    )
+  );
+
+  // 280 x 760. The antenna mast, taller than the window it is read in.
+  writeFileSync(
+    join(TOUR, 'mast.svg'),
+    pic(
+      280,
+      760,
+      'The antenna mast',
+      `<g stroke="#7d8594" stroke-width="5" fill="none" stroke-linecap="round">
+<path d="M104 690 L104 150"/><path d="M176 690 L176 150"/>
+</g>
+<g stroke="#5b6270" stroke-width="3" fill="none">
+${Array.from({ length: 12 }, (_, i) => {
+  const y = 150 + i * 45;
+  return `<path d="M104 ${y} L176 ${y + 45} M176 ${y} L104 ${y + 45} M104 ${y} L176 ${y}"/>`;
+}).join('\n')}
+</g>
+<g stroke="#5b6270" stroke-width="2" stroke-dasharray="6 5">
+<path d="M104 300 L30 700"/><path d="M176 300 L250 700"/>
+</g>
+<path d="M140 150 L140 96" stroke="#7d8594" stroke-width="7"/>
+<circle cx="140" cy="80" r="17" fill="#c8d65a"/>
+<circle cx="140" cy="80" r="31" fill="none" stroke="#c8d65a" stroke-width="2.5" stroke-opacity="0.5"/>
+<circle cx="140" cy="80" r="48" fill="none" stroke="#c8d65a" stroke-width="2" stroke-opacity="0.25"/>
+<path d="M96 210 A 60 60 0 0 1 184 210" fill="none" stroke="#9aa2b0" stroke-width="4"/>
+<rect x="44" y="690" width="192" height="30" rx="6" fill="#2b3350" stroke="#7d8594" stroke-width="3"/>
+<text x="140" y="742" text-anchor="middle" font-size="17" fill="#9aa2b0">MAST 1</text>`
+    )
+  );
+
+  // 560 x 560. Square, and the one warm room aboard.
+  writeFileSync(
+    join(TOUR, 'galley.svg'),
+    pic(
+      560,
+      560,
+      'The galley',
+      `<rect x="40" y="40" width="480" height="480" rx="14" fill="#1b2138" stroke="#5b6270" stroke-width="3"/>
+<g stroke="#5b6270" stroke-width="3" fill="none">
+<path d="M70 168 L490 168"/><path d="M70 252 L490 252"/>
+</g>
+<g fill="#7d8594">
+<rect x="92" y="122" width="34" height="42" rx="4"/><rect x="140" y="132" width="26" height="32" rx="4"/>
+<rect x="182" y="116" width="40" height="48" rx="4"/><rect x="240" y="136" width="24" height="28" rx="4"/>
+<rect x="96" y="212" width="30" height="38" rx="4"/><rect x="142" y="206" width="36" height="44" rx="4"/>
+</g>
+<rect x="300" y="196" width="190" height="56" rx="6" fill="#243056" stroke="#7d8594" stroke-width="2"/>
+<text x="395" y="231" text-anchor="middle" font-size="20" fill="#c8d65a">NOODLES</text>
+<rect x="70" y="330" width="420" height="20" rx="4" fill="#9aa2b0"/>
+<rect x="70" y="350" width="420" height="132" fill="#243056" stroke="#5b6270" stroke-width="2"/>
+<circle cx="160" cy="416" r="34" fill="none" stroke="#7d8594" stroke-width="5"/>
+<circle cx="160" cy="416" r="20" fill="#2b3350"/>
+<path d="M300 330 L300 300 Q300 288 314 288 L366 288 Q380 288 380 300 L380 330 Z" fill="#7d8594"/>
+<path d="M332 286 Q326 268 340 256 M356 286 Q350 268 364 256" stroke="#9aa2b0" stroke-width="3" fill="none" stroke-linecap="round"/>
+<rect x="404" y="286" width="46" height="44" rx="5" fill="#c9959c"/>
+<path d="M450 296 Q470 308 450 320" stroke="#c9959c" stroke-width="6" fill="none"/>`
+    )
+  );
+
+  // 900 x 480. The hab ring, seen from the truss.
+  writeFileSync(
+    join(TOUR, 'hab.svg'),
+    pic(
+      900,
+      480,
+      'The hab ring',
+      `<ellipse cx="450" cy="250" rx="330" ry="150" fill="none" stroke="#5b6270" stroke-width="56"/>
+<ellipse cx="450" cy="250" rx="330" ry="150" fill="none" stroke="#7d8594" stroke-width="44"/>
+<ellipse cx="450" cy="250" rx="330" ry="150" fill="none" stroke="#9aa2b0" stroke-width="2"/>
+<g fill="#c8d65a">
+${Array.from({ length: 14 }, (_, i) => {
+  const a = (i / 14) * Math.PI * 2;
+  const x = round(450 + Math.cos(a) * 330, 1);
+  const y = round(250 + Math.sin(a) * 150, 1);
+  return `<rect x="${round(x - 9, 1)}" y="${round(y - 7, 1)}" width="18" height="14" rx="3" fill="${i % 5 === 3 ? '#2b3350' : '#c8d65a'}"/>`;
+}).join('\n')}
+</g>
+<g stroke="#7d8594" stroke-width="7">
+<path d="M450 250 L450 100"/><path d="M450 250 L780 250"/><path d="M450 250 L120 250"/><path d="M450 250 L450 400"/>
+</g>
+<circle cx="450" cy="250" r="54" fill="#2b3350" stroke="#9aa2b0" stroke-width="4"/>
+<circle cx="450" cy="250" r="26" fill="#12162a" stroke="#5b6270" stroke-width="3"/>
+<text x="450" y="257" text-anchor="middle" font-size="16" fill="#9aa2b0">HUB</text>`
+    )
+  );
+
+  // 520 x 380. The port a cat came out of in 2230.
+  writeFileSync(
+    join(TOUR, 'waveguide.svg'),
+    pic(
+      520,
+      380,
+      'Waveguide access port',
+      `<rect x="30" y="30" width="460" height="320" rx="10" fill="#1b2138" stroke="#5b6270" stroke-width="3"/>
+<g stroke="#5b6270" stroke-width="2" fill="none">
+<path d="M30 110 L490 110"/><path d="M30 270 L490 270"/>
+</g>
+<circle cx="260" cy="190" r="112" fill="#2b3350" stroke="#7d8594" stroke-width="12"/>
+<circle cx="260" cy="190" r="112" fill="none" stroke="#9aa2b0" stroke-width="2"/>
+<circle cx="260" cy="190" r="86" fill="#12162a"/>
+<g fill="#9aa2b0">
+${Array.from({ length: 8 }, (_, i) => {
+  const a = (i / 8) * Math.PI * 2 + 0.39;
+  return `<circle cx="${round(260 + Math.cos(a) * 100, 1)}" cy="${round(190 + Math.sin(a) * 100, 1)}" r="6"/>`;
+}).join('')}
+</g>
+<path d="M260 190 m-86 0 a86 86 0 0 1 172 0" fill="none" stroke="#5b6270" stroke-width="3"/>
+<path d="M382 190 L446 148 L446 232 Z" fill="#7d8594"/>
+<circle cx="244" cy="206" r="2.6" fill="#c8d65a"/><circle cx="276" cy="206" r="2.6" fill="#c8d65a"/>
+<text x="260" y="332" text-anchor="middle" font-size="18" fill="#9aa2b0">WG-2 ACCESS</text>`
+    )
+  );
+
+  // 420 x 440. MOTH-3, six legs and one opinion.
+  writeFileSync(
+    join(TOUR, 'moth.svg'),
+    pic(
+      420,
+      440,
+      'MOTH-3',
+      `<g stroke="#7d8594" stroke-width="9" fill="none" stroke-linecap="round">
+<path d="M150 230 L84 268 L60 344"/><path d="M150 262 L74 310 L86 380"/><path d="M158 292 L96 350 L126 404"/>
+<path d="M270 230 L336 268 L360 344"/><path d="M270 262 L346 310 L334 380"/><path d="M262 292 L324 350 L294 404"/>
+</g>
+<ellipse cx="210" cy="248" rx="86" ry="72" fill="#5b6270" stroke="#9aa2b0" stroke-width="3"/>
+<ellipse cx="210" cy="232" rx="62" ry="46" fill="#2b3350"/>
+<circle cx="210" cy="228" r="30" fill="#12162a" stroke="#9aa2b0" stroke-width="3"/>
+<circle cx="210" cy="228" r="17" fill="#c8d65a"/>
+<circle cx="203" cy="221" r="6" fill="#e8ecf4" fill-opacity="0.85"/>
+<path d="M164 160 Q150 108 180 78" stroke="#7d8594" stroke-width="6" fill="none" stroke-linecap="round"/>
+<path d="M256 160 Q270 108 240 78" stroke="#7d8594" stroke-width="6" fill="none" stroke-linecap="round"/>
+<circle cx="180" cy="74" r="7" fill="#c9959c"/><circle cx="240" cy="74" r="7" fill="#c9959c"/>
+<rect x="176" y="296" width="68" height="20" rx="5" fill="#12162a" stroke="#7d8594" stroke-width="2"/>
+<text x="210" y="311" text-anchor="middle" font-size="13" fill="#c8d65a">MOTH-3</text>`
+    )
+  );
+
+  // 640 x 300. The battery bay, the thing that kept the beacon lit.
+  writeFileSync(
+    join(TOUR, 'power.svg'),
+    pic(
+      640,
+      300,
+      'Battery bay',
+      `<rect x="26" y="34" width="588" height="232" rx="10" fill="#1b2138" stroke="#5b6270" stroke-width="3"/>
+${Array.from({ length: 6 }, (_, i) => {
+  const x = 52 + i * 94;
+  const fill = [88, 94, 71, 96, 39, 92][i];
+  const h = round((fill / 100) * 140, 1);
+  const col = fill < 50 ? '#f0c56a' : '#c8d65a';
+  return `<rect x="${x}" y="${68}" width="66" height="140" rx="5" fill="#12162a" stroke="#7d8594" stroke-width="2.5"/>
+<rect x="${x + 4}" y="${round(68 + 140 - h + 4, 1)}" width="58" height="${round(h - 8, 1)}" rx="3" fill="${col}" fill-opacity="0.8"/>
+<rect x="${x + 24}" y="60" width="18" height="10" rx="2" fill="#9aa2b0"/>
+<text x="${x + 33}" y="${232}" text-anchor="middle" font-size="15" fill="#9aa2b0">${fill}%</text>`;
+}).join('\n')}
+<text x="320" y="258" text-anchor="middle" font-size="15" fill="#5b6270">BUS A, SIX CELLS</text>`
+    )
+  );
+
+  // 600 x 400, filed under a name with a space in it, so the tour has a reason
+  // to write an address in the angle brackets CommonMark keeps for the purpose.
+  writeFileSync(
+    join(TOUR, 'mess deck.svg'),
+    pic(
+      600,
+      400,
+      'The mess deck',
+      `<rect x="30" y="30" width="540" height="340" rx="12" fill="#1b2138" stroke="#5b6270" stroke-width="3"/>
+<ellipse cx="300" cy="238" rx="180" ry="62" fill="#5b6270" stroke="#9aa2b0" stroke-width="3"/>
+<ellipse cx="300" cy="230" rx="180" ry="62" fill="#7d8594"/>
+<path d="M300 292 L300 336" stroke="#5b6270" stroke-width="16"/>
+<ellipse cx="300" cy="340" rx="66" ry="18" fill="#5b6270"/>
+<g fill="#2b3350" stroke="#9aa2b0" stroke-width="2.5">
+<ellipse cx="96" cy="212" rx="34" ry="24"/><ellipse cx="504" cy="212" rx="34" ry="24"/>
+<ellipse cx="300" cy="158" rx="34" ry="22"/>
+</g>
+<circle cx="238" cy="222" r="22" fill="#12162a" stroke="#9aa2b0" stroke-width="2.5"/>
+<circle cx="238" cy="222" r="13" fill="#c9959c"/>
+<rect x="318" y="206" width="44" height="30" rx="4" fill="#243056" stroke="#9aa2b0" stroke-width="2"/>
+<path d="M362 214 Q378 221 362 228" stroke="#9aa2b0" stroke-width="4" fill="none"/>
+<text x="300" y="376" text-anchor="middle" font-size="16" fill="#5b6270">THREE SEATS, TWO CREW, ONE CAT</text>`
+    )
+  );
+
+  // 400 x 400, filed under a name with parentheses, which Markdown reads as one
+  // address only when they balance. The lens mark, close.
+  writeFileSync(
+    join(TOUR, 'lens (detail).svg'),
+    pic(
+      400,
+      400,
+      'The lens mark, close',
+      `<circle cx="200" cy="196" r="150" fill="#7d8594"/>
+<ellipse cx="200" cy="196" rx="112" ry="132" fill="#f1f3f6"/>
+<ellipse cx="200" cy="196" rx="90" ry="108" fill="none" stroke="#dde1e7" stroke-width="3"/>
+<ellipse cx="200" cy="196" rx="64" ry="78" fill="none" stroke="#dde1e7" stroke-width="3"/>
+<ellipse cx="200" cy="196" rx="38" ry="48" fill="none" stroke="#dde1e7" stroke-width="3"/>
+<ellipse cx="200" cy="196" rx="14" ry="19" fill="none" stroke="#dde1e7" stroke-width="3"/>
+<g fill="#8b929e" font-size="9" text-anchor="middle" letter-spacing="0.4">
+<text x="200" y="152">WE HEARD YOU.</text>
+<text x="200" y="168">WE CANNOT CROSS</text>
+<text x="200" y="184">THE BELT. SHE CAN.</text>
+<text x="200" y="200">LOOK AFTER HER</text>
+<text x="200" y="216">AND SHE WILL</text>
+<text x="200" y="232">LOOK AFTER YOU.</text>
+<text x="200" y="248">ANSWER IN THE BITS.</text>
+</g>
+<text x="200" y="378" text-anchor="middle" font-size="15" fill="#5b6270">400 x 400</text>`,
+      false
+    )
+  );
+
+  // 640 x 360. The one part of the ring that does not turn.
+  writeFileSync(
+    join(TOUR, 'bunk.svg'),
+    pic(
+      640,
+      360,
+      'The hub bunk',
+      `<rect x="28" y="28" width="584" height="304" rx="14" fill="#1b2138" stroke="#5b6270" stroke-width="3"/>
+<path d="M58 300 Q58 120 200 110 L440 110 Q582 120 582 300 Z" fill="#243056" stroke="#7d8594" stroke-width="3"/>
+<rect x="92" y="196" width="456" height="104" rx="18" fill="#5b6270"/>
+<rect x="104" y="186" width="432" height="96" rx="16" fill="#7d8594"/>
+<path d="M132 210 L508 210 M132 238 L508 238 M132 266 L508 266" stroke="#5b6270" stroke-width="2"/>
+<rect x="140" y="168" width="120" height="30" rx="8" fill="#c9959c"/>
+<circle cx="520" cy="140" r="16" fill="#f0c56a"/>
+<path d="M520 156 L520 186" stroke="#7d8594" stroke-width="4"/>
+<rect x="86" y="118" width="86" height="54" rx="5" fill="#12162a" stroke="#9aa2b0" stroke-width="2"/>
+<circle cx="129" cy="145" r="15" fill="#b98a5e"/>
+<text x="320" y="330" text-anchor="middle" font-size="15" fill="#5b6270">HUB BUNK, NO SPIN</text>`
+    )
+  );
+
+  // 560 x 560. Aimed at the trailing cluster since before anyone aboard arrived.
+  writeFileSync(
+    join(TOUR, 'dish.svg'),
+    pic(
+      560,
+      560,
+      'The receiver dish',
+      `<g transform="translate(280,300)">
+<ellipse cx="0" cy="0" rx="200" ry="92" fill="#5b6270" stroke="#9aa2b0" stroke-width="3"/>
+<ellipse cx="0" cy="-14" rx="200" ry="92" fill="#7d8594"/>
+<ellipse cx="0" cy="-14" rx="150" ry="68" fill="none" stroke="#5b6270" stroke-width="2"/>
+<ellipse cx="0" cy="-14" rx="96" ry="44" fill="none" stroke="#5b6270" stroke-width="2"/>
+<ellipse cx="0" cy="-14" rx="44" ry="20" fill="none" stroke="#5b6270" stroke-width="2"/>
+<path d="M-70 -46 L0 -150 L70 -46" stroke="#9aa2b0" stroke-width="5" fill="none"/>
+<rect x="-22" y="-176" width="44" height="30" rx="6" fill="#2b3350" stroke="#c8d65a" stroke-width="3"/>
+<path d="M0 60 L0 150" stroke="#7d8594" stroke-width="14"/>
+<rect x="-70" y="150" width="140" height="26" rx="6" fill="#5b6270"/>
+</g>
+<g stroke="#c8d65a" stroke-width="1.6" stroke-opacity="0.4" stroke-dasharray="12 9">
+<path d="M280 124 L280 40"/><path d="M240 132 L196 52"/><path d="M320 132 L364 52"/>
+</g>
+<g fill="#e8ecf4">
+<circle cx="392" cy="70" r="3.4"/><circle cx="416" cy="52" r="2.6"/><circle cx="436" cy="78" r="3"/>
+<circle cx="410" cy="92" r="2.2"/><circle cx="432" cy="46" r="2"/>
+</g>
+<text x="432" y="118" text-anchor="middle" font-size="14" fill="#5b6270">TRAILING CLUSTER</text>`
+    )
+  );
+
+  // 420 x 560. The hatch nobody uses alone.
+  writeFileSync(
+    join(TOUR, 'airlock.svg'),
+    pic(
+      420,
+      560,
+      'The EVA hatch',
+      `<rect x="26" y="26" width="368" height="504" rx="12" fill="#1b2138" stroke="#5b6270" stroke-width="3"/>
+<path d="M60 490 L60 190 Q60 88 170 88 Q280 88 280 190 L280 490 Z" fill="#2b3350" stroke="#7d8594" stroke-width="10"/>
+<path d="M60 490 L60 190 Q60 88 170 88 Q280 88 280 190 L280 490 Z" fill="none" stroke="#9aa2b0" stroke-width="2"/>
+<circle cx="170" cy="300" r="56" fill="none" stroke="#9aa2b0" stroke-width="9"/>
+<g stroke="#9aa2b0" stroke-width="9" stroke-linecap="round">
+<path d="M170 244 L170 356"/><path d="M114 300 L226 300"/>
+<path d="M130 260 L210 340"/><path d="M210 260 L130 340"/>
+</g>
+<circle cx="170" cy="300" r="17" fill="#5b6270" stroke="#dde1e7" stroke-width="3"/>
+<g fill="#9aa2b0">
+<circle cx="86" cy="150" r="6"/><circle cx="254" cy="150" r="6"/>
+<circle cx="80" cy="330" r="6"/><circle cx="260" cy="330" r="6"/>
+<circle cx="86" cy="466" r="6"/><circle cx="254" cy="466" r="6"/>
+</g>
+<path d="M330 180 Q356 176 356 210 L356 330 Q356 350 340 350 L320 350 Q304 350 304 330 L304 210 Q304 176 330 180 Z" fill="#dde1e7"/>
+<circle cx="330" cy="158" r="26" fill="#f1f3f6" stroke="#9aa2b0" stroke-width="3"/>
+<path d="M314 152 A18 18 0 0 1 348 152 L348 164 L314 164 Z" fill="#2b3350"/>
+<rect x="312" y="350" width="36" height="86" rx="8" fill="#c9d0da"/>
+<text x="210" y="524" text-anchor="middle" font-size="16" fill="#5b6270">EVA 1, TWO CREW RULE</text>`
+    )
+  );
+
+  // 700 x 400. Where the good multimeter lives.
+  writeFileSync(
+    join(TOUR, 'bench.svg'),
+    pic(
+      700,
+      400,
+      'The workbench',
+      `<rect x="30" y="30" width="640" height="340" rx="12" fill="#1b2138" stroke="#5b6270" stroke-width="3"/>
+<rect x="60" y="250" width="580" height="22" fill="#9aa2b0"/>
+<rect x="60" y="272" width="580" height="80" fill="#243056" stroke="#5b6270" stroke-width="2"/>
+<path d="M60 96 L640 96 M60 170 L640 170" stroke="#5b6270" stroke-width="3"/>
+<g fill="#7d8594">
+<rect x="86" y="56" width="16" height="40" rx="3"/><rect x="112" y="64" width="12" height="32" rx="3"/>
+<rect x="136" y="50" width="20" height="46" rx="3"/><rect x="168" y="68" width="10" height="28" rx="3"/>
+<rect x="192" y="60" width="14" height="36" rx="3"/>
+<rect x="90" y="132" width="26" height="38" rx="3"/><rect x="128" y="140" width="18" height="30" rx="3"/>
+</g>
+<rect x="420" y="112" width="180" height="58" rx="6" fill="#2b3350" stroke="#c8d65a" stroke-width="3"/>
+<rect x="436" y="124" width="148" height="26" rx="3" fill="#12162a"/>
+<text x="510" y="144" text-anchor="middle" font-size="17" fill="#c8d65a">1.4204</text>
+<text x="510" y="164" text-anchor="middle" font-size="11" fill="#9aa2b0">THE GOOD ONE</text>
+<rect x="250" y="196" width="130" height="54" rx="6" fill="#5b6270" stroke="#9aa2b0" stroke-width="2"/>
+<rect x="276" y="176" width="78" height="26" rx="4" fill="#7d8594"/>
+<path d="M250 224 L200 224 M380 224 L430 224" stroke="#9aa2b0" stroke-width="6"/>
+<circle cx="180" cy="224" r="16" fill="none" stroke="#c9959c" stroke-width="5"/>
+<text x="350" y="336" text-anchor="middle" font-size="15" fill="#5b6270">BENCH 2, PORT SIDE</text>`
+    )
+  );
+
+  // 480 x 420. The locker the yard has not restocked.
+  writeFileSync(
+    join(TOUR, 'stores.svg'),
+    pic(
+      480,
+      420,
+      'The stores locker',
+      `<rect x="30" y="30" width="420" height="360" rx="12" fill="#1b2138" stroke="#5b6270" stroke-width="3"/>
+${[0, 1, 2].map((row) =>
+  [0, 1, 2].map((col) => {
+    const x = 64 + col * 122;
+    const y = 66 + row * 106;
+    const empty = row === 2 && col === 1;
+    return `<rect x="${x}" y="${y}" width="104" height="82" rx="7" fill="${empty ? '#12162a' : '#2b3350'}" stroke="${empty ? '#c9959c' : '#7d8594'}" stroke-width="${empty ? 3 : 2.5}"/>
+<rect x="${x + 22}" y="${y + 60}" width="60" height="12" rx="3" fill="${empty ? '#c9959c' : '#9aa2b0'}"/>
+${empty ? '' : `<rect x="${x + 16}" y="${y + 16}" width="72" height="34" rx="4" fill="#5b6270"/>`}`;
+  }).join('\n')
+).join('\n')}
+<text x="240" y="376" text-anchor="middle" font-size="15" fill="#5b6270">BIN 8 EMPTY SINCE THE 17TH</text>`
+    )
+  );
+
+  // 520 x 420. Forty minutes from standby to cold, which is the whole story.
+  writeFileSync(
+    join(TOUR, 'cryo.svg'),
+    pic(
+      520,
+      420,
+      'The backup cryocooler',
+      `<rect x="28" y="28" width="464" height="364" rx="12" fill="#1b2138" stroke="#5b6270" stroke-width="3"/>
+<rect x="150" y="96" width="140" height="210" rx="16" fill="#5b6270" stroke="#9aa2b0" stroke-width="3"/>
+<rect x="150" y="96" width="140" height="210" rx="16" fill="none" stroke="#7d8594" stroke-width="10"/>
+${Array.from({ length: 7 }, (_, i) => `<rect x="${134}" y="${118 + i * 26}" width="172" height="9" rx="4" fill="#7d8594"/>`).join('\n')}
+<ellipse cx="220" cy="96" rx="70" ry="16" fill="#9aa2b0"/>
+<path d="M220 306 L220 346" stroke="#7d8594" stroke-width="12"/>
+<rect x="160" y="346" width="120" height="22" rx="5" fill="#5b6270"/>
+<circle cx="388" cy="176" r="52" fill="#12162a" stroke="#9aa2b0" stroke-width="4"/>
+<path d="M388 176 L360 142" stroke="#c9959c" stroke-width="5" stroke-linecap="round"/>
+<circle cx="388" cy="176" r="5" fill="#dde1e7"/>
+<text x="388" y="214" text-anchor="middle" font-size="13" fill="#c9959c">+18 K</text>
+<text x="388" y="240" text-anchor="middle" font-size="11" fill="#5b6270">WARM</text>
+<g stroke="#dde1e7" stroke-opacity="0.55" stroke-width="2" stroke-linecap="round">
+<path d="M126 132 L110 122 M126 184 L108 180 M126 236 L110 244"/>
+</g>
+<text x="260" y="396" text-anchor="middle" font-size="15" fill="#5b6270">40 MINUTES TO COLD</text>`
+    )
+  );
+
+  // 96 x 96. The station badge, small enough to read inside a line of text.
+  writeFileSync(
+    join(TOUR, 'badge.svg'),
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" width="96" height="96" font-family="ui-monospace, monospace">
+<title>Wren-4</title>
+<path d="M48 4 L86 26 L86 70 L48 92 L10 70 L10 26 Z" fill="#12162a" stroke="#c8d65a" stroke-width="5"/>
+<path d="M48 16 L76 32 L76 64 L48 80 L20 64 L20 32 Z" fill="none" stroke="#5b6270" stroke-width="2"/>
+<circle cx="48" cy="48" r="11" fill="#c8d65a"/>
+<circle cx="48" cy="48" r="20" fill="none" stroke="#c8d65a" stroke-width="2" stroke-opacity="0.5"/>
+<circle cx="48" cy="48" r="29" fill="none" stroke="#c8d65a" stroke-width="1.5" stroke-opacity="0.25"/>
+</svg>
+`
+  );
+
+  // 28 x 28 each. Status pips, for reading inside a sentence or a table cell.
+  for (const [name, colour] of [
+    ['pip-green', '#c8d65a'],
+    ['pip-amber', '#f0c56a'],
+    ['pip-red', '#c9959c'],
+  ]) {
+    writeFileSync(
+      join(TOUR, `${name}.svg`),
+      `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 28 28" width="28" height="28">
+<title>${name}</title>
+<circle cx="14" cy="14" r="12" fill="#12162a" stroke="#5b6270" stroke-width="2"/>
+<circle cx="14" cy="14" r="7" fill="${colour}"/>
+</svg>
+`
+    );
+  }
 }
 
 for (const [name, text] of Object.entries(files)) {
