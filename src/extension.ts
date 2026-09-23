@@ -1,7 +1,9 @@
 import * as vscode from 'vscode';
 import {
+  commentsSetting,
   DocumentSelection,
   MarkdownEditorProvider,
+  setComments,
   setTableOfContents,
   tableOfContentsOn,
 } from './markdownEditorProvider';
@@ -90,6 +92,15 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.commands.registerCommand('sheaf.toggleTableOfContents', () =>
       setTableOfContents(!tableOfContentsOn())
+    )
+  );
+
+  // Show the notes written into the document as `<!-- … -->`, or put them away until
+  // they are wanted. Like the heading list, this is a setting rather than a property
+  // of one editor, so it takes in every open editor at once.
+  context.subscriptions.push(
+    vscode.commands.registerCommand('sheaf.toggleComments', () =>
+      setComments(commentsSetting() === 'hidden' ? 'show' : 'hidden')
     )
   );
 

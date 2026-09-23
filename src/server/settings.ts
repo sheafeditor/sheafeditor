@@ -26,6 +26,7 @@ export interface EditorConfig {
   revealSyntaxOnLine: boolean;
   doubleClickToEditSource: boolean;
   tableOfContents: boolean;
+  comments: 'show' | 'hidden';
 }
 
 export const DEFAULT_CONFIG: EditorConfig = {
@@ -33,6 +34,7 @@ export const DEFAULT_CONFIG: EditorConfig = {
   revealSyntaxOnLine: false,
   doubleClickToEditSource: true,
   tableOfContents: false,
+  comments: 'show',
 };
 
 /**
@@ -105,5 +107,8 @@ export function readConfig(root: string): EditorConfig {
     revealSyntaxOnLine: pick(raw, 'revealSyntaxOnLine', DEFAULT_CONFIG.revealSyntaxOnLine, 'boolean'),
     doubleClickToEditSource: pick(raw, 'doubleClickToEditSource', DEFAULT_CONFIG.doubleClickToEditSource, 'boolean'),
     tableOfContents: pick(raw, 'tableOfContents', DEFAULT_CONFIG.tableOfContents, 'boolean'),
+    // Only the two names the setting offers. Anything else leaves comments showing,
+    // because a comment drawn as nothing is a comment a reader cannot find.
+    comments: pick(raw, 'comments', DEFAULT_CONFIG.comments, 'string') === 'hidden' ? 'hidden' : 'show',
   };
 }

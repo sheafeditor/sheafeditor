@@ -1,10 +1,10 @@
 # Welcome to Sheaf
 
-This is a **WYSIWYG Markdown editor** for VS Code, built on _CodeMirror 6_ and styled like a modern block editor. The file on disk stays plain Markdown — what you see is a ~~preview pane~~ live rendering you can type into.
+This is a **WYSIWYG Markdown editor** for VS Code, built on _CodeMirror 6_ and styled like a modern block editor. The file on disk stays plain Markdown, and what you see is a ~~preview pane~~ live rendering you can type into.
 
 ## How it works
 
-Put your cursor on a line to reveal its raw Markdown; move away and it renders again. **Double-click** any element to edit its source. Everything is `inline code`-friendly.
+Type straight into the document: the markers are hidden and what they mean is drawn instead. To see the Markdown behind a block, put the cursor in it and press **Cmd+Alt+E** (Ctrl+Alt+E on Windows and Linux); press it again to put it away. Everything is `inline code`-friendly.
 
 ### Lists
 

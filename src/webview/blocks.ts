@@ -61,8 +61,10 @@ export {
 } from './blockModel';
 export type { BlockRange, BlockKind, TurnIntoKind } from './blockModel';
 export { slashMenuOf, filterSlashItems, SLASH_ITEMS } from './slashMenu';
-export { blockMenuItems, insertParagraphBelow, setBlockRefHost } from './blockHandle';
-export type { BlockMenuItem, BlockRefHost } from './blockHandle';
+export { blockMenuItems, insertParagraphBelow } from './blockHandle';
+export type { BlockMenuItem } from './blockHandle';
+export { setBlockRefHost } from './refs';
+export type { BlockRefHost } from './refs';
 
 registerShortcutGroup({
   title: 'Block editing',

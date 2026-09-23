@@ -25,6 +25,7 @@ type ToWebview =
   | { type: 'workspaceFiles'; id: string; files: string[] }
   | { type: 'tableWidths'; id: string; widths: TableWidths }
   | { type: 'tableBoards'; id: string; boards: TableBoards }
+  | { type: 'commentFolds'; id: string; folds: CommentFolds }
   /**
    * A data file a view block reads, by the path the view wrote. Sent in answer to
    * `dataFileRead` with its `id`, and again without one whenever the file changes.
@@ -62,6 +63,9 @@ type FromWebview =
   /** The pipe tables in this document shown as boards, and keeping them. */
   | { type: 'tableBoardsRead'; id: string }
   | { type: 'tableBoardsWrite'; boards: TableBoards }
+  /** The comments collapsed in this document, and keeping them. */
+  | { type: 'commentFoldsRead'; id: string }
+  | { type: 'commentFoldsWrite'; folds: CommentFolds }
   /** A .csv or .tsv file a view block names, relative to the document. */
   | { type: 'dataFileRead'; id: string; path: string }
   /**
@@ -160,6 +164,29 @@ function cleanTableBoards(value: unknown): TableBoards {
   return out;
 }
 
+/**
+ * The comments collapsed in one document: by comment key (the webview's digest of
+ * the comment's own text), and nothing else, because collapsed is all there is to
+ * say. A comment that is open is simply absent.
+ */
+type CommentFolds = Record<string, true>;
+
+/** Where a document's collapsed comments are kept: beside its widths and boards. */
+const commentFoldsKey = (uri: vscode.Uri): string => `sheaf.commentFolds:${uri.toString()}`;
+
+/** The longest comment key the webview writes; anything longer is not one of its digests. */
+const MAX_COMMENT_KEY = 64;
+
+/** Keep only what can be a collapsed comment, so a damaged or foreign value reads as none. */
+function cleanCommentFolds(value: unknown): CommentFolds {
+  const out: CommentFolds = {};
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return out;
+  for (const [key, folded] of Object.entries(value as Record<string, unknown>)) {
+    if (key && key.length <= MAX_COMMENT_KEY && folded === true) out[key] = true;
+  }
+  return out;
+}
+
 /** Subfolder (relative to the document) where dropped/pasted images are saved. */
 const IMAGE_FOLDER = 'assets';
 
@@ -178,6 +205,19 @@ interface EditorConfig {
   doubleClickToEditSource: boolean;
   autoSave: boolean;
   tableOfContents: boolean;
+  comments: CommentsSetting;
+}
+
+/** Whether a comment is drawn in full or shrunk to a marker. */
+export type CommentsSetting = 'show' | 'hidden';
+
+/**
+ * The setting's value, or `show` for anything that is not one of the two names.
+ * A setting nobody can read must not end in comments being drawn as nothing:
+ * a person has to be able to see that a comment is there.
+ */
+function readComments(value: unknown): CommentsSetting {
+  return value === 'hidden' ? 'hidden' : 'show';
 }
 
 /** How long to wait after the last edit before auto-saving. */
@@ -207,12 +247,31 @@ function readConfig(): EditorConfig {
     doubleClickToEditSource: cfg.get<boolean>('doubleClickToEditSource', false),
     autoSave: cfg.get<boolean>('autoSave', true),
     tableOfContents: cfg.get<boolean>('tableOfContents', false),
+    comments: readComments(cfg.get<unknown>('comments', 'show')),
   };
 }
 
 /** Whether the table of contents is on, as the setting has it now. */
 export function tableOfContentsOn(): boolean {
   return vscode.workspace.getConfiguration('sheaf').get<boolean>('tableOfContents', false);
+}
+
+/** Whether comments are drawn in full, as the setting has it now. */
+export function commentsSetting(): CommentsSetting {
+  return readComments(vscode.workspace.getConfiguration('sheaf').get<unknown>('comments', 'show'));
+}
+
+/**
+ * Show or hide comments, for every Sheaf editor and for next time.
+ *
+ * The write goes to user settings, beside the table of contents and for the same
+ * reason: whether notes to the writer are in the way is something a person wants
+ * or does not want while they are reading, rather than something a repository
+ * decides for them. Every open editor hears about it through the
+ * configuration-change listener each one already has.
+ */
+export async function setComments(value: CommentsSetting): Promise<void> {
+  await vscode.workspace.getConfiguration('sheaf').update('comments', value, vscode.ConfigurationTarget.Global);
 }
 
 /**
@@ -563,6 +622,21 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
           void this.context.workspaceState?.update(
             tableBoardsKey(document.uri),
             Object.keys(boards).length ? boards : undefined
+          );
+          break;
+        }
+        case 'commentFoldsRead': {
+          // Answered like the widths and the boards: always, with nothing when
+          // nothing is kept, so the page never waits on an answer that never comes.
+          const kept = this.context.workspaceState?.get<unknown>(commentFoldsKey(document.uri));
+          this.postMessage({ type: 'commentFolds', id: message.id, folds: cleanCommentFolds(kept) });
+          break;
+        }
+        case 'commentFoldsWrite': {
+          const folds = cleanCommentFolds(message.folds);
+          void this.context.workspaceState?.update(
+            commentFoldsKey(document.uri),
+            Object.keys(folds).length ? folds : undefined
           );
           break;
         }

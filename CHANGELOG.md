@@ -6,6 +6,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- **A heading has space above it again.** The spacing the stylesheet defined for headings had never reached the page: CodeMirror's own rules outrank it, so every heading in every document was drawn with none. Sections separate properly now, with the space above a heading rather than below it, so a heading stays attached to what it introduces.
+- **A document with a table no longer runs off the right edge of a phone screen.** The text column was being widened past the screen by the table's touch-sized command bar, which then never folded, because the room it measures is the column it had just widened. The column is the width of the window now, and anything wider than it scrolls inside its own frame.
+
+### Changed
+
+- **A code block no longer shows its ``` fences.** The block is drawn as a panel of code, and the language you wrote after the opening fence is a small label at the top right of it. The fences are still in the file; **Edit Markdown** on the block shows them, which is how you change the language. A block indented by four spaces is unchanged.
+
+## [0.2.0] - 2026-09-23
+
+### Added
+
+- **Comments are notes you can read and put aside.** A `<!-- ... -->` on its own lines is drawn as a box labelled Comment, in the style of the callouts, with a chevron that shuts it to its first line. Which comments you have collapsed is remembered for the folder, and never written into the file. A comment written inside a sentence keeps the styling it had, and `<!-- -->` inside a code block is still code.
+- **Sheaf: Toggle Comments** and the setting `sheaf.comments` put every comment away, leaving a small marker where each one is. Click a marker to read that comment.
+- **Open in Sheaf is on the right-click menu of the editor's tab and of the text itself,** as well as the Explorer's. After turning Sheaf off as the default, or dropping one file to raw text, getting a document back is wherever you happen to right-click.
+
+### Changed
+
+- **Copy ref is on the toolbar that floats over a selection,** beside Edit Markdown, and its key is now **Cmd+Shift+C** (Ctrl+Shift+C). Selecting the lines and handing them to an agent is one gesture and then one click, instead of a chord with three modifiers or a trip through the right-click menu. The old Cmd+Shift+Alt+R still works.
+- **The toolbar's view buttons pack with the rest once the bar folds onto a second row,** rather than sitting alone at the far right of it.
+- **A blank line that only separates two blocks is drawn as the gap it is,** instead of as an empty line of text. Documents read tighter: a heading and the table under it sit about 18 px closer. The blank line is still in the file, untouched, and a caret on one gives it back its height.
+
 ## [0.1.0] - 2026-09-22
 
 The first public release. Sheaf opens the Markdown files already in your repository as finished documents you can edit in place, with tables you edit like a spreadsheet. The file stays plain Markdown: an edit changes only the characters you changed, so `git diff` shows your words and nothing else.
@@ -64,5 +87,6 @@ A preview build that was never published.
 - Debounced auto-save (`sheaf.autoSave`, on by default).
 - Commands: **Open in Sheaf**, **Open as Raw Markdown (Text)**, and **Toggle Whole-Document Source Mode**.
 
-[Unreleased]: https://github.com/sheafeditor/sheafeditor/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/sheafeditor/sheafeditor/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/sheafeditor/sheafeditor/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/sheafeditor/sheafeditor/releases/tag/v0.1.0

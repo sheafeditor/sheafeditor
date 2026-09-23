@@ -42,6 +42,13 @@ const baseTheme = EditorView.theme({
     margin: '0 auto',
     padding: '0 var(--md-gutter)',
     caretColor: 'var(--md-text)',
+    // A flex item's default minimum is its widest child's min-content width, so
+    // one wide thing inside the document widens the whole column past the pane
+    // and the page scrolls sideways. On a phone that was a table's touch-sized
+    // command bar, which then never folded, because the room it measures is the
+    // column it had just widened. The column is what the pane says it is; a
+    // child too wide for it scrolls inside its own frame.
+    minWidth: '0',
   },
   '.cm-cursor, .cm-dropCursor': {
     borderLeftColor: 'var(--md-text)',
@@ -114,6 +121,33 @@ const baseTheme = EditorView.theme({
     backgroundColor: 'transparent',
     color: 'var(--md-muted)',
   },
+  /*
+   * The space above a heading, which is what separates one section from the next.
+   *
+   * Here rather than in the stylesheet, and this is the whole reason: the rules
+   * there aimed at `.tok-h1` and lost to CodeMirror's own `.ͼ1 .cm-line`, which
+   * carries two classes to their one, so every heading in every document has
+   * been drawn with no padding at all. A theme rule is prefixed with that same
+   * editor class, so it matches the base theme's weight and is injected after
+   * it. Font size, weight and colour stay in webview.css, where they work.
+   *
+   * Asymmetric on purpose: a large pad above, almost none below, so a heading
+   * belongs to what follows it rather than floating between two blocks. The
+   * numbers are smaller than the ones the stylesheet asked for, because the
+   * blank line above a heading is no longer a full line of text: it draws as an
+   * 8px gap (blankLines.ts), and that 8px is part of what a reader sees. Each
+   * level is tuned to land about 24 to 32px below the block above it.
+   *
+   * Padding, never margin. CodeMirror's height map reads each line's
+   * offsetHeight, which counts padding and not margin, and a height map that
+   * disagrees with the page sends clicks to the wrong line.
+   */
+  '.tok-h1': { padding: '0.8em 0 0.1em' },
+  '.tok-h2': { padding: '0.7em 0 0.1em' },
+  '.tok-h3': { padding: '0.8em 0 0.1em' },
+  '.tok-h4': { padding: '0.9em 0 0.1em' },
+  '.tok-h5': { padding: '0.9em 0 0.1em' },
+  '.tok-h6': { padding: '0.9em 0 0.1em' },
 });
 
 /**

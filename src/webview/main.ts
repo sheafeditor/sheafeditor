@@ -21,11 +21,12 @@ import { ContextMenuDeps, mountContextMenu } from './contextmenu';
 import { setClipboardHost, handleClipboardText } from './hostClipboard';
 import { setWorkspaceFilesHost, handleWorkspaceFiles, setLinkCompleteDocument } from './linkComplete';
 import { setBlockRefHost } from './blocks';
+import { CommentsMode, handleCommentFolds, setCommentFoldsHost, setCommentsMode } from './comments';
 import { setResourceBaseUri, setupImageIngestion, handleImageSaved } from './images';
 import { headingPosition, linkAddressAt, openLink, setFragmentHost, setLinkHost } from './linkTarget';
 import { contentWidth, DEFAULT_CONTENT_WIDTH } from './theme';
 import { coveredEnd } from './selectionExtent';
-import { buildRef, tableRowRef } from './contextmenu';
+import { buildRef, tableRowRef } from './refs';
 import { tableRowRefAt, setTableWidthsHost, handleTableWidths, setTableBoardsHost, handleTableBoards, setMoveToFile } from './tables';
 import { viewBlocks, setDataFileHost, handleDataFile, handleDataFileCreated, moveBlockToFile } from './viewBlock';
 import { minimalEdit, toWebviewText } from '../textSync';
@@ -36,6 +37,7 @@ interface EditorConfig {
   revealSyntaxOnLine: boolean;
   doubleClickToEditSource: boolean;
   tableOfContents: boolean;
+  comments: CommentsMode;
 }
 
 type ToWebview =
@@ -87,6 +89,11 @@ type ToWebview =
    * by table key, each with the header text of the column it is grouped by.
    */
   | { type: 'tableBoards'; id: string; boards: Record<string, { group: string }> }
+  /**
+   * The answer to `commentFoldsRead`: every comment collapsed in this document, by
+   * comment key. A host that keeps none never answers.
+   */
+  | { type: 'commentFolds'; id: string; folds: Record<string, true> }
   /**
    * A data file a view reads: the answer to `dataFileRead` (carrying its `id`), or
    * sent again when the file changes. `text` is the file, or `error` says why not.
@@ -198,6 +205,10 @@ mountContextMenu(rootEl, contextMenuDeps);
 setBlockRefHost({
   getFileName: () => fileName,
   copyToClipboard: (text) => vscode.postMessage({ type: 'clipboardWrite', text: fileRef(text) }),
+  // The sharing keys are bound by the editor window, and the same hosts that have
+  // that window are the ones with a terminal to send to. So the menu's own test for
+  // the terminal answers this too, rather than a second flag that could disagree.
+  hasEditorKeys: () => contextMenuDeps.sendRefToTerminal !== undefined,
 });
 
 /* ---- A data file shown as a grid ------------------------------------------ */
@@ -356,6 +367,7 @@ let config: EditorConfig = {
   revealSyntaxOnLine: false,
   doubleClickToEditSource: false,
   tableOfContents: false,
+  comments: 'show',
 };
 
 // Guards against echoing host-originated changes back to the host.
@@ -382,6 +394,9 @@ const remoteAnnotation = Transaction.remote;
 function applyConfig(view: EditorView | undefined): void {
   rootEl.style.setProperty('--md-content-width', contentWidth(config.contentWidth));
   setLivePreviewConfig({ revealSyntaxOnLine: config.revealSyntaxOnLine });
+  // Anything but `hidden` shows comments. A setting nobody can read must never end
+  // in a comment being drawn as nothing at all.
+  setCommentsMode(config.comments === 'hidden' ? 'hidden' : 'show');
   // A data file has no headings to list.
   toc.setEnabled(config.tableOfContents === true && !csvMode);
   reflectTableOfContents(config.tableOfContents === true);
@@ -643,6 +658,9 @@ window.addEventListener('message', (e: MessageEvent<ToWebview>) => {
     case 'tableBoards':
       handleTableBoards(msg.id, msg.boards);
       break;
+    case 'commentFolds':
+      handleCommentFolds(msg.id, msg.folds);
+      break;
     case 'dataFile':
       handleDataFile(msg);
       break;
@@ -682,6 +700,11 @@ setTableWidthsHost((message) => vscode.postMessage(message));
 // asked for ahead of `ready` for the same reason. With no answer a board lasts as
 // long as this page.
 setTableBoardsHost((message) => vscode.postMessage(message));
+
+// Which comments are collapsed is kept the same way, outside the file, and asked for
+// ahead of `ready` so a collapsed comment is drawn collapsed rather than shutting a
+// moment after it appears. With no answer a collapse lasts as long as this page.
+setCommentFoldsHost((message) => vscode.postMessage(message));
 
 // A view block naming a .csv or .tsv file asks the host for it. A host that cannot
 // read files never answers, and the view says so in place after a short wait.

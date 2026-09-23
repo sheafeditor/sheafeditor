@@ -19,6 +19,7 @@ order: 0
 - [Blocks](features/blocks.md): moving, duplicating, deleting and converting whole blocks, with the grip or the keyboard.
 - [Images](features/images.md): pictures drawn in place, pasted or dropped in, and resized, aligned or captioned.
 - [Callouts](features/callouts.md): quotes that open with a bracketed type, drawn as notes, tips, warnings and cautions.
+- [Comments](features/comments.md): notes written into a document as HTML comments, drawn as boxes you can collapse or put away.
 - [Slash menu](features/slash-menu.md): inserting a block by typing a slash.
 - [Files and saving](features/files-and-saving.md): how Sheaf writes your file, outside changes, and both views at once.
 - [Table of contents](features/table-of-contents.md): an optional panel of the document's headings.

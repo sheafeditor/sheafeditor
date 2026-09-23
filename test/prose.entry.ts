@@ -44,10 +44,12 @@ import { scenarios as codeBlockSelection } from './prose/codeBlockSelection';
 import { scenarios as toolbarControls } from './prose/toolbarControls';
 import { scenarios as contentWidth } from './prose/contentWidth';
 import { scenarios as alerts } from './prose/alerts';
+import { scenarios as comments } from './prose/comments';
 import { scenarios as tableOfContents } from './prose/tableOfContents';
 import { scenarios as maths } from './prose/maths';
 import { scenarios as changeMarks } from './prose/changeMarks';
 import { scenarios as linkComplete } from './prose/linkComplete';
+import { scenarios as blankLines } from './prose/blankLines';
 
 interface Result {
   name: string;
@@ -98,10 +100,12 @@ export async function runAll(): Promise<Result[]> {
     ...toolbarControls,
     ...contentWidth,
     ...alerts,
+    ...comments,
     ...tableOfContents,
     ...maths,
     ...changeMarks,
     ...linkComplete,
+    ...blankLines,
   ] as Scenario[]) {
     try {
       const ok = await s.run();

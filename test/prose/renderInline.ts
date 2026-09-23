@@ -151,14 +151,15 @@ export const scenarios: Scenario[] = [
     },
   },
   {
-    name: 'a multi-backtick code span hides its whole fence and one padding space, and code block fences stay',
+    name: 'a multi-backtick code span hides its whole fence and one padding space, as a code block hides its own',
     run: () => {
       const p = mountProse(P0 + 'Use `` a`b `` here.\n\n```js\nconst x = 1;\n```');
       const ok =
         line(p, 2) === 'Use a`b here.' &&
         same(texts(p, '.tok-inline-code'), ['a`b']) &&
-        line(p, 4) === '```js' &&
-        line(p, 6) === '```';
+        // The block's fences come off their lines; the language stays, as a chip.
+        line(p, 4) === 'js' &&
+        line(p, 6) === '';
       p.destroy();
       return ok;
     },

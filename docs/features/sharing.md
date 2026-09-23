@@ -10,7 +10,7 @@ A coding agent in your editor picks up whatever you have selected in a text edit
 
 ## Copy ref
 
-**Cmd+Shift+Alt+R** (Ctrl+Shift+Alt+R) puts a reference to what you picked on the clipboard:
+**Cmd+Shift+C** (Ctrl+Shift+C) puts a reference to what you picked on the clipboard:
 
 ```
 notes.md:12-18
@@ -22,7 +22,9 @@ fenced so they paste cleanly.
 ```
 ```
 
-It is the same thing **Copy ref** in the right-click menu gives you, so use whichever is closer to hand. With nothing selected it names the line your caret is on and quotes that line.
+It is the same thing the toolbar that floats over a selection gives you, on the button beside Edit Markdown, and the same thing **Copy ref** in the right-click menu gives you. Use whichever is closer to hand. With nothing selected it names the line your caret is on and quotes that line.
+
+Cmd+Shift+Alt+R, the key earlier versions used, still works.
 
 ### In a table
 
@@ -54,6 +56,6 @@ With no terminal open, Sheaf says so and does nothing, rather than silently swal
 
 ## Where they work
 
-Both commands are in the Command Palette, and both keys work, only while a Sheaf editor has focus. In a plain text editor they do not exist, so they cannot shadow anything you have bound there.
+Both commands are in the Command Palette, and both keys work, only while a Sheaf editor has focus. In a plain text editor they do not exist, so they cannot shadow anything you have bound there. Cmd+Shift+C opens an external terminal elsewhere in VS Code; in a Sheaf editor it copies a ref, and everywhere else it still opens the terminal.
 
 Neither command changes your document.

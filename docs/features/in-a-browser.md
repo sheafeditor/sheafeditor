@@ -16,21 +16,9 @@ Nothing leaves your machine. The address works on this computer and nowhere else
 
 From your editor, run **Sheaf: Open This Folder in a Browser** in the Command Palette. Sheaf serves the folder you have open and offers you the address, with a button to open it and a button to copy it.
 
-From a terminal, in the folder you want to serve:
+Stop it with **Sheaf: Stop Serving to the Browser**. It stops on its own when you close your editor window.
 
-```
-sheaf
-```
-
-It prints one address and opens it in your browser. Some options:
-
-```
-sheaf ~/project        the folder to serve, instead of this one
-sheaf --port 8080      a particular port
-sheaf --no-open        print the address without opening a browser
-```
-
-Stop it with **Sheaf: Stop Serving to the Browser**, or with Control-C in the terminal. It stops on its own when you close your editor window.
+There is no `sheaf` command to run in a terminal yet. Installing the extension does not put one on your path, and a package called `sheaf` on npm is somebody else's and has nothing to do with this project, so do not install it expecting this.
 
 ## What you get
 

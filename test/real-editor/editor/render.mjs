@@ -56,6 +56,20 @@ const styleOf = (S, needle) =>
 
 const hrCount = (S) => S.eval(() => document.querySelectorAll('hr.md-hr').length);
 
+/**
+ * Every rendered line's text and drawn height, in document order, for the checks
+ * on blank lines. `marked` is the class the stylesheet sizes a short blank line
+ * with, so a failure says whether the class or the pixels went wrong.
+ */
+const lineBoxes = (S) =>
+  S.eval(() =>
+    [...document.querySelectorAll('.cm-content > .cm-line')].map((l) => ({
+      text: l.textContent,
+      marked: l.classList.contains('sheaf-blank-line'),
+      height: Math.round(l.getBoundingClientRect().height),
+    }))
+  );
+
 /** Scroll with the mouse wheel over the editor until `needle` is rendered on screen. */
 async function wheelTo(S, needle, { dy = 700, max = 80 } = {}) {
   const f = await S.frame();
@@ -677,13 +691,17 @@ const allScenarios = [
       await S.press('Meta+z');
       await S.sleep(400);
       const undone = await S.disk();
-      await S.caret('Above', 3);
+      // The text below, not the text above: with the divider selected, the bar that floats
+      // over a selection sits on the line above it, and a press there lands on the bar.
+      // Either line answers the question, which is whether a click elsewhere puts the
+      // block selection away.
+      await S.caret('Below', 3);
       await S.sleep(300);
       const beside = await lineOfRule();
       const marked = picked.selected && apart(before, after) > 12;
       return {
         ok: marked && !typed.includes('Z---') && undone === DOC && beside && !beside.selected,
-        detail: `selected ${picked.selected}, pixel ${showColour(before)} -> ${showColour(after)}; after typing Z ${show(typed)}; after Cmd+Z ${undone === DOC ? 'back as it was' : show(undone)}; after clicking Above the divider selected ${beside?.selected}`,
+        detail: `selected ${picked.selected}, pixel ${showColour(before)} -> ${showColour(after)}; after typing Z ${show(typed)}; after Cmd+Z ${undone === DOC ? 'back as it was' : show(undone)}; after clicking Below the divider selected ${beside?.selected}`,
       };
     },
   },
@@ -1379,6 +1397,288 @@ const allScenarios = [
       await S.type('Z');
       const d = await S.disk(path);
       return { ok: /^\s*•/.test(r || '') && d.includes('LevZel 10:'), detail: `line ${show(r)} typed ${d.includes('LevZel 10:')}` };
+    },
+  },
+
+  /* ---- render.blank-lines ----
+   *
+   * A blank line that only separates two blocks draws as a gap rather than as a
+   * full line of body text. Only a real window can settle these: jsdom has no
+   * layout, so it can say which lines carry the class but not how tall any of
+   * them is, where a click lands, or what ArrowDown does.
+   */
+  {
+    id: 'render.blank-lines.e01',
+    feature: 'render.blank-lines',
+    name: 'The blank line between two paragraphs draws as a gap, a third the height of a line of text',
+    run: async (S) => {
+      const DOC = 'First paragraph.\n\nSecond paragraph.\n';
+      await fresh(S, 'blank-gap', DOC);
+      await S.caret('First', 2);
+      const b = await lineBoxes(S);
+      const gap = b[1];
+      const text = b[0];
+      const ok = !!gap && gap.text === '' && gap.marked && gap.height <= 12 && text.height >= 20 && gap.height < text.height / 2;
+      return { ok, detail: `blank line ${gap?.height}px (marked ${gap?.marked}), paragraph ${text?.height}px` };
+    },
+  },
+  {
+    id: 'render.blank-lines.e02',
+    feature: 'render.blank-lines',
+    name: 'Clicking the short blank line puts the caret on that line and gives it back its full height',
+    run: async (S) => {
+      const DOC = 'First paragraph.\n\nSecond paragraph.\n';
+      await fresh(S, 'blank-click', DOC);
+      await S.caret('First', 2);
+      const before = (await lineBoxes(S))[1];
+      await S.click({ sel: '.cm-content > .cm-line', nth: 1, dx: 8 });
+      const st = await S.state();
+      const after = (await lineBoxes(S))[1];
+      // Typed into the line the click chose, so the file says where the caret landed.
+      await S.type('X');
+      const d = await S.disk();
+      const ok = before.height <= 12 && st.line === 2 && !after.marked && after.height >= 20 && d === 'First paragraph.\nX\nSecond paragraph.\n';
+      return { ok, detail: `${before.height}px -> caret on line ${st.line}, ${after.height}px (marked ${after.marked}); file ${show(d)}` };
+    },
+  },
+  {
+    id: 'render.blank-lines.e03',
+    feature: 'render.blank-lines',
+    name: 'ArrowDown and ArrowUp land on the short blank line rather than stepping over it',
+    run: async (S) => {
+      const DOC = 'First paragraph.\n\nSecond paragraph.\n';
+      await fresh(S, 'blank-arrows', DOC);
+      await S.caret('First', 2);
+      await S.press('ArrowDown');
+      const onGap = await S.state();
+      const grown = (await lineBoxes(S))[1];
+      await S.press('ArrowDown');
+      const below = await S.state();
+      await S.press('ArrowUp');
+      const back = await S.state();
+      const d = await S.disk();
+      const ok = onGap.line === 2 && grown.height >= 20 && below.line === 3 && back.line === 2 && d === DOC;
+      return {
+        ok,
+        detail: `down to line ${onGap.line} (${grown.height}px), down to ${below.line}, up to ${back.line}; file unchanged ${d === DOC}`,
+      };
+    },
+  },
+  {
+    id: 'render.blank-lines.e04',
+    feature: 'render.blank-lines',
+    name: 'A heading and the table under it sit two lines apart, not three, and the file is untouched',
+    run: async (S) => {
+      const path = await S.open('wren-4/log/incident-2244-11-17.md');
+      const before = readFileSync(path, 'utf8');
+      await S.caret('What happened', 2);
+      const gap = await S.eval(() => {
+        const heading = [...document.querySelectorAll('.cm-content > .cm-line')].find((l) => l.textContent.trim() === 'Timeline');
+        if (!heading) return { error: 'no Timeline heading on screen' };
+        const blank = heading.nextElementSibling;
+        // The first table drawn after the heading, however deep in the element that carries it.
+        let table = null;
+        for (let el = heading.nextElementSibling; el && !table; el = el.nextElementSibling) {
+          table = el.matches?.('table') ? el : el.querySelector?.('table') ?? null;
+        }
+        if (!table || !blank) return { error: 'no table under the Timeline heading' };
+        const h = heading.getBoundingClientRect();
+        const t = table.getBoundingClientRect();
+        return {
+          between: Math.round(t.top - h.bottom),
+          blank: Math.round(blank.getBoundingClientRect().height),
+          marked: blank.classList.contains('sheaf-blank-line'),
+        };
+      });
+      const after = readFileSync(path, 'utf8');
+      // 77px before the blank line was shortened, 45px after. The rest is the table's
+      // own hover bar, which reserves 29px above every table whether or not it is
+      // showing; shrinking that is its own piece of work, with a real question in it
+      // about what the bar is allowed to cover.
+      const ok = !gap.error && gap.marked && gap.blank <= 10 && gap.between <= 46 && after === before;
+      return { ok, detail: gap.error ?? `heading to table ${gap.between}px, blank line ${gap.blank}px (marked ${gap.marked}); file unchanged ${after === before}` };
+    },
+  },
+  {
+    id: 'render.blank-lines.e05',
+    feature: 'render.blank-lines',
+    name: 'The block handle still reaches the paragraph under a short blank line',
+    run: async (S) => {
+      const DOC = 'First paragraph.\n\nSecond paragraph.\n';
+      await fresh(S, 'blank-grip', DOC);
+      await S.caret('First', 2);
+      await S.hover({ text: 'Second', offset: 2 });
+      const grip = await S.eval(() => {
+        const h = document.querySelector('.sheaf-block-handle');
+        if (!h || h.hidden) return { shown: false };
+        const r = h.getBoundingClientRect();
+        const target = [...document.querySelectorAll('.cm-content > .cm-line')].find((l) => l.textContent.includes('Second'));
+        const t = target.getBoundingClientRect();
+        return { shown: r.width > 4 && r.height > 4, beside: Math.abs(r.top + r.height / 2 - (t.top + t.height / 2)) <= 14 };
+      });
+      return { ok: grip.shown && grip.beside, detail: `handle shown ${grip.shown}, beside its paragraph ${grip.beside}` };
+    },
+  },
+  {
+    id: 'render.code-fence.e01',
+    feature: 'render.code-fence',
+    name: 'A code block draws no backticks, its language sits at the top right, and Edit Markdown shows the fence as written',
+    run: async (S) => {
+      const DOC = 'Before.\n\n```js\nconst x = 1;\nconst y = 2;\n```\n\nAfter.\n';
+      await S.fresh('code-fence', DOC);
+      await S.sleep(800);
+      const shape = () =>
+        S.eval(() => {
+          const rows = [...document.querySelectorAll('.cm-content > .cm-line')];
+          const fences = rows.filter((l) => l.classList.contains('sheaf-code-fence-line'));
+          const chip = document.querySelector('.md-code-lang');
+          const code = rows.find((l) => l.textContent.includes('const x = 1;'));
+          return {
+            text: rows.map((l) => l.textContent),
+            fences: fences.length,
+            heights: fences.map((l) => Math.round(l.getBoundingClientRect().height)),
+            // The chip at the right edge of the block rather than in the middle of it.
+            chip: chip ? chip.textContent : null,
+            chipRight: chip && code ? Math.round(code.getBoundingClientRect().right - chip.getBoundingClientRect().right) : null,
+          };
+        });
+      const drawn = await shape();
+      // Edit Markdown is how any block shows what it is written as, and a fence is a
+      // marker like any other: the caret alone leaves it hidden, as it does everywhere.
+      await S.caret('const x = 1;', 2);
+      await S.press('Meta+Alt+e');
+      await S.sleep(600);
+      const onFence = await S.eval(() => {
+        const row = [...document.querySelectorAll('.cm-content > .cm-line')].find((l) => l.textContent.includes('```'));
+        return {
+          text: row ? row.textContent : null,
+          height: row ? Math.round(row.getBoundingClientRect().height) : null,
+        };
+      });
+      const d = await S.disk();
+      return {
+        ok:
+          // No backticks anywhere on screen, and the language where the fence was.
+          !drawn.text.some((t) => t.includes('`')) &&
+          drawn.fences === 2 &&
+          drawn.heights.every((h) => h > 0 && h <= 14) &&
+          drawn.chip === 'js' &&
+          drawn.chipRight !== null &&
+          drawn.chipRight < 40 &&
+          // Under the caret it is a full line of raw text again.
+          !!onFence &&
+          (onFence.text ?? '').trim() === '```js' &&
+          (onFence.height ?? 0) > 14 &&
+          d === DOC,
+        detail: `${JSON.stringify(drawn)}; under the caret ${JSON.stringify(onFence)}${d === DOC ? '' : '; the file changed'}`,
+      };
+    },
+  },
+  {
+    id: 'render.spacing.e01',
+    feature: 'render.spacing',
+    name: 'A heading carries its own space above it, so a section is separated by more than the blank line',
+    run: async (S) => {
+      const DOC = 'Intro paragraph here.\n\n## Pulse format\n\nThe body under it.\n\n# A title\n\nMore body.\n';
+      await S.fresh('heading-rhythm', DOC);
+      await S.sleep(800);
+      const m = await S.eval(() => {
+        const rows = [...document.querySelectorAll('.cm-content > .cm-line')];
+        const read = (text) => {
+          const el = rows.find((l) => l.textContent.trim() === text);
+          if (!el) return null;
+          const s = getComputedStyle(el);
+          const above = rows[rows.indexOf(el) - 1];
+          return {
+            top: Math.round(parseFloat(s.paddingTop)),
+            bottom: Math.round(parseFloat(s.paddingBottom)),
+            // What a reader sees between the block above and the heading's own box.
+            gap: Math.round(parseFloat(s.paddingTop)) + (above ? Math.round(above.getBoundingClientRect().height) : 0),
+          };
+        };
+        return { h2: read('Pulse format'), h1: read('A title') };
+      });
+      const d = await S.disk();
+      return {
+        ok:
+          !!m.h2 &&
+          !!m.h1 &&
+          // The rule reaches the page at all: this was zero for weeks, because the
+          // stylesheet aimed at one class where CodeMirror's own theme uses two.
+          m.h2.top > 8 &&
+          m.h1.top > 8 &&
+          // Asymmetric: the space belongs above the heading, not below it.
+          m.h2.bottom < m.h2.top / 3 &&
+          m.h1.bottom < m.h1.top / 3 &&
+          // Enough to separate a section, not so much that the document is airy.
+          m.h2.gap >= 20 &&
+          m.h2.gap <= 40 &&
+          m.h1.gap >= 20 &&
+          m.h1.gap <= 48 &&
+          d === DOC,
+        detail: `${JSON.stringify(m)}${d === DOC ? '' : '; the file changed'}`,
+      };
+    },
+  },
+  {
+    id: 'render.toolbar.e01',
+    feature: 'render.toolbar',
+    name: 'The formatting bar right-justifies its view buttons on one row, and packs them in once it folds onto two',
+    run: async (S) => {
+      await S.fresh('toolbar-wrap', 'Some text.\n');
+      await S.sleep(700);
+      // The bar, as a person sees it: how tall it is, whether it says it folded, and how
+      // much room the spacer is taking to push the view buttons to the right edge.
+      const measure = () =>
+        S.eval(() => {
+          const bar = document.querySelector('.sheaf-toolbar');
+          const spacer = bar?.querySelector('.sheaf-tb-spacer');
+          const buttons = [...(bar?.querySelectorAll('.sheaf-tb-btn') ?? [])];
+          if (!bar || !spacer || buttons.length === 0) return { error: 'no toolbar on screen' };
+          const first = buttons[0].getBoundingClientRect();
+          const last = buttons[buttons.length - 1].getBoundingClientRect();
+          return {
+            wrapped: bar.classList.contains('is-wrapped'),
+            rows: last.top > first.top ? 2 : 1,
+            spacer: Math.round(spacer.getBoundingClientRect().width),
+            // What is left between the last button and the right edge of the bar.
+            trailing: Math.round(bar.getBoundingClientRect().right - last.right),
+          };
+        });
+      const wide = await measure();
+      const size = await S.app.evaluate(({ BrowserWindow }) => {
+        const win = BrowserWindow.getAllWindows()[0];
+        const was = win.getBounds();
+        win.setBounds({ ...was, width: 620 });
+        return was;
+      });
+      await S.sleep(1200);
+      const narrow = await measure();
+      // Put the window back, so the scenarios after this one see the window they expect.
+      await S.app.evaluate(({ BrowserWindow }, was) => BrowserWindow.getAllWindows()[0].setBounds(was), size);
+      await S.sleep(1200);
+      const back = await measure();
+      return {
+        ok:
+          !wide.error &&
+          !narrow.error &&
+          // One row: the spacer is doing its job and the buttons sit at the right edge.
+          wide.rows === 1 &&
+          !wide.wrapped &&
+          wide.spacer > 20 &&
+          wide.trailing < 20 &&
+          // Two rows: the bar says so and the spacer has stopped growing, so the last row
+          // carries on from the first instead of holding four buttons out at the end.
+          narrow.rows === 2 &&
+          narrow.wrapped &&
+          narrow.spacer <= 1 &&
+          narrow.trailing > 20 &&
+          // And it is one row again once there is room.
+          back.rows === 1 &&
+          !back.wrapped &&
+          back.spacer > 20,
+        detail: `wide ${JSON.stringify(wide)}; narrow ${JSON.stringify(narrow)}; back ${JSON.stringify(back)}`,
+      };
     },
   },
 ];

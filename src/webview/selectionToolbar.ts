@@ -24,10 +24,11 @@ import {
   blockKindOf,
   BlockKind,
 } from './toolbar';
-import { hint, registerShortcutGroup } from './shortcuts';
+import { COPY_REF_KEY, hint, registerShortcutGroup } from './shortcuts';
 import { floatingIcon, FloatingIcon } from './floatingIcons';
 import { blockRangeAt } from './blockModel';
 import { revealRange } from './revealBlock';
+import { buildRef, blockRefHost, hasRefKey } from './refs';
 import {
   floatingField,
   inlineLinkAt,
@@ -103,6 +104,11 @@ function runReveal(view: EditorView): void {
   view.focus();
 }
 
+/* ---- Copy ref ------------------------------------------------------------- */
+
+/** How long the button shows a tick after a copy, in milliseconds. */
+const COPIED_FOR = 1400;
+
 /* ---- Toolbar -------------------------------------------------------------- */
 
 interface MarkButton {
@@ -172,9 +178,40 @@ function createSelectionToolbar(view: EditorView): TooltipView {
   reveal.addEventListener('click', () => {
     if (!reveal.disabled) runReveal(view);
   });
-  if (!inCell) {
-    buttons.push(reveal);
-    dom.append(reveal, separator());
+  if (!inCell) buttons.push(reveal);
+
+  /*
+   * Copy ref beside it, because handing an agent the lines you just selected is the
+   * other thing a selection is for, and it was previously only in the right-click
+   * menu and on a chord. The clipboard write goes through the host, as every other
+   * Copy ref does, so there is one answer for what a selection's ref says.
+   *
+   * Left out inside a table cell: the cell edits in a document of its own, whose
+   * line numbers are not the file's, and the grid's own menu names the cells
+   * properly. Left out with no host, since there would be nowhere to put the text.
+   */
+  const copyRef = toolbarButton('copy', titled('Copy ref', hasRefKey() ? COPY_REF_KEY : undefined));
+  copyRef.dataset.cmd = 'copy-ref';
+  let copiedTimer: ReturnType<typeof setTimeout> | null = null;
+  copyRef.addEventListener('click', () => {
+    const host = blockRefHost();
+    if (!host) return;
+    host.copyToClipboard(buildRef(view, host.getFileName()));
+    // A clipboard write leaves nothing on screen, so the button says it took.
+    copyRef.classList.add('is-copied');
+    copyRef.innerHTML = floatingIcon('check');
+    if (copiedTimer) clearTimeout(copiedTimer);
+    copiedTimer = setTimeout(() => {
+      copiedTimer = null;
+      copyRef.classList.remove('is-copied');
+      copyRef.innerHTML = floatingIcon('copy');
+    }, COPIED_FOR);
+  });
+  const canCopyRef = !inCell && blockRefHost() !== null;
+  if (canCopyRef) buttons.push(copyRef);
+
+  if (buttons.length) {
+    dom.append(...buttons, separator());
   }
 
   const markButtons = new Map<MarkButton, HTMLButtonElement>();
@@ -356,7 +393,10 @@ function createSelectionToolbar(view: EditorView): TooltipView {
     update: (update) => {
       if (update.docChanged || update.selectionSet) refresh(update.state);
     },
-    destroy: () => doc.removeEventListener('mousedown', onDocDown, true),
+    destroy: () => {
+      if (copiedTimer) clearTimeout(copiedTimer);
+      doc.removeEventListener('mousedown', onDocDown, true);
+    },
   };
 }
 

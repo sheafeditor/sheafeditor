@@ -92,6 +92,51 @@ export const scenarios = [
     },
   },
   {
+    id: 'sharing.copy-ref.e03',
+    feature: 'sharing.copy-ref',
+    name: 'The new key and the selection toolbar\u2019s button both copy the same reference the old key does',
+    run: async (S) => {
+      await S.fresh('share-button', DOC);
+      await S.sleep(600);
+      // The plain key. Cmd+Shift+C belongs to VS Code elsewhere, so this is also the
+      // check that a Sheaf editor takes it: if the window handled it, nothing would
+      // reach the clipboard and the sentinel would still be there.
+      await S.select('Second line.');
+      await S.clipboard.write('SENTINEL-plain');
+      await S.press('Meta+Shift+c');
+      await S.sleep(900);
+      const byKey = await S.clipboard.read();
+      // The button on the bar that floats over the selection.
+      await S.select('Second line.');
+      await S.sleep(500);
+      const bar = await S.eval(() => {
+        const el = document.querySelector('.sheaf-seltb');
+        return el
+          ? [...el.querySelectorAll('.sheaf-tb-btn')].map((b) => b.dataset.cmd)
+          : null;
+      });
+      await S.clipboard.write('SENTINEL-button');
+      await S.click({ sel: '.sheaf-seltb [data-cmd="copy-ref"]' });
+      await S.sleep(700);
+      const byButton = await S.clipboard.read();
+      // It says the clipboard took it, since nothing else on screen would.
+      const ticked = await S.eval(() => !!document.querySelector('.sheaf-seltb [data-cmd="copy-ref"].is-copied'));
+      const d = await S.disk();
+      return {
+        ok:
+          !!bar &&
+          bar[0] === 'reveal' &&
+          bar[1] === 'copy-ref' &&
+          byKey === byButton &&
+          byKey.includes('share-button.md:5') &&
+          byKey.includes('Second line.') &&
+          ticked &&
+          d === DOC,
+        detail: `bar ${j(bar)}; key ${j(byKey)}; button ${j(byButton)}; ticked ${ticked}${d === DOC ? '' : '; the file changed'}`,
+      };
+    },
+  },
+  {
     id: 'sharing.terminal.e01',
     feature: 'sharing.terminal',
     name: 'Send to terminal types the reference at the prompt without submitting it',

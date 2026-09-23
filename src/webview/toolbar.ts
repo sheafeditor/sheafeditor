@@ -1286,4 +1286,35 @@ export function mountToolbar(
   const help = makeButton('keyboard', `Keyboard shortcuts (${hint('Mod-/')})`, 'sheaf-tb-help');
   help.addEventListener('click', onShowShortcuts);
   container.appendChild(help);
+
+  watchWrapping(container);
+}
+
+/**
+ * Mark the bar while its controls are on more than one row, so the stylesheet can
+ * stop pushing the view buttons to the right edge.
+ *
+ * The spacer is what right-justifies them, and on one row that is the shape people
+ * expect. Once the bar wraps it is the wrong one: the four view buttons are carried
+ * to the end of the last row with a hole in front of them, reading as a set that has
+ * come adrift rather than as the same toolbar continuing. Packed left, the rows read
+ * as one run of controls that happens to fold.
+ *
+ * Measuring beats a width: what matters is whether the bar folded, and that depends
+ * on the controls in it and the font the window draws them in, not on a number we
+ * could pick here. Collapsing the spacer cannot change the answer, since a spacer is
+ * zero wide until there is spare room to grow into, so there is no flapping between
+ * the two states.
+ */
+function watchWrapping(container: HTMLElement): void {
+  const check = (): void => {
+    const controls = container.querySelectorAll<HTMLElement>('.sheaf-tb-btn');
+    const first = controls[0];
+    const last = controls[controls.length - 1];
+    // jsdom has no layout and reports every offset as 0, which reads as one row.
+    container.classList.toggle('is-wrapped', !!first && !!last && last.offsetTop > first.offsetTop);
+  };
+  check();
+  if (typeof ResizeObserver === 'undefined') return;
+  new ResizeObserver(() => check()).observe(container);
 }

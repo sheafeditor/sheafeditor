@@ -96,6 +96,15 @@ export function indentListItem(view: EditorView): boolean {
   return true;
 }
 
+/*
+ * The two sharing keys, bound in the manifest and shown in four places: this
+ * overlay, the right-click menu, the block menu and the selection toolbar. They
+ * live here so the chord is written once and every surface says the same thing.
+ * Copy ref is the plain one of the pair, since it is the one used all day.
+ */
+export const COPY_REF_KEY = 'Mod-Shift-c';
+export const SEND_REF_KEY = 'Mod-Shift-Alt-t';
+
 interface Shortcut {
   /** CodeMirror key spec, or null for reference-only rows bound elsewhere. */
   key: string | null;
@@ -171,8 +180,8 @@ const GROUPS: Group[] = [
     items: [
       // Bound in the manifest, not here: these keys belong to the window, and the
       // commands that answer them run in the extension host, outside this webview.
-      { key: 'Mod-Shift-Alt-r', label: 'Copy a reference to the selection' },
-      { key: 'Mod-Shift-Alt-t', label: 'Send the selected lines to the terminal' },
+      { key: COPY_REF_KEY, label: 'Copy a reference to the selection' },
+      { key: SEND_REF_KEY, label: 'Send the selected lines to the terminal' },
     ],
   },
 ];

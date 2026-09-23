@@ -13,6 +13,8 @@ import { formatStateAt } from './formatState';
 import { languages } from '@codemirror/language-data';
 import { indentUnit, LanguageDescription } from '@codemirror/language';
 import { livePreview, revealField } from './livePreview';
+import { comments } from './comments';
+import { blankLines } from './blankLines';
 import { tables } from './tables';
 import { notionTheme } from './theme';
 import { buildEditingKeymap } from './shortcuts';
@@ -150,6 +152,8 @@ export function editorExtensions(onShowShortcuts: () => void): Extension[] {
     indentUnit.of('    '),
     revealField,
     livePreview,
+    comments,
+    blankLines,
     tables,
     searchSupport,
     selectionToolbar,

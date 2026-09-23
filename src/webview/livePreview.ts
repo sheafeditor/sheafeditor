@@ -260,6 +260,34 @@ function decodeEntity(raw: string): string {
   return text;
 }
 
+/**
+ * The language of a fenced code block, drawn in place of its opening fence.
+ *
+ * The fence itself is punctuation, and Sheaf hides punctuation. The word after it
+ * is not: it says what the code is, and a reader who cannot see it has lost
+ * something the document said. So the line the fence was on carries this chip
+ * instead, and the caret on that line brings the raw ``` back to edit.
+ */
+class CodeLangWidget extends WidgetType {
+  constructor(readonly lang: string) {
+    super();
+  }
+  eq(other: CodeLangWidget): boolean {
+    return other.lang === this.lang;
+  }
+  toDOM(): HTMLElement {
+    const chip = document.createElement('span');
+    chip.className = 'md-code-lang';
+    chip.textContent = this.lang;
+    return chip;
+  }
+  ignoreEvent(): boolean {
+    // A press on the chip is a press on the line it sits in, which is how the
+    // caret gets there and brings the fence back.
+    return false;
+  }
+}
+
 class HrWidget extends WidgetType {
   eq(): boolean {
     return true;
@@ -315,6 +343,8 @@ function inlineHtmlMark(cls: string, title: string | undefined): Decoration {
 const headingLine = (level: number) => Decoration.line({ class: `tok-heading tok-h${level}` });
 const quoteLine = Decoration.line({ class: 'tok-quote' });
 const codeLine = Decoration.line({ class: 'tok-code-block' });
+/** The opening and closing fence lines, drawn as the block's own top and bottom edge. */
+const codeFenceLine = Decoration.line({ class: 'tok-code-block sheaf-code-fence-line' });
 const frontMatterLine = Decoration.line({ class: 'tok-frontmatter' });
 
 // ---- Front matter ---------------------------------------------------------
@@ -345,6 +375,9 @@ function frontMatterRange(state: EditorState): BlockRange | null {
  * Empty in source mode, where every line shows it: the callers ask
  * `sourceModeOn` first rather than making this fill a set with every line number
  * in the document on every redraw.
+ *
+ * Exported as `activeLines` for the block widgets drawn from their own fields,
+ * so what shows its source is decided in one place for every construct.
  */
 function activeLineSet(state: EditorState): Set<number> {
   const lines = new Set<number>();
@@ -381,6 +414,9 @@ function activeLineSet(state: EditorState): Set<number> {
   return lines;
 }
 
+/** The lines showing their raw Markdown, for a field drawing its own block widgets. */
+export const activeLines = activeLineSet;
+
 // ---- Builder --------------------------------------------------------------
 
 /**
@@ -403,6 +439,14 @@ class DecoBuilder {
     this.all.push(r);
     this.atomic.push(r);
   }
+  /**
+   * A replacement the caret may sit inside, for a line whose whole content is
+   * hidden. An atomic one would be stepped over, and a line that cannot be
+   * reached is a line that can never be shown again to edit.
+   */
+  softReplace(deco: Decoration, from: number, to: number): void {
+    if (from < to) this.all.push(deco.range(from, to));
+  }
 }
 
 interface BuiltDecorations {
@@ -421,6 +465,38 @@ function isInlineImage(state: EditorState, from: number, to: number): boolean {
   if (line.text.slice(to - line.from).trim() !== '') return true;
   // Only a quote or list marker ahead of it still counts as standing alone.
   return !/^\s*(?:>\s*)*(?:[-*+]|\d+[.)])?\s*$/.test(line.text.slice(0, from - line.from));
+}
+
+/** A fence line of a fenced block: which line it is, where its backticks start, and the info string after them. */
+interface FenceLine {
+  number: number;
+  at: number;
+  lang: string;
+}
+
+/**
+ * The opening and closing fence lines of a fenced block.
+ *
+ * Only the backtick run that opens its line counts: inside the code, a run of
+ * backticks is part of the example, and the parser hands those back as the same
+ * kind of node. A block whose fence is never closed has one line here, not two.
+ */
+function fenceLinesOf(doc: Text, node: SyntaxNode, first: number, last: number): FenceLine[] {
+  const out: FenceLine[] = [];
+  for (const mark of node.getChildren('CodeMark')) {
+    const line = doc.lineAt(mark.from);
+    if (line.number !== first && line.number !== last) continue;
+    if (out.some((f) => f.number === line.number)) continue;
+    // Only a quote or list marker may sit ahead of a fence; anything else is code.
+    if (!/^[\s>]*(?:[-*+]|\d+[.)])?\s*$/.test(line.text.slice(0, mark.from - line.from))) continue;
+    out.push({
+      number: line.number,
+      at: mark.from,
+      // The whole info string, so a `js title="x"` says all of what it says.
+      lang: line.number === first ? doc.sliceString(mark.to, line.to).trim() : '',
+    });
+  }
+  return out;
 }
 
 function buildDecorations(view: EditorView): BuiltDecorations {
@@ -735,16 +811,36 @@ function buildDecorations(view: EditorView): BuiltDecorations {
         // --- Code blocks ---------------------------------------------------
         // A block indented four spaces (CodeBlock) is code just as a fenced one is.
         if (name === 'FencedCode' || name === 'CodeBlock') {
-          for (let n = doc.lineAt(node.from).number; n <= doc.lineAt(node.to).number; n++) {
-            b.line(codeLine, doc.line(n).from);
+          const first = doc.lineAt(node.from).number;
+          const last = doc.lineAt(node.to).number;
+          // The fence lines, when this is a fenced block and the caret is elsewhere:
+          // the backticks and the language word come off the line, which draws as the
+          // block's top or bottom edge instead. The language goes back as a chip, so
+          // nothing the document said is lost. A block with no closing fence has only
+          // the one to hide, and an indented block has neither.
+          const fences = name === 'FencedCode' ? fenceLinesOf(doc, node.node, first, last) : [];
+          for (let n = first; n <= last; n++) {
+            const line = doc.line(n);
+            const fence = fences.find((f) => f.number === n);
+            if (fence && !lineActive(line.from)) {
+              b.line(codeFenceLine, line.from);
+              // From the backticks, not from the start of the line: a fence inside a
+              // quote or a list item sits behind that block's own marker, and hiding
+              // the marker with it would take the line out of the block it is in.
+              if (fence.lang) b.softReplace(Decoration.replace({ widget: new CodeLangWidget(fence.lang) }), fence.at, line.to);
+              else b.softReplace(hide, fence.at, line.to);
+            } else {
+              b.line(codeLine, line.from);
+            }
           }
           return;
         }
         if (name === 'CodeMark') {
           // Off the caret's line, inline code backticks are hidden with their
-          // InlineCode node above; on it they stay dimmed as before.
-          const inInlineCode = node.node.parent?.name === 'InlineCode';
-          if (!inInlineCode || lineActive(node.from)) b.mark(fenceMark, node.from, node.to);
+          // InlineCode node above; on it they stay dimmed as before. A block fence
+          // is hidden with its whole line above, so dimming it here would paint
+          // under a replacement and show through where the line grows back.
+          if (lineActive(node.from)) b.mark(fenceMark, node.from, node.to);
           return;
         }
 

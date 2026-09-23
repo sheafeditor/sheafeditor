@@ -252,8 +252,16 @@ export const scenarios: Scenario[] = [
       const absent = key(without);
       without.close();
       p.destroy();
-      // Both keys are drawn the same way, and they differ only in their last letter.
-      return !!shown && !!terminalKey && shown.slice(0, -1) === terminalKey.slice(0, -1) && /r$/i.test(shown) && absent === null;
+      // Copy ref is the plainer chord of the pair: it is the one reached all day, so it
+      // carries one modifier fewer than Send to terminal rather than matching it.
+      return (
+        !!shown &&
+        !!terminalKey &&
+        /c$/i.test(shown) &&
+        /t$/i.test(terminalKey) &&
+        shown.length < terminalKey.length &&
+        absent === null
+      );
     },
   },
   {

@@ -45,8 +45,11 @@ After editing webview code, reload the Extension Development Host window (<kbd>C
 npm run check-types     # tsc --noEmit
 npm test                # engine + table suites
 npm run check-icons     # committed icons match the generator
+npm run check-touch     # what a document looks like on a phone, in a real browser
 npm run package         # builds a .vsix, catches bundling and .vscodeignore issues
 ```
+
+`check-touch` needs Chromium and `playwright-core`, because the rules behind `(pointer: coarse)` cannot be seen any other way: jsdom has no layout and a desktop window cannot be told it is a phone. Without either it says so and passes.
 
 CI runs the type-check, the tests and the package build on every push. Run at least the first two before pushing.
 

@@ -127,6 +127,124 @@ export const scenarios: Scenario[] = [
       }),
   },
   {
+    name: 'a fenced block draws no backticks, and its language is drawn as a chip instead',
+    run: () =>
+      // With Reveal Syntax On Line off, which is how Sheaf ships: what a reader sees.
+      withRevealOnLine(false, () => {
+        const doc = 'Before.\n\n```js\nconst x = 1;\n```\n\nAfter.';
+        const p = mountProse(doc);
+        p.select(0);
+        const ok =
+          // The fence lines are still lines, marked as the block's edges.
+          hasClass(p, 2, 'sheaf-code-fence-line') &&
+          hasClass(p, 4, 'sheaf-code-fence-line') &&
+          // With no backticks on them: the language, and then nothing.
+          line(p, 2) === 'js' &&
+          line(p, 4) === '' &&
+          count(p, '.md-code-lang') === 1 &&
+          (p.view.contentDOM.querySelector('.md-code-lang')?.textContent ?? '') === 'js' &&
+          // The code between them is untouched, and so is the file.
+          line(p, 3) === 'const x = 1;' &&
+          p.doc() === doc;
+        p.destroy();
+        return ok;
+      }),
+  },
+  {
+    name: 'the caret alone does not bring a fence back, and Edit Markdown does',
+    run: () =>
+      withRevealOnLine(false, () => {
+        const doc = 'Before.\n\n```js\nconst x = 1;\n```\n\nAfter.';
+        const p = mountProse(doc);
+        // A fence is a marker like any other: the caret on it changes nothing, because
+        // Sheaf does not show syntax under the caret unless it is asked to.
+        p.select(doc.indexOf('```js') + 2);
+        const stillHidden = line(p, 2) === 'js' && hasClass(p, 2, 'sheaf-code-fence-line');
+        // Edit Markdown over the block is what shows it, as it does for every block.
+        const from = doc.indexOf('```js');
+        p.view.dispatch({ effects: setReveal.of({ from, to: doc.indexOf('```\n\nAfter') + 3 }) });
+        const revealed = line(p, 2) === '```js' && line(p, 4) === '```' && !hasClass(p, 2, 'sheaf-code-fence-line');
+        const ok = stillHidden && revealed && p.doc() === doc;
+        p.destroy();
+        return ok;
+      }),
+  },
+  {
+    name: 'with reveal syntax on line, the caret on a fence line shows it as written',
+    run: () =>
+      withRevealOnLine(true, () => {
+        const doc = 'Before.\n\n```js\nconst x = 1;\n```\n\nAfter.';
+        const p = mountProse(doc);
+        p.select(0);
+        const hidden = line(p, 2) === 'js';
+        p.select(doc.indexOf('```js') + 2);
+        const shown = line(p, 2) === '```js' && !hasClass(p, 2, 'sheaf-code-fence-line');
+        p.select(0);
+        const away = line(p, 2) === 'js';
+        const ok = hidden && shown && away && p.doc() === doc;
+        p.destroy();
+        return ok;
+      }),
+  },
+  {
+    name: 'a fence with no language leaves an empty edge, and an unclosed block hides only the fence it has',
+    run: () =>
+      withRevealOnLine(false, () => {
+        const doc = 'Before.\n\n```\nplain\n```\n\n```\nnever closed\n';
+        const p = mountProse(doc);
+        p.select(0);
+        const ok =
+          line(p, 2) === '' &&
+          line(p, 4) === '' &&
+          count(p, '.md-code-lang') === 0 &&
+          hasClass(p, 6, 'sheaf-code-fence-line') &&
+          line(p, 6) === '' &&
+          line(p, 7) === 'never closed' &&
+          p.doc() === doc;
+        p.destroy();
+        return ok;
+      }),
+  },
+  {
+    name: 'backticks inside a code block are code, not a fence to hide',
+    run: () =>
+      withRevealOnLine(false, () => {
+        const doc = 'Before.\n\n````md\n```js\nnested\n```\n````\n\nAfter.';
+        const p = mountProse(doc);
+        p.select(0);
+        const ok =
+          // Only the outer four-backtick pair is a fence.
+          line(p, 2) === 'md' &&
+          line(p, 6) === '' &&
+          // The inner three-backtick lines are part of the example and stay as written.
+          line(p, 3) === '```js' &&
+          line(p, 5) === '```' &&
+          p.doc() === doc;
+        p.destroy();
+        return ok;
+      }),
+  },
+  {
+    name: 'a fenced block inside a quote keeps the quote marker and loses only its fence',
+    run: () =>
+      withRevealOnLine(false, () => {
+        const doc = 'Before.\n\n> ```js\n> const x = 1;\n> ```\n\nAfter.';
+        const p = mountProse(doc);
+        p.select(0);
+        const ok =
+          // The quote's own marker is hidden by the quote, as it always was; what this
+          // holds is that hiding the fence did not take the line out of the quote.
+          hasClass(p, 2, 'tok-quote') &&
+          hasClass(p, 4, 'tok-quote') &&
+          // Trimmed: the quote hides its `>` and leaves the space after it, as it always has.
+          line(p, 2).trim() === 'js' &&
+          line(p, 4).trim() === '' &&
+          p.doc() === doc;
+        p.destroy();
+        return ok;
+      }),
+  },
+  {
     name: 'an indented code block is styled like fenced code',
     run: () => {
       const doc = 'Before.\n\n    function indented() {\n    }\n\nAfter.\n\n```\nfenced\n```';

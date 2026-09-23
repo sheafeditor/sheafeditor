@@ -60,6 +60,12 @@ It is off so that double-clicking selects a word, as it does everywhere else. **
 
 Shows a panel of the document's headings beside the text, marking the one you are reading. It applies to every Markdown file you open in Sheaf, and the toolbar's list button turns it on and off. See [Table of contents](features/table-of-contents.md).
 
+## Comments
+
+`sheaf.comments`, default `show`.
+
+How to draw the notes written into a document as `<!-- ... -->`. `show` draws each one that sits on its own lines as a box labelled Comment, with a chevron that collapses it. `hidden` shrinks each to a small marker you can click to read it. **Toggle Comments** flips between them. See [Comments](features/comments.md).
+
 ## Commands
 
 All of them are in the Command Palette under Sheaf.
@@ -70,7 +76,8 @@ All of them are in the Command Palette under Sheaf.
 | **Open as Raw Markdown (Text)** | Drop back to the plain text editor |
 | **Toggle Whole-Document Source Mode** | Reveal raw Markdown for the whole document |
 | **Toggle Table of Contents** | Show or hide the panel of headings |
-| **Copy Ref** (Cmd+Shift+Alt+R) | Put the file, the lines and the text you picked on the clipboard |
+| **Toggle Comments** | Draw the document's comments as boxes, or shrink each to a marker |
+| **Copy Ref** (Cmd+Shift+C) | Put the file, the lines and the text you picked on the clipboard |
 | **Send Selection to Terminal** (Cmd+Shift+Alt+T) | Type a reference to the lines you picked at your terminal's prompt |
 | **Open This Folder in a Browser** | Serve this folder on this machine and give you the address |
 | **Stop Serving to the Browser** | Stop it again |

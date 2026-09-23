@@ -31,6 +31,10 @@ const STEPS = [
   // It fails on any failing scenario, so the count it reports is the whole of it.
   ['Editor scenarios (jsdom)', process.execPath, [join(REPO, 'test', 'real-editor', 'run-unit.mjs')]],
   ['Build', process.execPath, [join(REPO, 'esbuild.mjs'), '--production']],
+  // After the build, because it serves the built files, and last because it is the
+  // only step that needs a browser. Without one it says so and passes: a missing
+  // Chrome is not a broken document.
+  ['Touch layout', process.execPath, [join(REPO, 'scripts', 'check-touch.mjs')]],
 ];
 
 for (const [label, cmd, args] of STEPS) {

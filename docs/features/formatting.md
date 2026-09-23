@@ -1,6 +1,6 @@
 ---
 title: Formatting
-summary: Bold, italic, strikethrough, highlight, inline code and the inline HTML tags, drawn as formatting with their markers hidden.
+summary: Bold, italic, strikethrough, highlight, inline code, code blocks and the inline HTML tags, drawn as formatting with their markers hidden.
 order: 1
 ---
 
@@ -24,6 +24,14 @@ On Windows and Linux the keys use Ctrl in place of Cmd. Each key wraps the selec
 Marks work inside headings, list items, quotes, links and table cells, and they nest: `*a **b** c*` shows italic around bold.
 
 A backslash before a marker makes it a plain character, so `\*not italic\*` shows its asterisks and no backslashes. A character entity such as `&amp;` or `&mdash;` shows as the character it names.
+
+## Code blocks
+
+A fenced block is drawn as a panel of code, without the ``` lines that make it one. The language you wrote after the opening fence is shown as a small label at the top right of the panel, so a reader can still see what the code is.
+
+Everything between the fences is left exactly as written, spacing included, and the fences themselves are still in the file. **Edit Markdown** on the block shows them, which is how you change the language.
+
+A block indented by four spaces has no fence to hide and is drawn as it always was.
 
 ## Inline HTML
 

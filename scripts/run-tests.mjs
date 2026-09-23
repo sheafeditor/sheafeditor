@@ -35,10 +35,17 @@ if (unknown.length) {
 }
 const chosen = names.length ? names : Object.keys(SUITES);
 
-/** Run a file and pass its output straight through; resolve with its exit code. */
+/**
+ * Run a file and pass its output straight through; resolve with its exit code.
+ *
+ * The heap is raised because the tables suite mounts hundreds of editors in jsdom and
+ * ran out of memory on a CI runner: the same commit passed here and failed there,
+ * since a machine with more memory gives V8 a larger default heap. A fixed limit makes
+ * every machine run it the same way.
+ */
 function run(file) {
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, [join(REPO, file)], { cwd: REPO, stdio: 'inherit' });
+    const child = spawn(process.execPath, ['--max-old-space-size=4096', join(REPO, file)], { cwd: REPO, stdio: 'inherit' });
     child.on('exit', (code) => resolve(code ?? 1));
   });
 }

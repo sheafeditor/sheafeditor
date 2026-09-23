@@ -176,6 +176,11 @@ body {
 .sheaf-tb-spacer {
   flex: 1 1 auto;
 }
+/* Once the bar has folded onto a second row, the trailing buttons pack with the rest
+   instead of sitting alone at the end of the last row (see watchWrapping in toolbar.ts). */
+.sheaf-toolbar.is-wrapped .sheaf-tb-spacer {
+  flex: 0 0 0;
+}
 
 /* ---- Table of contents --------------------------------------------------- */
 
@@ -1659,8 +1664,28 @@ body {
   outline: none;
 }
 
-.cm-line {
-  padding: 1px 0;
+/* No padding here: CodeMirror's base theme sets `.ͼ1 .cm-line`, two classes to
+   this rule's one, so anything this asks for is discarded. The 1px of leading
+   that used to be written here never reached a document. Block spacing is set in
+   src/webview/theme.ts, which is injected after the base theme and matches its
+   weight. */
+
+/*
+ * A blank line that only separates two blocks. Markdown needs it there and
+ * nobody reads it, so it draws as a gap rather than as an empty line of body
+ * text. src/webview/blankLines.ts decides which lines get the class, and takes it
+ * off again while the caret is on one or a selection touches it, so a person
+ * always types, clicks and arrows against a full-sized line.
+ *
+ * Height, not margin, for the reason spelled out on the .tok-h* rules below:
+ * CodeMirror's height map reads each line's offsetHeight, which counts padding
+ * and height but not margin, and space it cannot see drifts posAtCoords so clicks
+ * land on the wrong line.
+ */
+.cm-line.sheaf-blank-line {
+  height: 8px;
+  line-height: 8px;
+  padding: 0;
 }
 
 .cm-cursor {
@@ -1697,12 +1722,12 @@ body {
    `.cm-line` element, and CodeMirror's height map reads each line's offsetHeight
    — which includes padding but NOT margin. Vertical margins add space CM can't
    see, drifting posAtCoords so clicks land on the wrong line/element. */
-.tok-h1 { font-size: 1.875em; padding: 1.2em 0 0.2em; }
-.tok-h2 { font-size: 1.5em; padding: 1.4em 0 0.15em; }
-.tok-h3 { font-size: 1.25em; padding: 1.5em 0 0.1em; }
-.tok-h4 { font-size: 1.1em; padding: 1.4em 0 0.1em; }
-.tok-h5 { font-size: 1em; padding: 1.4em 0 0.1em; }
-.tok-h6 { font-size: 0.9em; padding: 1.4em 0 0.1em; color: var(--md-muted); }
+.tok-h1 { font-size: 1.875em; }
+.tok-h2 { font-size: 1.5em; }
+.tok-h3 { font-size: 1.25em; }
+.tok-h4 { font-size: 1.1em; }
+.tok-h5 { font-size: 1em; }
+.tok-h6 { font-size: 0.9em; color: var(--md-muted); }
 
 .tok-strong { font-weight: 700; }
 .tok-em { font-style: italic; }
@@ -1819,6 +1844,124 @@ body {
   overflow-wrap: anywhere;
 }
 
+/* ---- Comments ------------------------------------------------------------ */
+
+/*
+ * A `<!-- … -->` on its own lines is drawn as a callout, in the shape the alerts
+ * above use: a rule down the side in the type's colour, then an icon and a label.
+ * A comment has no type, so its colour is the one the editor already gives
+ * descriptive text, which is what the raw comment was drawn in before.
+ *
+ * The box is a block widget standing in for the comment's lines, so it draws its
+ * own frame rather than borrowing the quote's line decoration.
+ */
+.md-comment {
+  --md-alert: var(--vscode-descriptionForeground, var(--md-muted));
+  border-left: 3px solid var(--md-alert);
+  background: color-mix(in srgb, var(--md-alert) 7%, transparent);
+  border-radius: 2px;
+  padding: 0.45em 0.7em 0.5em 0.9em;
+  margin: 0.5em 0;
+  cursor: text;
+}
+
+.md-comment-head {
+  display: flex;
+  align-items: center;
+  gap: 0.4em;
+  min-width: 0;
+}
+
+/* The chevron: a button the size of the label beside it, with no chrome of its own. */
+.md-comment-fold {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 1.3em;
+  height: 1.3em;
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  background: none;
+  color: var(--md-alert, currentColor);
+  cursor: pointer;
+}
+
+.md-comment-fold:hover {
+  background: color-mix(in srgb, var(--md-alert) 18%, transparent);
+}
+
+.md-comment-fold:focus-visible {
+  outline: 1px solid var(--md-link);
+  outline-offset: 1px;
+}
+
+.md-comment-chevron {
+  width: 0.85em;
+  height: 0.85em;
+  transform: rotate(90deg);
+  transition: transform 120ms ease;
+}
+
+.md-comment.is-collapsed .md-comment-chevron {
+  transform: rotate(0deg);
+}
+
+/* The first line of a collapsed comment, on the label's row. */
+.md-comment-peek {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--md-muted);
+  font-size: 0.95em;
+}
+
+.md-comment-body {
+  margin-top: 0.15em;
+  /* Line up with the label rather than with the chevron. */
+  padding-left: 1.7em;
+  color: var(--md-muted);
+  font-size: 0.95em;
+}
+
+.md-comment-line {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/*
+ * With `sheaf.comments` set to `hidden`, a comment shrinks to this rather than
+ * disappearing: a person must be able to see that there is a comment there, and
+ * pressing it brings the box back for that one comment.
+ */
+.md-comment-marker-row {
+  margin: 0.15em 0;
+  line-height: 1;
+}
+
+.md-comment-marker {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.1em 0.25em;
+  border: 0;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--md-muted) 14%, transparent);
+  color: var(--md-muted);
+  cursor: pointer;
+}
+
+.md-comment-marker:hover {
+  background: color-mix(in srgb, var(--md-muted) 26%, transparent);
+}
+
+.md-comment-marker:focus-visible {
+  outline: 1px solid var(--md-link);
+  outline-offset: 1px;
+}
+
 /* Dim the raw Markdown markers when they are shown alongside rendered text. */
 .tok-mark {
   color: var(--md-faint);
@@ -1862,6 +2005,30 @@ body {
   color: var(--md-faint);
   font-family: var(--md-mono);
   font-size: 0.85em;
+}
+
+/* The line a fence was on, with the fence taken off it: the block's top or bottom
+   edge. Short, but a real line with a real height, so the caret still reaches it and
+   CodeMirror's height map still knows where every line is. Height, never margin,
+   for the same reason a short blank line uses height. */
+.cm-line.sheaf-code-fence-line {
+  height: 10px;
+  line-height: 10px;
+  padding: 0;
+  overflow: hidden;
+}
+/* The language, drawn where the fence was. Quiet, small and at the right edge, so it
+   names the code without competing with it. */
+.md-code-lang {
+  float: right;
+  padding: 0 0.5em;
+  color: var(--md-faint);
+  font-family: var(--md-mono);
+  font-size: 9px;
+  line-height: 10px;
+  letter-spacing: 0.04em;
+  text-transform: lowercase;
+  user-select: none;
 }
 
 /* YAML front matter: metadata for other tools, drawn as quiet monospaced text. */
@@ -2468,6 +2635,12 @@ body {
 
 .sheaf-seltb .sheaf-tb-sep {
   margin: 4px 3px;
+}
+
+/* Copy ref, for the moment after it has written the clipboard. The tick is drawn in
+   the accent colour so the change is visible without the button moving or resizing. */
+.sheaf-tb-btn.is-copied {
+  color: var(--md-link);
 }
 
 .sheaf-seltb-trigger {

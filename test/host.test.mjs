@@ -3122,6 +3122,142 @@ async function hostCases() {
     return document.text === text.replace('id=tasks', 'id=work').replace('#tasks', '#work');
   });
 
+  /*
+   * Comments: a `<!-- … -->` on its own lines is drawn as a callout box, and
+   * whether it is collapsed is kept where the column widths and the boards are
+   * kept — the workspace's own storage, which belongs to this workspace on this
+   * machine and never travels with the file.
+   */
+
+  const NOTED = 'Plan.\n\n<!-- A note to the writer. -->\n';
+  const COMMENT_KEY = 'sheaf.commentFolds:file:///ws/notes.md';
+  const foldsReply = (panel) => panel.posted.filter((message) => message.type === 'commentFolds');
+
+  check('comments: a collapse one editor keeps is handed to the next editor on that document, and to no other', async () => {
+    const ctx = sheafWindow();
+    const state = workspaceMemento();
+    const first = await openWithStorage(ctx, state, '/ws/notes.md', NOTED);
+    first.panel.receive({ type: 'commentFoldsWrite', folds: { 'q3x.1f': true } });
+    await settle();
+    first.panel.close();
+    // A second editor over the same file, as after a reload: it asks, and is told.
+    const again = await openWithStorage(ctx, state, '/ws/notes.md', NOTED);
+    again.panel.receive({ type: 'commentFoldsRead', id: 'comments-1' });
+    const other = await openWithStorage(ctx, state, '/ws/other.md', NOTED);
+    other.panel.receive({ type: 'commentFoldsRead', id: 'comments-1' });
+    await settle();
+    return (
+      same(foldsReply(again.panel), [{ type: 'commentFolds', id: 'comments-1', folds: { 'q3x.1f': true } }]) &&
+      same(foldsReply(other.panel), [{ type: 'commentFolds', id: 'comments-1', folds: {} }])
+    );
+  });
+
+  check('comments: keeping a collapse writes nothing into the document or beside it', async () => {
+    const ctx = sheafWindow();
+    const state = workspaceMemento();
+    const { document, panel } = await openWithStorage(ctx, state, '/ws/notes.md', NOTED);
+    panel.receive({ type: 'commentFoldsWrite', folds: { 'q3x.1f': true } });
+    await settle();
+    return (
+      document.text === NOTED &&
+      !document.isDirty &&
+      ctx.win.applied.length === 0 &&
+      ctx.win.saved.length === 0 &&
+      state.store.size === 1 &&
+      [...state.store.keys()][0] === COMMENT_KEY
+    );
+  });
+
+  check('comments: opening every comment again clears what was kept, and what was kept is read with suspicion', async () => {
+    const ctx = sheafWindow();
+    const state = workspaceMemento();
+    const { panel } = await openWithStorage(ctx, state, '/ws/notes.md', NOTED);
+    panel.receive({ type: 'commentFoldsWrite', folds: { 'q3x.1f': true } });
+    await settle();
+    panel.receive({ type: 'commentFoldsWrite', folds: {} });
+    await settle();
+    const cleared = state.store.size === 0;
+    // Nothing that is not a key marked collapsed survives being read back.
+    for (const damaged of ['a string', 42, null, ['q3x.1f'], { 'q3x.1f': 'yes' }, { 'q3x.1f': 1 }, { '': true }, { ['k'.repeat(200)]: true }]) {
+      state.store.set(COMMENT_KEY, damaged);
+      panel.posted.length = 0;
+      panel.receive({ type: 'commentFoldsRead', id: 'comments-2' });
+      await settle();
+      if (!same(foldsReply(panel), [{ type: 'commentFolds', id: 'comments-2', folds: {} }])) return false;
+    }
+    // One usable key among the rubbish is the one key that comes back.
+    state.store.set(COMMENT_KEY, { 'q3x.1f': true, bad: 'yes', worse: 0 });
+    panel.posted.length = 0;
+    panel.receive({ type: 'commentFoldsRead', id: 'comments-3' });
+    await settle();
+    return cleared && same(foldsReply(panel), [{ type: 'commentFolds', id: 'comments-3', folds: { 'q3x.1f': true } }]);
+  });
+
+  check('comments: an editor with no workspace storage still answers, with nothing collapsed', async () => {
+    const ctx = sheafWindow();
+    const { panel } = await openWithStorage(ctx, null, '/ws/notes.md', NOTED);
+    panel.receive({ type: 'commentFoldsWrite', folds: { 'q3x.1f': true } });
+    panel.receive({ type: 'commentFoldsRead', id: 'comments-4' });
+    await settle();
+    return same(foldsReply(panel), [{ type: 'commentFolds', id: 'comments-4', folds: {} }]);
+  });
+
+  check('comments: the setting is offered and scoped exactly as the rest of Sheaf’s view settings are', () => {
+    const properties = manifest().contributes.configuration.properties;
+    const comments = properties['sheaf.comments'];
+    const like = properties['sheaf.tableOfContents'];
+    return (
+      !!comments &&
+      comments.type === 'string' &&
+      same(comments.enum, ['show', 'hidden']) &&
+      comments.default === 'show' &&
+      typeof comments.description === 'string' &&
+      comments.description.length > 0 &&
+      // The same scope as the settings it sits beside, so a person turning
+      // comments off gets the same reach they get from the panel toggle.
+      comments.scope === like.scope
+    );
+  });
+
+  check('comments: Toggle Comments is contributed and flips the setting between showing and hiding, in user settings', async () => {
+    const contributed = manifest().contributes.commands.find((command) => command.command === 'sheaf.toggleComments');
+    const { win } = start();
+    await win.run('sheaf.toggleComments');
+    const hidden = win.vscode.workspace.getConfiguration('sheaf').get('comments', 'show');
+    const target = win.writes.filter((write) => write.key === 'sheaf.comments').pop()?.target;
+    await win.run('sheaf.toggleComments');
+    const shown = win.vscode.workspace.getConfiguration('sheaf').get('comments', 'show');
+    return (
+      !!contributed &&
+      contributed.title === 'Toggle Comments' &&
+      contributed.category === 'Sheaf' &&
+      hidden === 'hidden' &&
+      shown === 'show' &&
+      target === GLOBAL
+    );
+  });
+
+  check('comments: the setting reaches the page with the document, and an unreadable value leaves comments showing', async () => {
+    const opened = async (setting) => {
+      const { win, host } = sheafWindow();
+      if (setting !== undefined) win.vscode.workspace.getConfiguration().update('sheaf.comments', setting, GLOBAL);
+      const document = win.openDocument('/ws/notes.md', 'Plan.\n\n<!-- A note. -->\n');
+      const panel = makePanel();
+      await new host.MarkdownEditorProvider({ extensionUri: file('/extension') }).resolveCustomTextEditor(document, panel, {});
+      panel.receive({ type: 'ready' });
+      return panel.posted.find((message) => message.type === 'init')?.config.comments;
+    };
+    return (
+      (await opened('hidden')) === 'hidden' &&
+      (await opened('show')) === 'show' &&
+      (await opened(undefined)) === 'show' &&
+      // Anything else is not a setting Sheaf wrote, and comments stay visible:
+      // never drawing a comment at all is the one thing this must not do.
+      (await opened('off')) === 'show' &&
+      (await opened(true)) === 'show'
+    );
+  });
+
   return cases;
 }
 

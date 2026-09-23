@@ -32,26 +32,12 @@ import {
   nearestDropIndex,
   turnRangeInto,
 } from './blockModel';
-import { fence } from './contextmenu';
+import { fence, blockRefHost } from './refs';
 import { openSlashMenuAtCaret } from './slashMenu';
 import { revealRange } from './revealBlock';
 import { hint } from './shortcuts';
 
 // ---- Copy ref -----------------------------------------------------------------
-
-export interface BlockRefHost {
-  /** Workspace-relative path of the document. */
-  getFileName: () => string;
-  /** Put text on the clipboard through the host. */
-  copyToClipboard: (text: string) => void;
-}
-
-let refHost: BlockRefHost | null = null;
-
-/** Give the block menu a way to name the document and write the clipboard; Copy ref is hidden until then. */
-export function setBlockRefHost(host: BlockRefHost | null): void {
-  refHost = host;
-}
 
 /** `path:line` for a one-line block; `path:start-end` and the block's source for a longer one. */
 function blockRef(view: EditorView, range: BlockRange, fileName: string): string {
@@ -105,8 +91,10 @@ export function blockMenuItems(view: EditorView, range: BlockRange): BlockMenuIt
     { label: 'Move down', keyHint: 'Alt-ArrowDown', disabled: !canMoveRange(view.state, range, 1), run: focus(() => moveRange(view, range, 1)) },
     { label: 'Delete', run: focus(() => deleteRange(view, range)) }
   );
-  if (refHost) {
-    const host = refHost;
+  // No key hint: the sharing key copies the selection, and this item copies the
+  // whole block, so printing the chord here would name a key that does something else.
+  const host = blockRefHost();
+  if (host) {
     items.push({ label: 'Copy ref', separator: true, run: () => host.copyToClipboard(blockRef(view, range, host.getFileName())) });
   }
   return items;

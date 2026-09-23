@@ -1,58 +1,62 @@
 <h1 align="center">
   <img src="media/icon.png" width="96" height="96" alt="">
   <br>
-  Sheaf Editor: WYSIWYG Markdown for Code Editors
+  Sheaf Editor: think with agents
 </h1>
 
 <p align="center">
-  <b>Write Markdown the way it looks.</b><br>
-  The Markdown files already in your project, as finished documents you edit in place, with tables you edit like a spreadsheet.<br>
+  <b>Work in docs inside your agentic coding app or your favourite code editor.</b><br>
+  Strategy, research, specs and roadmaps, kept as files in the repo your agents can read at local lightning speeds.<br>
   <sub>VS Code · Kiro · Cursor · Windsurf · VSCodium</sub>
 </p>
 
 <p align="center">
+  <a href="https://marketplace.visualstudio.com/items?itemName=sheafeditor.sheafeditor"><img src="https://img.shields.io/visual-studio-marketplace/v/sheafeditor.sheafeditor?label=Marketplace" alt="Visual Studio Marketplace"></a>
+  <a href="https://open-vsx.org/extension/sheafeditor/sheafeditor"><img src="https://img.shields.io/open-vsx/v/sheafeditor/sheafeditor?label=Open%20VSX" alt="Open VSX"></a>
   <a href="https://github.com/sheafeditor/sheafeditor/actions/workflows/ci.yml"><img src="https://github.com/sheafeditor/sheafeditor/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License"></a>
 </p>
 
 ---
 
-Sheaf shows the rendered document and lets you type straight into it. Headings look like headings, tables are grids, and the file on disk stays ordinary Markdown: an edit changes only what you typed, so the diff shows your change and nothing else. Press Cmd+Alt+E on any block to see and edit its Markdown.
+**Open source and MIT-licensed.** Every line of Sheaf is in this repository, so you can read it, and so can your agent: ask it to check what the extension does before you install it. Each release is built by GitHub Actions and carries a [build provenance attestation](#verifying-a-release), which ties the published file to the commit it came from.
 
-## Why Sheaf
+Sheaf shows the rendered document and lets you type straight into it. Headings look like headings, tables are grids, and the file on disk stays ordinary Markdown: an edit changes only what you typed, so the diff shows your change and nothing else.
 
-Your editor shows Markdown as source code. A preview pane helps you read it, but then you write in one half of the window and read in the other, and neither half is the document.
+## Hand your agent the exact lines
 
-Sheaf makes the editor the document. It renders as you type, and the Markdown is a keystroke away whenever you want it. There is no preview pane, no second app and no vault to import into. The files stay where your project keeps them, and Sheaf never rewrites the lines you did not touch.
+Right-click any line. **Copy ref** and **Send to terminal** give your agent a quoted reference to exactly what you picked: the file, the lines and the text, and in a table the cells. When an agent writes the file back, the lines it changed are marked in the margin, and if a write takes back what you just typed, Sheaf says so and Cmd+Z brings it back.
 
-## Documents
+## Select a block, like a spreadsheet
 
-- **What you see is the document.** Headings, emphasis, links, lists, task lists, quotes, callouts, code with highlighting, images you can resize and caption, and maths, all drawn and all editable in place.
-- **Block editing.** A slash menu, a toolbar over selected text, a right-click menu, and a grip to drag, duplicate or turn a block into another kind. Keyboard shortcuts for every block and mark, listed in one overlay (Cmd+/).
-- **Links that help.** Paste an address over selected words to link them, and complete a link to any file in your workspace or any heading in the document.
-- **Find and replace, a table of contents and line numbers.**
-- **See the Markdown when you want it.** Cmd+Alt+E shows one block's Markdown; **Toggle Whole-Document Source Mode** shows it all; **Open raw Markdown** on the toolbar opens the plain text editor.
+Click a cell and type, drag across a range, or paste one in from Excel, Numbers or Sheets. Spreadsheet keys move you around, columns size to what they hold, and a long table keeps its header row in view. On disk it stays a Markdown table, and one edited cell is one changed line.
 
-## Tables and datatables
+Name a CSV block and a `view` block elsewhere in the document shows it filtered, sorted and trimmed to the columns you want, or shows a `.csv` file beside the document the same way. Show a view, or any table, as a board of cards and drag one to change its value.
 
-- **Every table is a grid.** Pipe tables and CSV or TSV blocks edit like a spreadsheet: Tab, Enter, the arrows and the spreadsheet keys, selection, copy and paste a spreadsheet understands, and commands to insert, move, sort and align rows and columns.
-- **Columns sized to what they hold.** Drag a header's border to set a width. A long table keeps its header row in view as you scroll.
-- **Open a .csv or .tsv file as a grid** with Reopen Editor With, then Sheaf (Grid).
-- **Views.** Name a CSV block, then show it elsewhere in the document filtered, sorted and trimmed to the columns you want with a `view` block, or show a .csv file beside the document the same way. Edit a cell in the view and that one field changes in the source.
-- **Boards.** Show a view, or any pipe table, as cards grouped by one column, and drag a card to change it.
+## Every block, rendered as you write
 
-Every edit rewrites only the cells you changed, so two people editing different rows of one table merge cleanly.
+Headings, callouts, task lists, maths and code look like the finished page while you type into them. A slash menu, a toolbar over selected text, a right-click menu and a drag grip cover the block moves. Press Cmd+Alt+E on any block to see and edit its Markdown, or **Open raw Markdown** to drop the whole file back to plain text.
 
-## Working with agents
+## See the shape of a long document
 
-- **Hand what you picked to an agent.** Copy ref (Cmd+Shift+Alt+R) puts the file, lines and text on the clipboard; in a table it names the cells. Send Selection to Terminal (Cmd+Shift+Alt+T) types the reference at your terminal's prompt.
-- **See what changed.** When something else writes the open file, the lines it changed are marked in the margin. If a write takes back what you just typed, Sheaf says so and Cmd+Z brings it back.
+Turn on the table of contents and the headings sit beside the text. Click one to jump there. Find and replace reaches into tables, tinting the cells that match.
 
-## Getting started
+## It is still just a folder of Markdown
 
-Sheaf is a VS Code extension, and it runs unchanged in editors built on Code OSS. VS Code installs it from the Visual Studio Marketplace. Kiro, Cursor, Windsurf and VSCodium install it from Open VSX. Every release goes to both as the same build.
+- **No import step.** Your files, where they already are.
+- **Only your changes change.** `git diff` shows exactly what you did.
+- **Every commit, forever.** No plan tier expires your history.
+- **Nothing to sign up for.** No account, no database, no cloud.
+- **Never locked in.** One button drops back to plain text.
 
-Install Sheaf, then open any `.md` file. There is nothing to configure.
+## Install
+
+| Editor | Where it installs from |
+| --- | --- |
+| VS Code | [Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=sheafeditor.sheafeditor) |
+| Cursor, Windsurf, Kiro, VSCodium | [Open VSX](https://open-vsx.org/extension/sheafeditor/sheafeditor) |
+
+Every release goes to both as the same build. Install it, open any `.md` file, and there is nothing to configure.
 
 | Command | What it does |
 | --- | --- |
@@ -71,9 +75,7 @@ Sheaf is the default editor for `.md` and `.markdown` files, so Markdown opens r
 "sheaf.useAsDefaultMarkdownEditor": false
 ```
 
-Markdown then opens in the plain text editor, and you open a file in Sheaf with **Open in Sheaf**, on the Explorer's right-click menu, or with **View: Reopen Editor With… → Sheaf (WYSIWYG)**. The change applies to files you open afterwards.
-
-The setting maintains `workbench.editorAssociations` for you. If you have pointed `*.md` at another editor there, Sheaf leaves your choice alone.
+Markdown then opens in the plain text editor, and you open a file in Sheaf with **Open in Sheaf**, on the Explorer's right-click menu, or with **View: Reopen Editor With… → Sheaf (WYSIWYG)**. The setting maintains `workbench.editorAssociations` for you. If you have pointed `*.md` at another editor there, Sheaf leaves your choice alone.
 
 ## Settings
 
@@ -86,25 +88,19 @@ The setting maintains `workbench.editorAssociations` for you. If you have pointe
 | `sheaf.doubleClickToEditSource` | `false` | Double-click a rendered element to show its Markdown, instead of selecting a word. |
 | `sheaf.tableOfContents` | `false` | Show a panel of the document's headings beside the text. |
 
-## Status
-
-A first public release. Bug reports and feature requests are welcome on the [issue tracker](https://github.com/sheafeditor/sheafeditor/issues).
-
 ## Verifying a release
 
-Every release is built by GitHub Actions and carries a [build provenance attestation](https://docs.github.com/actions/security-for-github-actions/using-artifact-attestations/using-artifact-attestations-to-establish-provenance-for-builds) recording the commit and the workflow that produced it.
-
-An extension registry ships a bundled file, not source, so reading this repository tells you what the source says and nothing about the file running in your editor. Both registries receive the same file, so one check covers either. Download the `.vsix` from the [releases page](https://github.com/sheafeditor/sheafeditor/releases) and run:
+An extension registry ships a bundled file, not source, so reading this repository tells you what the source says and nothing about the file running in your editor. Every release is built by GitHub Actions and carries a [build provenance attestation](https://docs.github.com/actions/security-for-github-actions/using-artifact-attestations/using-artifact-attestations-to-establish-provenance-for-builds) recording the commit and the workflow that produced it. Both registries receive the same file, so one check covers either:
 
 ```bash
 gh attestation verify sheafeditor-<version>.vsix --repo sheafeditor/sheafeditor
 ```
 
-It prints the commit and workflow the build came from. Anything else means the file did not come out of this repository's release pipeline.
+Download the `.vsix` from the [releases page](https://github.com/sheafeditor/sheafeditor/releases) first. The command prints the commit and workflow the build came from. Anything else means the file did not come out of this repository's release pipeline.
 
 ## Building from source
 
-Sheaf is maintained by one person. Bug reports and ideas are welcome as issues; code contributions are not accepted.
+Sheaf is maintained by one person. Bug reports and ideas are welcome as [issues](https://github.com/sheafeditor/sheafeditor/issues); code contributions are not accepted.
 
 ```bash
 npm install

@@ -1,8 +1,8 @@
 {
   "name": "sheafeditor",
   "displayName": "Sheaf Editor: WYSIWYG Markdown",
-  "description": "Edit the Markdown in your repository as a finished document, with tables you edit like a spreadsheet. The file stays plain Markdown, and an edit changes only what you typed.",
-  "version": "0.1.0",
+  "description": "Think with agents: work in the docs already in your repo, rendered as you type, with tables you edit like a spreadsheet. Open source, and an edit changes only what you typed.",
+  "version": "0.2.0",
   "publisher": "sheafeditor",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -32,7 +32,9 @@
     "wysiwyg",
     "editor",
     "codemirror",
-    "live preview"
+    "live preview",
+    "agents",
+    "tables"
   ],
   "main": "./dist/extension.js",
   "bin": {
@@ -92,6 +94,11 @@
         "category": "Sheaf"
       },
       {
+        "command": "sheaf.toggleComments",
+        "title": "Toggle Comments",
+        "category": "Sheaf"
+      },
+      {
         "command": "sheaf.copyRef",
         "title": "Copy Ref",
         "category": "Sheaf"
@@ -113,6 +120,12 @@
       }
     ],
     "keybindings": [
+      {
+        "command": "sheaf.copyRef",
+        "key": "ctrl+shift+c",
+        "mac": "cmd+shift+c",
+        "when": "activeCustomEditorId == 'sheaf.wysiwyg' || activeCustomEditorId == 'sheaf.csv'"
+      },
       {
         "command": "sheaf.copyRef",
         "key": "ctrl+shift+alt+r",
@@ -141,6 +154,20 @@
         {
           "command": "sheaf.openWithWysiwyg",
           "when": "resourceExtname =~ /^\\.(md|markdown)$/i",
+          "group": "navigation@10"
+        }
+      ],
+      "editor/title/context": [
+        {
+          "command": "sheaf.openWithWysiwyg",
+          "when": "resourceExtname =~ /^\\.(md|markdown)$/i",
+          "group": "navigation@10"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "sheaf.openWithWysiwyg",
+          "when": "editorLangId == markdown && resourceExtname =~ /^\\.(md|markdown)$/i",
           "group": "navigation@10"
         }
       ]
@@ -174,6 +201,19 @@
           "default": false,
           "description": "Double-clicking a rendered element reveals and lets you edit its raw Markdown. Off by default, so double-clicking selects a word as it does elsewhere; Edit Markdown (Cmd+Alt+E, or Ctrl+Alt+E on Windows and Linux) reveals the Markdown either way."
         },
+        "sheaf.comments": {
+          "type": "string",
+          "enum": [
+            "show",
+            "hidden"
+          ],
+          "enumDescriptions": [
+            "Draw each comment as a box you can read and collapse.",
+            "Shrink each comment to a small marker you can click to read it."
+          ],
+          "default": "show",
+          "description": "How to draw the notes written into a document as <!-- ... -->, which are invisible to a reader and never published. A comment on its own lines is drawn as a box labelled Comment, with a chevron that shuts it down to its first line. Hiding them leaves a small marker in place of each, so you can still see where a note is and bring it back with a click. Toggle Comments turns this on and off."
+        },
         "sheaf.tableOfContents": {
           "type": "boolean",
           "default": false,
@@ -195,6 +235,7 @@
     "gen:wren4": "node scripts/gen-wren4.mjs",
     "check-icons": "node scripts/build-icons.mjs --check",
     "check-render": "node scripts/check-render.mjs",
+    "check-touch": "node scripts/check-touch.mjs",
     "gates": "node scripts/gates.mjs",
     "serve": "node dist/serve.js",
     "test": "node scripts/run-tests.mjs",

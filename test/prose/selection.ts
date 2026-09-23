@@ -1,5 +1,6 @@
 import { Scenario, mountProse, Prose } from '../harness';
 import { setClipboardHost } from '../../src/webview/hostClipboard';
+import { setBlockRefHost } from '../../src/webview/refs';
 import { revealField } from '../../src/webview/livePreview';
 import { hint } from '../../src/webview/shortcuts';
 
@@ -405,6 +406,47 @@ export const scenarios: Scenario[] = [
       const yielded = popover(p) === null && toolbar(p) !== null;
       p.destroy();
       return early === null && hovered !== null && url === 'https://a.io' && yielded;
+    },
+  },
+  {
+    name: "the selection toolbar's Copy ref puts the selection's lines and text on the clipboard",
+    run: () => {
+      const copied: string[] = [];
+      setBlockRefHost({ getFileName: () => 'notes.md', copyToClipboard: (text) => copied.push(text) });
+      const p = mountProse('hello world\n\nsecond line');
+      p.select(0, 5);
+      const btn = button(p, 'copy-ref');
+      btn.click();
+      // The tick says the clipboard took it, since a write leaves nothing else to see.
+      const acknowledged = btn.classList.contains('is-copied');
+      p.destroy();
+      setBlockRefHost(null);
+      return copied.length === 1 && copied[0] === 'notes.md:1\n\n```\nhello\n```\n' && acknowledged;
+    },
+  },
+  {
+    name: 'the selection toolbar leaves Copy ref out where the page has no host to copy through',
+    run: () => {
+      setBlockRefHost(null);
+      const p = mountProse('hello world');
+      p.select(0, 5);
+      const missing = toolbar(p)!.querySelector('[data-cmd="copy-ref"]') === null;
+      // The rest of the bar is untouched: it is one button short, not disabled.
+      const stillThere = toolbar(p)!.querySelector('[data-cmd="bold"]') !== null;
+      p.destroy();
+      return missing && stillThere;
+    },
+  },
+  {
+    name: 'Copy ref sits in the toolbar\'s roving focus, between Edit Markdown and the marks',
+    run: () => {
+      setBlockRefHost({ getFileName: () => 'notes.md', copyToClipboard: () => {} });
+      const p = mountProse('hello world');
+      p.select(0, 5);
+      const order = Array.from(toolbar(p)!.querySelectorAll<HTMLElement>('.sheaf-tb-btn')).map((b) => b.dataset.cmd);
+      p.destroy();
+      setBlockRefHost(null);
+      return JSON.stringify(order.slice(0, 3)) === JSON.stringify(['reveal', 'copy-ref', 'bold']);
     },
   },
 ];

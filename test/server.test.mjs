@@ -658,6 +658,81 @@ const cases = [
     return asked.size > 0 && missing.length === 0;
   }],
 
+  /*
+   * A blank line between blocks is drawn short by a class the editor adds and the
+   * stylesheet sizes, so the two halves have to agree about the class's name, and
+   * the size has to be one CodeMirror's height map can read. A vertical margin is
+   * space the map cannot see, and a height short by it drifts posAtCoords until
+   * clicks land on the wrong line.
+   */
+  ['the class the editor puts on a short blank line is sized in the stylesheet, without a margin', async () => {
+    const root = join(import.meta.dirname, '..');
+    const stylesheet = await readFile(join(root, 'media', 'webview.css'), 'utf8');
+    const source = await readFile(join(root, 'src', 'webview', 'blankLines.ts'), 'utf8');
+    const name = /BLANK_LINE_CLASS\s*=\s*'([\w-]+)'/.exec(source)?.[1];
+    if (!name) return false;
+    const rule = new RegExp(`\\.cm-line\\.${name}\\s*\\{([^}]*)\\}`).exec(stylesheet)?.[1];
+    if (!rule) {
+      console.log(`   media/webview.css has no rule sizing .cm-line.${name}`);
+      return false;
+    }
+    if (/(^|[\s;])margin/.test(rule)) {
+      console.log(`   .cm-line.${name} sets a margin, which CodeMirror's height map cannot see`);
+      return false;
+    }
+    return /(^|[\s;])height\s*:/.test(rule);
+  }],
+
+  /*
+   * The toolbar marks itself when its controls fold onto a second row, and the
+   * stylesheet is what acts on the mark: it stops the spacer pushing the view
+   * buttons to the right edge, so the rows read as one run of controls. Two halves,
+   * one class name, so a rename in either has to reach the other.
+   */
+  ['the class the toolbar sets when it wraps is acted on in the stylesheet', async () => {
+    const root = join(import.meta.dirname, '..');
+    const stylesheet = await readFile(join(root, 'media', 'webview.css'), 'utf8');
+    const source = await readFile(join(root, 'src', 'webview', 'toolbar.ts'), 'utf8');
+    const name = /classList\.toggle\('([\w-]+)',[^)]*offsetTop/s.exec(source)?.[1];
+    if (!name) {
+      console.log('   toolbar.ts no longer marks the bar from a measured offset');
+      return false;
+    }
+    const rule = new RegExp(`\\.sheaf-toolbar\\.${name}\\s+\\.sheaf-tb-spacer\\s*\\{([^}]*)\\}`).exec(stylesheet)?.[1];
+    if (!rule) {
+      console.log(`   media/webview.css has no rule for .sheaf-toolbar.${name} .sheaf-tb-spacer`);
+      return false;
+    }
+    // Whatever the shorthand, the spacer must stop growing; that is the whole point.
+    return /flex\s*:\s*0/.test(rule) || /flex-grow\s*:\s*0/.test(rule);
+  }],
+
+  /*
+   * Open in Sheaf is how somebody gets a document back into the editor after Sheaf
+   * has been turned off as the default, or after dropping one file to raw text. A
+   * person looking for it right-clicks whatever is in front of them: the file in the
+   * Explorer, the editor's tab, or the text itself. It is contributed to all three,
+   * and each one has to name a Markdown file, or the item turns up on a PNG.
+   */
+  ['Open in Sheaf is on every surface a Markdown file is right-clicked from', async () => {
+    const manifest = JSON.parse(await readFile(join(import.meta.dirname, '..', 'package.json'), 'utf8'));
+    const { menus, commands } = manifest.contributes;
+    if (!commands.some((c) => c.command === 'sheaf.openWithWysiwyg')) return false;
+    const surfaces = ['explorer/context', 'editor/title/context', 'editor/context'];
+    return surfaces.every((surface) => {
+      const item = (menus[surface] ?? []).find((m) => m.command === 'sheaf.openWithWysiwyg');
+      if (!item) {
+        console.log(`   no Open in Sheaf on ${surface}`);
+        return false;
+      }
+      if (!/\bmd\b/.test(item.when ?? '') || !/markdown/.test(item.when ?? '')) {
+        console.log(`   ${surface} does not limit Open in Sheaf to Markdown: ${item.when}`);
+        return false;
+      }
+      return true;
+    });
+  }],
+
   ['both themes define the same variables, so neither is half-dressed', async () => {
     const theme = await readFile(join(import.meta.dirname, '..', 'media', 'browser-theme.css'), 'utf8');
     const blocks = [...theme.matchAll(/\{([^{}]*)\}/g)].map(([, body]) =>

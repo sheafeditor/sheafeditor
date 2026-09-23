@@ -27,14 +27,14 @@ import { EditorState, StateEffect, Text } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
 import { syntaxTree } from '@codemirror/language';
 import { toggleWrap, insertLink, clearFormatting, turnInto, blockKindOf, BlockKind } from './toolbar';
-import { hint } from './shortcuts';
+import { COPY_REF_KEY, SEND_REF_KEY, hint } from './shortcuts';
 import { tableRowSourceAt, tableRowRefAt, tableActionsAt } from './tables';
 import { formatStateAt } from './formatState';
 import { inFrontMatter } from './floatingState';
 import { blockRangeAt } from './blockModel';
 import { revealBlockAt } from './revealBlock';
 import { linkAddress, linkAddressAt, openLink } from './linkTarget';
-import { coveredEnd } from './selectionExtent';
+import { buildRef, tableRowRef } from './refs';
 
 export interface ContextMenuDeps {
   getView: () => EditorView | undefined;
@@ -62,56 +62,6 @@ type MenuItem =
       radio?: boolean;
     }
   | { kind: 'submenu'; label: string; items: MenuItem[]; disabled?: boolean };
-
-/**
- * Build the `path:line` (or `path:start-end`) reference, plus the text it names.
- * A reference always carries its content, so a paste says what is there as well as
- * where it is: the selected text, or, with only a caret, the source of the line the
- * caret sits on. An empty line has nothing to quote and gets the location alone.
- *
- * Exported because the same reference is reachable from a command and a keystroke
- * as well as from this menu, and two builders would drift into saying two things
- * about one selection.
- */
-export function buildRef(view: EditorView, fileName: string): string {
-  const { doc } = view.state;
-  const sel = view.state.selection.main;
-  const startLine = doc.lineAt(sel.from).number;
-  // A selection that ends at the start of a line (a triple-clicked line) covers
-  // no character of that line, so the range stops at the line before it.
-  const endLine = doc.lineAt(coveredEnd(doc, sel)).number;
-  const range = !sel.empty && endLine !== startLine ? `${startLine}-${endLine}` : `${startLine}`;
-  const text = sel.empty ? doc.line(startLine).text : doc.sliceString(sel.from, sel.to);
-  return quotedRef(`${fileName}:${range}`, text);
-}
-
-/**
- * A reference to cells of a table: `path:line` (or `path:start-end`), then which
- * cells those are in the grid's terms when the grid said, as in
- * `doc.md:24 (Time, row 4)`. Exported for the same reason as `buildRef`.
- */
-export function tableRowRef(fileName: string, ref: { start: number; end: number; text: string; label?: string }): string {
-  // The ref carries the text the grid handed back: whole lines, the cells that
-  // were picked inside them, or one cell's text.
-  const range = ref.start === ref.end ? `${ref.start}` : `${ref.start}-${ref.end}`;
-  return quotedRef(`${fileName}:${range}${ref.label ? ` (${ref.label})` : ''}`, ref.text);
-}
-
-/** `location`, then `text` in a fenced block below it, or the location alone when there is nothing to quote. */
-function quotedRef(location: string, text: string): string {
-  return text === '' ? `${location}\n` : `${location}\n\n${fence(text)}\n`;
-}
-
-/**
- * Wrap `text` in a Markdown fenced code block. The fence is grown longer than
- * the longest backtick run inside the text so content containing ``` stays
- * intact, and a trailing newline is trimmed so the closing fence sits flush.
- */
-export function fence(text: string): string {
-  const longest = (text.match(/`+/g) ?? []).reduce((max, run) => Math.max(max, run.length), 0);
-  const bars = '`'.repeat(Math.max(3, longest + 1));
-  return `${bars}\n${text.replace(/\n$/, '')}\n${bars}`;
-}
 
 /* ---- What was clicked ---------------------------------------------------- */
 
@@ -199,7 +149,7 @@ export function mountContextMenu(root: HTMLElement, deps: ContextMenuDeps): void
   // Copy ref's key is bound by the editor window, not in this page, so it is shown only where the
   // host has that window. Send to terminal is offered in exactly the same hosts, so its presence is
   // the answer; in a browser tab neither key does anything, and a hint there would be untrue.
-  const copyRefKey = () => (deps.sendRefToTerminal ? 'Mod-Shift-Alt-r' : undefined);
+  const copyRefKey = () => (deps.sendRefToTerminal ? COPY_REF_KEY : undefined);
   const menu = document.createElement('div');
   menu.className = 'sheaf-ctx-menu';
   menu.hidden = true;
@@ -466,7 +416,7 @@ export function mountContextMenu(root: HTMLElement, deps: ContextMenuDeps): void
       // Beside Copy ref, because it is the same reference going somewhere else: to the terminal's
       // prompt rather than the clipboard. Absent where the host has not offered it.
       ...(deps.sendRefToTerminal
-        ? [{ kind: 'item', label: 'Send to terminal', keyHint: 'Mod-Shift-Alt-t', run: cmd(() => deps.sendRefToTerminal!()) } as MenuItem]
+        ? [{ kind: 'item', label: 'Send to terminal', keyHint: SEND_REF_KEY, run: cmd(() => deps.sendRefToTerminal!()) } as MenuItem]
         : []),
     ];
     if (context.length) items.push({ kind: 'sep' }, ...context);
@@ -625,7 +575,7 @@ export function mountContextMenu(root: HTMLElement, deps: ContextMenuDeps): void
               {
                 kind: 'item',
                 label: 'Send to terminal',
-                keyHint: 'Mod-Shift-Alt-t',
+                keyHint: SEND_REF_KEY,
                 run: () => {
                   if (unchanged(view, doc)) deps.sendRefToTerminal!();
                   close(true);
