@@ -2,6 +2,7 @@ import { createRequire } from 'node:module';
 
 const {
   planEdit,
+  mergeOutsideChange,
   toWebviewText,
   DocumentSync,
   mountWebview,
@@ -9,6 +10,9 @@ const {
   RECENT_TYPING_MS,
   noticeAboutLostText,
   quoteLost,
+  documentTitle,
+  fileTitle,
+  relativeLink,
   parseView,
   applyView,
   rowMatches,
@@ -25,6 +29,18 @@ const {
   wholeNumber,
 } = createRequire(import.meta.url)('./textSync.bundle.cjs');
 import { bootWebview } from './webview.mjs';
+
+/** The text two changes make together, with nothing of either dropped. */
+const merged = (base, mine, theirs) => {
+  const { text, dropped } = mergeOutsideChange(base, mine, theirs);
+  return dropped ? null : text;
+};
+
+/** The text two changes make together when part of the other one could not be kept. */
+const mergedWithLoss = (base, mine, theirs) => {
+  const { text, dropped } = mergeOutsideChange(base, mine, theirs);
+  return dropped ? text : null;
+};
 
 /** The document text the planned edit produces when VS Code applies it. */
 function applied(documentText, edit) {
@@ -150,7 +166,66 @@ const viewRows = (body, header = TASKS_HEADER, rows = TASKS) => applyView(parseV
 /** The rows a `from` plus one `where` line shows over the tasks table. */
 const whereRows = (where, header, rows) => viewRows(`from: tasks.csv\nwhere: ${where}`, header, rows);
 
+/** Say why a check failed, above the line naming it, and report the failure. */
+const fail = (why) => {
+  console.log(`   ${why}`);
+  return false;
+};
+
+/**
+ * The character range in `before` that a change is allowed to rewrite: the whole of every line
+ * the change touches, and nothing past them. A grapheme or a line ending can force an edit to
+ * reach a little wider than the characters that differ, which is why this is measured in lines
+ * rather than characters.
+ */
+function linesThatChanged(before, after) {
+  let pre = 0;
+  while (pre < before.length && pre < after.length && before[pre] === after[pre]) pre++;
+  let post = 0;
+  while (
+    post < before.length - pre &&
+    post < after.length - pre &&
+    before[before.length - 1 - post] === after[after.length - 1 - post]
+  ) {
+    post++;
+  }
+  const start = before.lastIndexOf('\n', pre - 1) + 1;
+  const lastChanged = Math.max(0, before.length - post - 1);
+  const ending = before.indexOf('\n', lastChanged);
+  return { start, end: ending === -1 ? before.length : ending + 1 };
+}
+
 const cases = [
+  // The one rule stated as absolute: the file is the document, so an edit carries the change
+  // and nothing else. Every other check in this file would also fail if this broke, but each of
+  // them is named after a symptom (an emoji, a line ending, text a person lost), so this one
+  // exists to put the rule itself in the first line of the failure.
+  ['the invariant: an edit rewrites the lines that changed and leaves every other line alone', () => {
+    const body = 'First line.\n\n## A heading\n\nA paragraph in the middle of the file.\n\n- one\n- two\n\nLast line.\n';
+    const changes = [
+      ['one letter typed mid-paragraph', body, body.replace('the middle', 'the middlle')],
+      ['one letter deleted mid-paragraph', body, body.replace('paragraph', 'paragaph')],
+      ['a line inserted between two others', body, body.replace('- two', '- two\n- three')],
+      ['a line deleted from the middle', body, body.replace('- one\n', '')],
+      ['a word changed on the first line', body, body.replace('First', 'Second')],
+      ['a word changed on the last line', body, body.replace('Last', 'Final')],
+      ['an emoji swapped mid-file', body.replace('- one', '- 😀'), body.replace('- one', '- 😃')],
+      ['a heading rewritten whole', body, body.replace('## A heading', '### Another heading entirely')],
+    ];
+    return changes.every(([what, before, after]) => {
+      const edit = planEdit(before, after, false);
+      if (!edit) return fail(`${what}: no edit was planned for a change`);
+      const allowed = linesThatChanged(before, after);
+      if (applied(before, edit) !== after) return fail(`${what}: the edit does not produce the text`);
+      if (edit.start < allowed.start || edit.end > allowed.end) {
+        return fail(
+          `${what}: the edit rewrites characters ${edit.start} to ${edit.end}, ` +
+            `and the lines that changed are ${allowed.start} to ${allowed.end}`
+        );
+      }
+      return true;
+    });
+  }],
   ['identical text is no edit', () => planEdit('x\n', 'x\n', false) === null],
   ['LF document: one typed character is a one-character edit', () => {
     const e = planEdit('a\nb\n', 'a\nbc\n', false);
@@ -198,14 +273,184 @@ const cases = [
     for (const text of doc.posted) webview.setContent(text);
     return doc.text === `Start${typed}\n` && webview.doc() === doc.text;
   }],
-  ['an edit the editor refuses is planned again, not dropped', async () => {
+  ['two changes in different places are put together, whichever comes first', () => {
+    const base = 'Alpha\nBeta\nGamma\n';
+    // The person typed in the first line; something else rewrote the third.
+    const mine = 'Alpha!\nBeta\nGamma\n';
+    const theirs = 'Alpha\nBeta\nGamma rewritten\n';
+    const both = 'Alpha!\nBeta\nGamma rewritten\n';
+    // And the same the other way round: the person in the third, the other in the first.
+    const lateMine = 'Alpha\nBeta\nGamma!\n';
+    const earlyTheirs = 'Alpha rewritten\nBeta\nGamma\n';
+    return (
+      merged(base, mine, theirs) === both &&
+      merged(base, lateMine, earlyTheirs) === 'Alpha rewritten\nBeta\nGamma!\n'
+    );
+  }],
+  ['a change put together with one that added or removed text ahead of it lands where the person typed it', () => {
+    const base = 'one\ntwo\nthree\n';
+    // The other change is longer than what it replaced, so everything after it moves.
+    const grew = merged(base, 'one\ntwo\nthree!\n', 'one and a half\ntwo\nthree\n');
+    // And shorter, so everything after it moves back.
+    const shrank = merged(base, 'one\ntwo\nthree!\n', 'o\ntwo\nthree\n');
+    return grew === 'one and a half\ntwo\nthree!\n' && shrank === 'o\ntwo\nthree!\n';
+  }],
+  ['nothing to put together when only one side changed, or both made the same change', () => {
+    const base = 'Alpha\n';
+    return (
+      merged(base, 'Alpha!\n', base) === 'Alpha!\n' &&
+      merged(base, base, 'Alpha?\n') === 'Alpha?\n' &&
+      merged(base, 'Alpha!\n', 'Alpha!\n') === 'Alpha!\n'
+    );
+  }],
+  ['two changes to the same characters leave the person’s, and say something was dropped', () => {
+    const base = 'Start\n';
+    return (
+      // Both replaced the first word.
+      mergedWithLoss(base, 'Started\n', 'Starting\n') === 'Started\n' &&
+      // Both inserted at the very same point, where there is no answer to which is first.
+      mergedWithLoss(base, 'StartQ\n', 'Started differently\n') === 'StartQ\n' &&
+      // One inside the other's span.
+      mergedWithLoss('abcdef\n', 'abXYZf\n', 'aQf\n') === 'abXYZf\n'
+    );
+  }],
+  ['a paragraph deleted beside the line being typed in stays deleted', () => {
+    /*
+     * The write is behind on the typed line, as every write made from a file read a
+     * moment ago is, and it deletes a paragraph next to it. Nothing unchanged sits
+     * between the two, so a diff that knows only whether lines are equal reads the
+     * deletion and the typed line as one range, which then disagrees with the person's
+     * typing and is dropped whole. The agent is told nothing and believes it removed a
+     * paragraph that is still there.
+     *
+     * All four positions, because the one that worked did so only by having an
+     * untouched paragraph in between to anchor on.
+     */
+    const base = 'Top line.\n\nMiddle line.\n\nBoZZttom line.\n';
+    const typedLast = 'Top line.\n\nMiddle line.\n\nBoZZYYttom line.\n';
+    // The paragraph directly above it, from a write behind on the typed line.
+    const below = mergedWithLoss(base, typedLast, 'Top line.\n\nBottom line.\n');
+    // Two paragraphs away, from a write that had already seen the typing, so nothing
+    // of theirs is dropped at all.
+    const above = merged(base, typedLast, 'Middle line.\n\nBoZZttom line.\n');
+    const typedFirst = 'ToZZYYp line.\n\nMiddle line.\n\nBottom line.\n';
+    const under = mergedWithLoss('ToZZp line.\n\nMiddle line.\n\nBottom line.\n', typedFirst, 'Top line.\n\nBottom line.\n');
+    return (
+      below === 'Top line.\n\nBoZZYYttom line.\n' &&
+      above === 'Middle line.\n\nBoZZYYttom line.\n' &&
+      under === 'ToZZYYp line.\n\nBottom line.\n'
+    );
+  }],
+  ['two unrelated lines are not read as one line changed', () => {
+    // The control for matching a line against the same line changed. Two lines that
+    // merely end alike are a line gone and a line arrived, and treating them as one
+    // would put half of somebody's sentence into the other's.
+    const base = 'Alpha line.\n\nMiddle line.\n\nOmega line.\n';
+    return (
+      // `Middle line.` and `Bottom line.` share only " line.", which is under the
+      // share a changed line has to keep, so this is a deletion and an addition.
+      merged(base, 'Alpha line!\n\nMiddle line.\n\nOmega line.\n', 'Alpha line.\n\nBottom line.\n\nOmega line.\n') ===
+        'Alpha line!\n\nBottom line.\n\nOmega line.\n' &&
+      // And a blank line is never the same line as one with words on it.
+      merged('a\n\nb\n', 'a!\n\nb\n', 'a\nwords here now\nb\n') === 'a!\nwords here now\nb\n'
+    );
+  }],
+  ['a write stale on the line being typed keeps everything else it changed', () => {
+    /*
+     * The case an agent actually produces, and the one all-or-nothing got wrong. It
+     * read the file a moment ago, so its copy is behind on the line being typed in
+     * and current everywhere else. Settling that one line used to throw away the
+     * whole write; now it costs only the line it is about.
+     */
+    const base = 'Top line.\n\nMiZddle line.\n\nBottom line.\n';
+    const mine = 'Top line.\n\nMiZZYYddle line.\n\nBottom line.\n';
+    const theirs = 'Top line changed by an agent.\n\nMiddle line.\n\nBottom line.\n';
+    return (
+      mergedWithLoss(base, mine, theirs) ===
+      'Top line changed by an agent.\n\nMiZZYYddle line.\n\nBottom line.\n'
+    );
+  }],
+  ['a write that changed two places at once keeps both, with the person typing between them', () => {
+    // What an agent actually does: one write, several places. A single span from the
+    // first place to the last covers the line the person is typing in, so comparing
+    // whole spans refused this outright and the agent's whole write was lost.
+    const base = 'Alpha\n| a | Open |\nBeta\n| b | Open |\nGamma\n';
+    const mine = 'Alpha\n| a | Open |\nBeta!\n| b | Open |\nGamma\n';
+    const theirs = 'Alpha\n| a | Done |\nBeta\n| b | Done |\nGamma\n';
+    return merged(base, mine, theirs) === 'Alpha\n| a | Done |\nBeta!\n| b | Done |\nGamma\n';
+  }],
+  ['one side rewriting the line under the other’s is put together, not refused', () => {
+    // Line ranges that meet are two changes to two lines. Refusing those would
+    // refuse most of what this is for.
+    const base = 'one\ntwo\nthree\n';
+    return merged(base, 'one\ntwo!\nthree\n', 'one rewritten\ntwo\nthree\n') === 'one rewritten\ntwo!\nthree\n';
+  }],
+  ['a line added on each side at the same place keeps both lines, whole', () => {
+    // Two additions at one line are each no lines wide, so nothing says which comes
+    // first and the line merge steps aside. The character merge then keeps both,
+    // because each addition ends in a newline and so neither lands inside the other.
+    // An order had to be picked; what matters is that no line comes out mangled.
+    const base = 'one\ntwo\n';
+    return merged(base, 'one\nmine\ntwo\n', 'one\ntheirs\ntwo\n') === 'one\nmine\ntheirs\ntwo\n';
+  }],
+  ['two changes inside one line are still put together, character by character', () => {
+    // A line both sides changed falls to the finer merge rather than being refused:
+    // an agent rewriting one cell of a row while the person types in another.
+    const base = '| Login | Open | Sam |\n';
+    return merged(base, '| Login | Open | Sammy |\n', '| Login | Done | Sam |\n') === '| Login | Done | Sammy |\n';
+  }],
+  ['two changes to the same characters of one line leave the person’s', () => {
+    // The control for the line above. Same line, same characters, so neither merge
+    // has an answer and the person at the keyboard keeps theirs.
+    const base = '| Login | Open | Sam |\n';
+    return (
+      mergedWithLoss(base, '| Login | Opened | Sam |\n', '| Login | Done | Sam |\n') ===
+      '| Login | Opened | Sam |\n'
+    );
+  }],
+  ['a document rewritten from top to bottom is past the size the line merge attempts', () => {
+    // Every line differs, which is more pairs of lines than the line diff will build a
+    // table for, so it steps aside and the character merge answers. A line the person
+    // added past the end of it is clear of that rewrite and survives; anything they
+    // typed inside it is not, and they keep their own text.
+    const wide = (mark) => Array.from({ length: 2100 }, (_, i) => `line ${i} ${mark}`).join('\n') + '\n';
+    const inside = wide('a').replace('line 1000 a', 'line 1000 a!');
+    return (
+      merged(wide('a'), wide('a') + 'typed\n', wide('b')) === wide('b') + 'typed\n' &&
+      mergedWithLoss(wide('a'), inside, wide('b')) === inside
+    );
+  }],
+  ['an edit the editor refuses is planned again, and an outside write it was refused for is kept', async () => {
     const doc = makeHost('Start\n');
     const sync = new DocumentSync(doc.host);
     // The document moves between the plan and the write, which is what makes VS Code
     // refuse the edit the person's keystroke went into.
     doc.beforeApply = () => doc.write('Start\nwritten from outside\n');
     await sync.edit('StartQ\n');
-    return doc.refused === 1 && doc.applied === 1 && doc.text === 'StartQ\n' && doc.posted.length === 0;
+    // Both changes are in the file. The person's Q went in where they typed it, and
+    // the line somebody else wrote is still there: replanning used to take it out,
+    // because the text the webview sent was read before that line existed.
+    //
+    // And the webview is given the result. It sent text that predates the other
+    // change, so leaving it alone would put the file a version ahead of the page.
+    return (
+      doc.refused === 1 &&
+      doc.applied === 1 &&
+      doc.text === 'StartQ\nwritten from outside\n' &&
+      doc.posted.length === 1 &&
+      doc.posted[0] === doc.text
+    );
+  }],
+  ['an outside write to the same characters the person is typing leaves the person’s text standing', async () => {
+    const doc = makeHost('Start\n');
+    const sync = new DocumentSync(doc.host);
+    // Both changed the first line, so there is nothing to put together and the
+    // person at the keyboard keeps theirs. Nothing tells them yet, which is the
+    // half of this that is still to be written.
+    doc.beforeApply = () => doc.write('Started differently\n');
+    await sync.edit('StartQ\n');
+    // The page is told too, so it is not left showing a document the file disagrees with.
+    return doc.refused === 1 && doc.applied === 1 && doc.text === 'StartQ\n' && doc.posted[0] === 'StartQ\n';
   }],
   ['an edit refused over and over stops being replanned and the webview is resynced', async () => {
     const doc = makeHost('Start\n');
@@ -471,6 +716,77 @@ const cases = [
       noticeAboutLostText('ZZ') ===
       'Sheaf: this file changed outside the editor, and your last change is gone: "ZZ". Undo brings it back.'
     );
+  }],
+  /*
+   * What a document calls itself, for the words of a link written to it.
+   *
+   * Both hosts answer that question and they read it with this one function, so the cases
+   * that matter are the ones where a `#` in the text is not the title: inside front matter,
+   * inside a fenced block, and a heading deeper than `#` when that is where the document
+   * starts.
+   */
+  ['doc title: the first heading is the title, at any level, and the file name is the fallback', () => {
+    const cases = [
+      ['# Launch plan\n\nBody.\n', 'Launch plan'],
+      ['## Launch plan\n\nBody.\n', 'Launch plan'],
+      ['###### Launch plan\n', 'Launch plan'],
+      // A closed ATX heading's trailing hashes are syntax.
+      ['## Launch plan ##\n', 'Launch plan'],
+      ['   # Launch plan\n', 'Launch plan'],
+      // Four spaces is an indented code block, not a heading.
+      ['    # Launch plan\n\n# Real one\n', 'Real one'],
+      // No hash, no heading: `#Launch` is a word starting with a hash.
+      ['#Launch plan\n\n# Real one\n', 'Real one'],
+      ['Body with no heading.\n', 'release-notes'],
+      ['', 'release-notes'],
+      // An empty heading names nothing, so the next one, or the file, does.
+      ['#\n\n# Real one\n', 'Real one'],
+      ['#  \n', 'release-notes'],
+    ];
+    const bad = cases.filter(([text, want]) => documentTitle(text, 'docs/release-notes.md') !== want);
+    return bad.length === 0 || fail(`these gave the wrong title: ${JSON.stringify(bad.map((c) => [c[0], c[1], documentTitle(c[0], 'docs/release-notes.md')]))}`);
+  }],
+  ['doc title: front matter and fenced code hold no title, however many hashes they carry', () => {
+    const front = '---\ntitle: Not this\n# not a heading either\n---\n\n# Launch plan\n';
+    const fenced = '```sh\n# install it\n```\n\n# Launch plan\n';
+    const tildes = '~~~\n# comment\n~~~\n\n# Launch plan\n';
+    // An unclosed fence is not front matter, so the document is read from the top.
+    const unclosed = '---\n# Launch plan\n';
+    // A fence closed with more markers than it opened with is still closed.
+    const longer = '```\n# no\n`````\n\n# Launch plan\n';
+    const got = [front, fenced, tildes, unclosed, longer].map((t) => documentTitle(t, 'a/plan.md'));
+    const want = ['Launch plan', 'Launch plan', 'Launch plan', 'Launch plan', 'Launch plan'];
+    return got.join('|') === want.join('|') || fail(`got ${JSON.stringify(got)}`);
+  }],
+  ['doc link: an address is written relative to the folder the document sits in', () => {
+    // One reading for three callers: the completion after `(`, and each host answering a
+    // pasted path. Two of them writing different addresses for one file would be the same
+    // fact written twice, which is what moving this out of the completion was for.
+    const cases = [
+      ['docs/notes.md', 'docs/plan.md', 'plan.md'],
+      ['docs/notes.md', 'plan.md', '../plan.md'],
+      ['docs/a/notes.md', 'docs/b/plan.md', '../b/plan.md'],
+      ['notes.md', 'docs/plan.md', 'docs/plan.md'],
+      ['docs/a/b/notes.md', 'plan.md', '../../../plan.md'],
+      // A sibling gets no `./`: Markdown needs none and nobody writes one by hand.
+      ['notes.md', 'plan.md', 'plan.md'],
+      ['/ws/docs/notes.md', '/ws/plan.md', '../plan.md'],
+    ];
+    const bad = cases.filter(([from, to, want]) => relativeLink(from, to) !== want);
+    return bad.length === 0 || fail(`these gave the wrong address: ${JSON.stringify(bad.map((c) => [c[0], c[1], c[2], relativeLink(c[0], c[1])]))}`);
+  }],
+  ['doc title: the file-name fallback takes the extension off and invents nothing else', () => {
+    const got = [
+      fileTitle('docs/release-notes.md'),
+      fileTitle('release notes.markdown'),
+      fileTitle('/a/b/plan.md'),
+      fileTitle('C:\\notes\\plan.md'),
+      fileTitle('plan'),
+      // A dotfile is its own name rather than an empty one.
+      fileTitle('.plan.md'),
+    ];
+    const want = ['release-notes', 'release notes', 'plan', 'plan', 'plan', '.plan'];
+    return got.join('|') === want.join('|') || fail(`got ${JSON.stringify(got)}`);
   }],
   ['lost text: a long quote is cut short, and a quote spanning lines is shown on one', () => {
     const long = quoteLost('x'.repeat(200));

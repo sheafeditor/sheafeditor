@@ -35,6 +35,7 @@
  * collapse together, which is the same trade the tables make.
  */
 
+import type { FromWebview } from '../protocol';
 import { Decoration, DecorationSet, EditorView, ViewPlugin, WidgetType } from '@codemirror/view';
 import { EditorSelection, EditorState, Extension, Range, StateField } from '@codemirror/state';
 import { syntaxTree } from '@codemirror/language';
@@ -165,14 +166,9 @@ export function setCommentsMode(next: CommentsMode): void {
   changed();
 }
 
-/** Whether comments are drawn in full, as the setting has it now. */
-export function commentsMode(): CommentsMode {
-  return mode;
-}
-
 // ---- Keeping a collapse ----------------------------------------------------
 
-let foldsHost: ((message: unknown) => void) | null = null;
+let foldsHost: ((message: FromWebview) => void) | null = null;
 let foldsSeq = 0;
 
 /**
@@ -181,7 +177,7 @@ let foldsSeq = 0;
  * arrives when the page asks first, so a comment is usually drawn collapsed
  * from the start rather than shutting a moment later.
  */
-export function setCommentFoldsHost(send: ((message: unknown) => void) | null): void {
+export function setCommentFoldsHost(send: ((message: FromWebview) => void) | null): void {
   foldsHost = send;
   send?.({ type: 'commentFoldsRead', id: `comments-${++foldsSeq}` });
 }

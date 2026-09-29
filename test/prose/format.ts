@@ -265,7 +265,7 @@ export const scenarios: Scenario[] = [
     },
   },
   {
-    name: 'the prose menu leads with Turn into and Edit Markdown, then the marks, Copy ref and the link actions',
+    name: 'the prose menu leads with Edit Markdown and Copy ref, then Turn into, the marks and the link actions',
     run: () => {
       const opened: string[] = [];
       const copied: string[] = [];
@@ -273,7 +273,7 @@ export const scenarios: Scenario[] = [
       p.select(9);
       const m = openMenu(p, { openLink: (u) => opened.push(u) }, copied);
       const labels = m.labels();
-      const order = ['Turn into', 'Edit Markdown', 'Highlight', 'Inline code', 'Clear formatting', 'Copy ref', 'Open link', 'Copy link address', 'Remove link'];
+      const order = ['Edit Markdown', 'Copy ref', 'Turn into', 'Highlight', 'Inline code', 'Clear formatting', 'Open link', 'Copy link address', 'Remove link'];
       const offered = order.every((l, i) => labels.indexOf(l) >= 0 && (i === 0 || labels.indexOf(l) > labels.indexOf(order[i - 1])));
       // Inside a link there is nothing to link, so Link is not offered a second time.
       const noSecondLink = !labels.includes('Link');

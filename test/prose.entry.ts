@@ -18,6 +18,8 @@ import { scenarios as headingLevels } from './prose/headingLevels';
 import { scenarios as slash } from './prose/slash';
 import { scenarios as slashInBlocks } from './prose/slashInBlocks';
 import { scenarios as linkPopoverMoves } from './prose/linkPopoverMoves';
+import { scenarios as linkShortcuts } from './prose/linkShortcuts';
+import { scenarios as linkClick } from './prose/linkClick';
 import { scenarios as altArrow } from './prose/altArrow';
 import { scenarios as blockModelFixes } from './prose/blockModelFixes';
 import { scenarios as keys } from './prose/keys';
@@ -45,11 +47,16 @@ import { scenarios as toolbarControls } from './prose/toolbarControls';
 import { scenarios as contentWidth } from './prose/contentWidth';
 import { scenarios as alerts } from './prose/alerts';
 import { scenarios as comments } from './prose/comments';
+import { scenarios as frontMatterView } from './prose/frontMatterView';
 import { scenarios as tableOfContents } from './prose/tableOfContents';
 import { scenarios as maths } from './prose/maths';
+import { scenarios as mermaid } from './prose/mermaid';
 import { scenarios as changeMarks } from './prose/changeMarks';
 import { scenarios as linkComplete } from './prose/linkComplete';
-import { scenarios as blankLines } from './prose/blankLines';
+import { scenarios as footnotes } from './prose/footnotes';
+import { scenarios as sourceModeEdits } from './prose/sourceModeEdits';
+import { scenarios as literalMarks } from './prose/literalMarks';
+import { scenarios as linkTyping } from './prose/linkTyping';
 
 interface Result {
   name: string;
@@ -74,6 +81,8 @@ export async function runAll(): Promise<Result[]> {
     ...slash,
     ...slashInBlocks,
     ...linkPopoverMoves,
+    ...linkShortcuts,
+  ...linkClick,
     ...altArrow,
     ...blockModelFixes,
     ...keys,
@@ -101,15 +110,28 @@ export async function runAll(): Promise<Result[]> {
     ...contentWidth,
     ...alerts,
     ...comments,
+    ...frontMatterView,
     ...tableOfContents,
     ...maths,
+    ...mermaid,
     ...changeMarks,
     ...linkComplete,
-    ...blankLines,
+    ...footnotes,
+    ...sourceModeEdits,
+    ...literalMarks,
+    ...linkTyping,
   ] as Scenario[]) {
     try {
-      const ok = await s.run();
-      results.push({ name: s.name, ok, detail: ok ? '' : 'assertion failed' });
+      /*
+       * A scenario returns a boolean, or `{ ok, detail }` when it has something to say about
+       * how it failed. Both are read here, because reading only the boolean made an object
+       * truthy: a check written in the second shape passed whatever it found, and one was.
+       * The host runner had the same hole and was fixed the same way.
+       */
+      const result = await s.run();
+      const ok = result && typeof result === 'object' ? (result as { ok: boolean }).ok === true : result === true;
+      const said = result && typeof result === 'object' ? (result as { detail?: string }).detail : '';
+      results.push({ name: s.name, ok, detail: ok ? '' : said || 'assertion failed' });
     } catch (e) {
       results.push({ name: s.name, ok: false, detail: 'threw: ' + (e as Error).message });
     }

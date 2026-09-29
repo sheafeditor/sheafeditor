@@ -226,7 +226,19 @@ function makeHost(opts: { latency?: number; failUpdate?: string } = {}) {
         if (log.commands[id]) return log.commands[id](...args);
       },
     },
-    env: { clipboard: { writeText: async () => {}, readText: async () => '' } },
+    env: { appName: 'Visual Studio Code', remoteName: undefined, clipboard: { writeText: async () => {}, readText: async () => '' } },
+    version: '1.90.0',
+    /*
+     * The extension registry, which About reads to find out whether a newer build is
+     * installed than the one this window is running. Modelled here rather than made
+     * optional in `src/about.ts`: every real VS Code has it, and a host stand-in that
+     * leaves out an API the extension uses should be corrected, not worked around.
+     */
+    extensions: {
+      getExtension: (id: string) =>
+        id === 'sheafeditor.sheafeditor' ? { packageJSON: { version: '0.2.0' } } : undefined,
+      onDidChange: () => ({ dispose() {} }),
+    },
   };
 
   const textSync = loadTs('src/textSync.ts', {});
@@ -1460,13 +1472,74 @@ export const scenarios: Scenario[] = [
   {
     id: 'host.theme.u03',
     feature: 'host.theme',
-    name: 'Every code highlight color reads a theme variable',
+    name: 'Every code highlight color reads a variable, and the code palette is defined for light and dark',
     run: () => {
+      /*
+       * This used to require every colour to be `var(--vscode-...)`, and that requirement is
+       * what kept a defect in place for as long as it lasted.
+       *
+       * VS Code publishes no editor token colours to a webview. So the only way to satisfy the
+       * old rule was to name a `--vscode-` variable that exists for something else, and the
+       * three that were named are `symbolIcon.*`, the grey of the suggest widget's type icons.
+       * A fallback is reached only when a variable is undefined, so five token types were drawn
+       * in that grey and this scenario passed on all of them: it asked where the colour came
+       * from and never what it turned out to be.
+       *
+       * What is achievable, and what it asks now: no literal colour in the highlight style, so
+       * the palette lives in one place and can be switched; and that place defines the palette
+       * for a dark theme and again for a light one, because a dark code palette on a white
+       * background is unreadable.
+       *
+       * What a colour actually resolves to is a question for a browser, and
+       * `scripts/check-code-colours.mjs` answers it: every token visible against body prose and
+       * distinct from the others, with VS Code's own greys injected so it can fail the way an
+       * editor does.
+       */
       const src = THEME_TS();
+      const css = CSS();
       const block = src.slice(src.indexOf('HighlightStyle.define'), src.indexOf('export const notionTheme'));
       const colors = [...block.matchAll(/color:\s*'([^']+)'/g)].map((m) => m[1]);
-      const bad = colors.filter((c) => c !== 'inherit' && !c.startsWith('var(--vscode-'));
-      return { ok: colors.length > 5 && bad.length === 0, detail: `${colors.length} colors, not themed: ${j(bad)}` };
+      const literals = colors.filter((c) => c !== 'inherit' && !c.startsWith('var(--'));
+      // Every Sheaf-owned token colour the style names has to be defined, and defined twice: a
+      // default and a light override. One definition means one palette for every theme.
+      const named = [...new Set([...block.matchAll(/var\((--md-tok-[\w-]+)\)/g)].map((m) => m[1]))];
+      const undefined_ = named.filter((v) => !css.includes(`${v}:`));
+      /*
+       * Each of the two switches by name, not a count of definitions.
+       *
+       * Counting was the first version and it could not fail: with a default, a VS Code light
+       * block and a browser light block there are three definitions, so deleting the VS Code one
+       * outright still left two and passed. That deletion would give every VS Code light theme
+       * dark code colours on a white background, which is the exact failure the light palette
+       * exists to prevent.
+       *
+       * The two hosts say which kind of theme they are in different ways and neither answer is
+       * available in the other, so both have to be present: VS Code puts a class on the body, and
+       * the browser has none and follows the reader's own setting.
+       */
+      const chunk = (marker: string): string => {
+        const at = css.indexOf(marker);
+        if (at < 0) return '';
+        const close = css.indexOf('\n}', at);
+        return close < 0 ? css.slice(at) : css.slice(at, close);
+      };
+      const forVsCodeLight = chunk('body.vscode-light');
+      const forBrowserLight = chunk('prefers-color-scheme: light');
+      const missingVsCode = named.filter((v) => !forVsCodeLight.includes(`${v}:`));
+      const missingBrowser = named.filter((v) => !forBrowserLight.includes(`${v}:`));
+      return {
+        ok:
+          colors.length > 5 &&
+          literals.length === 0 &&
+          named.length >= 5 &&
+          undefined_.length === 0 &&
+          missingVsCode.length === 0 &&
+          missingBrowser.length === 0,
+        detail:
+          `${colors.length} colors, ${named.length} own properties; ` +
+          `literal: ${j(literals)} undefined: ${j(undefined_)} ` +
+          `no VS Code light: ${j(missingVsCode)} no browser light: ${j(missingBrowser)}`,
+      };
     },
   },
   {

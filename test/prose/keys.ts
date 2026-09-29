@@ -1,4 +1,8 @@
 import { Scenario, mountProse } from '../harness';
+import { lineTextStart, markerLength } from '../../src/webview/lineStart';
+import { setDocumentSourceMode } from '../../src/webview/livePreview';
+import { revealRange } from '../../src/webview/revealBlock';
+import { blockRangeAt } from '../../src/webview/blockModel';
 import { turnInto, BlockKind } from '../../src/webview/toolbar';
 import { createShortcutsOverlay } from '../../src/webview/shortcuts';
 
@@ -13,6 +17,87 @@ const after = (doc: string, at: number, act: (p: ReturnType<typeof mountProse>) 
 };
 
 export const scenarios: Scenario[] = [
+  {
+    /*
+     * Where the start of a line is when the line opens with a marker.
+     *
+     * Home itself is CodeMirror's and needs a layout to have an opinion, so a real window is
+     * what checks the key. The rule it now asks is a function of the text and the block, and
+     * that is what is checked here: the traps are a `#` inside code, a wrapped item's
+     * indented continuation, and a line that is nothing but its marker.
+     */
+    name: 'the start of a line is the start of its text, past a heading, quote, bullet or task marker',
+    run: () => {
+      const cases: [string, number, string][] = [
+        ['# A heading here', 2, 'the hashes and the space'],
+        ['###### Deep', 7, 'six hashes'],
+        ['> A quoted line', 2, 'the mark and its space, not the gap between them'],
+        ['>> Nested', 3, 'both levels'],
+        ['> - An item in a quote', 4, 'the quote and the bullet'],
+        ['- A bullet item', 2, 'the bullet'],
+        ['* Star bullet', 2, 'a star bullet'],
+        ['12. Numbered', 4, 'a number and its dot'],
+        ['3) Paren numbered', 3, 'a number and its bracket'],
+        ['- [ ] A task item', 6, 'the bullet and the box'],
+        ['- [x] Done', 6, 'a ticked box'],
+        ['Plain paragraph', 0, 'nothing to skip'],
+        // Indentation alone is not a marker: a wrapped item's continuation already starts
+        // where its text does, and treating the spaces as a marker would be the same answer
+        // by accident and the wrong rule.
+        ['    continuation text', 0, 'indentation is not a marker'],
+        // A line that is only its marker: the caret goes where the person would type.
+        ['- ', 2, 'an empty item'],
+        ['> ', 2, 'an empty quote line'],
+      ];
+      const wrong = cases.filter(([text, want]) => markerLength(text) !== want);
+      // In a fenced block a `#` is a comment in somebody's shell script, and the line is
+      // read as code, so nothing is skipped. This one goes through the block model, which is
+      // the part markerLength alone cannot know.
+      const doc = 'Intro.\n\n```sh\n# not a heading\n```\n\n# A real heading\n';
+      const p = mountProse(doc);
+      const inCode = lineTextStart(p.view.state, doc.indexOf('# not a heading') + 3);
+      const inProse = lineTextStart(p.view.state, doc.indexOf('# A real heading') + 3);
+      p.destroy();
+      const codeOk = inCode === doc.indexOf('# not a heading');
+      const proseOk = inProse === doc.indexOf('# A real heading') + 2;
+      return {
+        ok: wrong.length === 0 && codeOk && proseOk,
+        detail:
+          `${wrong.map(([t, want, why]) => `${JSON.stringify(t)} wanted ${want} (${why}) got ${markerLength(t)}`).join('; ') || 'every line as wanted'}` +
+          `; in a fenced block ${codeOk ? 'nothing is skipped' : `skipped to ${inCode}`}; the heading after it ${proseOk ? 'skips its hashes' : `went to ${inProse}`}`,
+      };
+    },
+  },
+  {
+    /*
+     * A line showing its Markdown keeps the marker in reach.
+     *
+     * The rule above is right where the marker is decoration standing in front of the text.
+     * Edit Markdown, and whole-document source mode, are asked for precisely to get at the
+     * marker, so there it is the content: skipping it puts the caret past the thing the
+     * person opened the line to change, and typing a third `#` wrote `## #Heading`.
+     */
+    name: 'on a line showing its Markdown, the start of the line is the start of the line',
+    run: () => {
+      const doc = '## Heading two\n\nBody text.\n';
+      const p = mountProse(doc);
+      const drawn = lineTextStart(p.view.state, 4);
+      // Edit Markdown on that block, which is what the menu and Mod-Alt-e run.
+      revealRange(p.view, blockRangeAt(p.view.state, 4)!);
+      const revealed = lineTextStart(p.view.state, 4);
+      // Whole-document source mode is the same question at the size of the file.
+      setDocumentSourceMode(p.view, document.createElement('div'), true);
+      const inSource = lineTextStart(p.view.state, 4);
+      const unchanged = p.doc() === doc;
+      p.destroy();
+      return {
+        // `## ` is three characters, which is the point: drawn, the caret clears the whole
+        // marker; revealed, it goes in front of it, where the person can type the third `#`.
+        ok: drawn === 3 && revealed === 0 && inSource === 0 && unchanged,
+        detail: `drawn ${drawn} (wanted 3); revealed ${revealed} (wanted 0); in source mode ${inSource} (wanted 0); file unchanged ${unchanged}`,
+      };
+    },
+  },
   {
     name: 'Mod-Alt-0 to 3 turn a list item or a quote into a heading or text the way the Text style menu does',
     run: () => {
@@ -47,7 +132,9 @@ export const scenarios: Scenario[] = [
         ['- a\n  more', 9, 'Tab', '- a\n  more'],
         // A later item nests under the one before it, in a quote too.
         ['- a\n- b', 7, 'Tab', '- a\n    - b'],
-        ['1. a\n2. b', 9, 'Tab', '1. a\n    2. b'],
+        // The nested item starts its own numbering, so it is 1 rather than the 2 it carried
+        // at the outer level.
+        ['1. a\n2. b', 9, 'Tab', '1. a\n    1. b'],
         ['> - a\n> - b', 11, 'Tab', '> - a\n>     - b'],
         // Shift-Tab still outdents a nested item.
         ['- a\n    - b', 11, 'Shift-Tab', '- a\n- b'],
@@ -59,6 +146,40 @@ export const scenarios: Scenario[] = [
         const got = after(doc, at, (p) => void (handled = p.press(key)));
         return handled && got === want;
       });
+    },
+  },
+  {
+    name: 'a numbered sub-list counts on its own, and the item after it carries on from the outer level',
+    run: () => {
+      // The caret is put on `on`, so no offset here has to be counted by hand.
+      const cases: [string, string, string, string][] = [
+        // The reported gesture. Nesting the middle item starts the sub-list at 1 and hands the
+        // item below it the outer number the sub-list is no longer using.
+        ['1. First\n2. Second\n3. Third', 'Second', 'Tab', '1. First\n    1. Second\n2. Third'],
+        // And back out again, which is the other half of the reported sequence: the item
+        // rejoins the outer list and takes the next number there.
+        ['1. First\n    1. Second\n2. Third', 'Second', 'Shift-Tab', '1. First\n2. Second\n3. Third'],
+        // A list may open at a number the author chose, and the outermost level keeps it.
+        ['5. five\n6. six', 'six', 'Tab', '5. five\n    1. six'],
+        // A third level counts for itself too.
+        ['1. a\n    1. b\n    2. c', 'c', 'Tab', '1. a\n    1. b\n        1. c'],
+      ];
+      return cases.every(([doc, on, key, want]) => {
+        const got = after(doc, doc.indexOf(on), (p) => void p.press(key));
+        return got === want;
+      });
+    },
+  },
+  {
+    name: 'a bullet list is left alone by the renumbering, and so is a numbered list nothing nested in',
+    run: () => {
+      // The guard against renumbering being reached where it has no business: a bullet list has
+      // no numbers to put right, and Tab on a first item is refused, so neither writes a digit.
+      const cases: [string, number, string, string][] = [
+        ['- a\n- b\n- c', 7, 'Tab', '- a\n    - b\n- c'],
+        ['1. a\n2. b', 4, 'Tab', '1. a\n2. b'],
+      ];
+      return cases.every(([doc, at, key, want]) => after(doc, at, (p) => void p.press(key)) === want);
     },
   },
   {

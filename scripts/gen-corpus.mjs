@@ -351,6 +351,40 @@ function wideTable(seed, cols, rows) {
   return lines.join('\n');
 }
 
+/*
+ * The widest shape Sheaf has to carry, in its own file rather than inside
+ * `large-tables.md`.
+ *
+ * Separate because scenarios already open `large-tables.md`, and a 200 by 200 table is
+ * forty thousand cells: putting it there would make every one of those runs pay for a
+ * shape none of them is asking about. The allocator work has a target here instead, and
+ * what rendering forty thousand cells costs is a separate question, measured by
+ * `npm run measure:tables` rather than by anything here.
+ */
+function wideTableDoc(seed) {
+  const g = make(seed);
+  const out = [];
+  out.push('# Wide Tables');
+  out.push('');
+  out.push('Two hundred columns, which is the widest shape Sheaf has to carry. No pane holds the minimums of a table this wide, so the frame scrolls sideways at every window size and the question is whether each column is readable once it does.');
+  out.push('');
+  out.push('Column content varies on purpose: short codes, numbers, and a few columns of prose. The short ones should sit at their own width, the prose ones should stop at the ceiling rather than dominating the grid, and none should be parked on the six-character floor.');
+  out.push('');
+  out.push('## Wide \u2014 200 columns \u00d7 12 rows');
+  out.push('');
+  out.push('The shape to drag the editor\u2019s edge across. Nothing should jump, and the header row should keep its alignment against the body while scrolling sideways.');
+  out.push('');
+  out.push(wideTable(seed + 1, 200, 12));
+  out.push('');
+  out.push('## Wide and tall \u2014 200 columns \u00d7 200 rows');
+  out.push('');
+  out.push('Forty thousand cells. The frame scrolls sideways and must never scroll vertically: a tall table\u2019s rows are the document, and the editor\u2019s own scrollbar is the one that moves them.');
+  out.push('');
+  out.push(wideTable(seed + 2, 200, 200));
+  out.push('');
+  return out.join('\n');
+}
+
 function largeTableDoc(seed) {
   const g = make(seed);
   const out = [];
@@ -709,6 +743,7 @@ const FILES = {
         'Fewer sections, denser prose. Where `long-handbook.md` is structural, this one is paragraph after paragraph — the shape that stresses inline decorations rather than block ones.',
     }),
   'large-tables.md': () => largeTableDoc(20440303),
+  'wide-tables.md': () => wideTableDoc(20440707),
   'data-blocks.md': () => csvDoc(20440404),
   'code-heavy.md': () => codeHeavyDoc(20440505),
   'deep-nesting.md': () => deepNestingDoc(20440606),

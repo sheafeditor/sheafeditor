@@ -28,6 +28,7 @@
  * edit of that one cell, written the same way.
  */
 
+import type { FromWebview } from '../protocol';
 import { StateField, StateEffect, EditorState, Range, Extension, Prec, Transaction } from '@codemirror/state';
 import { Decoration, DecorationSet, EditorView, ViewPlugin, WidgetType } from '@codemirror/view';
 import { syntaxTree } from '@codemirror/language';
@@ -46,6 +47,7 @@ import {
   viewReferences,
   writeDataBlock,
   writeDataFile,
+  freeBlockName,
 } from './tables';
 import { isolateHistory, undo as undoDocument, redo as redoDocument } from '@codemirror/commands';
 import { BoardState, drawBoard as drawBoardLayout, wireBoard } from './board';
@@ -82,7 +84,7 @@ const files = new Map<string, FileState>();
  */
 const DATA_FILE_WAIT_MS = 4000;
 
-let post: ((message: unknown) => void) | null = null;
+let post: ((message: FromWebview) => void) | null = null;
 let asked = 0;
 let waitMs = DATA_FILE_WAIT_MS;
 
@@ -90,7 +92,7 @@ let waitMs = DATA_FILE_WAIT_MS;
  * Where requests for data files go. Main wires this to the host. `wait` is how
  * long an answer is waited for, which only a test has reason to shorten.
  */
-export function setDataFileHost(send: ((message: unknown) => void) | null, wait = DATA_FILE_WAIT_MS): void {
+export function setDataFileHost(send: ((message: FromWebview) => void) | null, wait = DATA_FILE_WAIT_MS): void {
   post = send;
   waitMs = wait;
   files.clear();
@@ -341,11 +343,34 @@ export function moveBlockToFile(view: EditorView, from: number): void {
   });
 }
 
-/** `wanted`, or `wanted-2`, `wanted-3` and so on, whichever no block in the document is named yet. */
-function freeBlockName(state: EditorState, wanted: string): string {
-  const taken = new Set(dataBlocks(state).flatMap((b) => (b.id ? [b.id.toLowerCase()] : [])));
-  if (!taken.has(wanted.toLowerCase())) return wanted;
-  for (let n = 2; ; n++) if (!taken.has(`${wanted}-${n}`.toLowerCase())) return `${wanted}-${n}`;
+/**
+ * Write a view of the data block starting at `from`, immediately below it.
+ *
+ * The whole of what a first view needs: the fence, the language, and the one line
+ * that says what it reads. Every later change to it is a control on the view
+ * itself, so this is the step that used to require knowing the query language and
+ * now does not.
+ *
+ * The lines are what a person could have typed, so the file reads the same as if
+ * they had, and it is one undo step.
+ */
+export function createViewOf(view: EditorView, from: number): void {
+  if (view.state.readOnly) return;
+  const block = dataBlocks(view.state).find((b) => b.from === from);
+  if (!block?.id) return;
+  const { doc } = view.state;
+  const p = block.prefix;
+  const last = doc.lineAt(block.to);
+  // A blank line between the block and its view, and another below when something
+  // already follows, so neither ends up joined to what it sits next to.
+  const followed = last.number < doc.lines && doc.line(last.number + 1).text.trim() !== '';
+  const lines = [`${p}`, `${p}\`\`\`view`, `${p}from: #${block.id}`, `${p}\`\`\``, ...(followed ? [`${p}`] : [])];
+  view.dispatch({
+    changes: { from: block.to, insert: `\n${lines.join('\n')}` },
+    annotations: isolateHistory.of('full'),
+    userEvent: 'input',
+    scrollIntoView: true,
+  });
 }
 
 /**
@@ -710,6 +735,19 @@ const NEW = -1;
 
 const UNMATCHED_TITLE = 'This row no longer matches the view. It stays here until the view is drawn again.';
 
+/**
+ * Say on the frame and on the Add-row control whether this view's cells can be typed into.
+ *
+ * The cursor over a cell follows the class: an I-beam where a click places a caret, the
+ * ordinary arrow where nothing can be edited — a view whose source does not resolve, or one
+ * in a read-only editor. It drew the spreadsheet plus over both, which promised an edit that
+ * could not happen and is not what a click there does anyway.
+ */
+function showEditable(wrap: HTMLElement, add: HTMLElement, can: boolean): void {
+  add.hidden = !can;
+  wrap.classList.toggle('is-editable', can);
+}
+
 class ViewWidget extends WidgetType {
   readonly sig: string;
   constructor(readonly spec: ViewSpec) {
@@ -775,7 +813,25 @@ class ViewWidget extends WidgetType {
       if (inline.getAttribute('aria-disabled') !== 'true') bringInline(view, spec);
     });
     inline.hidden = true;
-    head.append(badge, from, count, inline, editQuery);
+    /*
+     * The layout, as a control rather than as two lines to know about. A pipe table
+     * has had Show as board on its own menu all along, so the smaller feature was
+     * offered from a menu while the larger one asked for a query language.
+     *
+     * The label says what pressing it does, so it reads as the state it is not:
+     * "Show as board" on a table, "Show as table" on a board.
+     */
+    const layout = button('sheaf-view-layout', 'Show as board', '', () => {
+      if (layout.getAttribute('aria-disabled') === 'true') return;
+      if (spec.query.layout === 'board') {
+        // Both lines come out: a board with no grouping is an error, not a table.
+        rewriteQuery((body) => setViewKey(setViewKey(body, 'layout', null), 'group', null), () => layout);
+        return;
+      }
+      chooseBoardColumn();
+    });
+    layout.hidden = true;
+    head.append(badge, from, count, layout, inline, editQuery);
 
     const notes = document.createElement('div');
     notes.className = 'sheaf-view-notes';
@@ -1164,6 +1220,70 @@ class ViewWidget extends WidgetType {
       op.focus({ preventScroll: true });
     };
 
+    /**
+     * Pick the column a board groups its cards by, then write both lines.
+     *
+     * A board needs a grouping: `layout: board` on its own is an error the query
+     * reports rather than a board, so the two are written together and taken out
+     * together. The chooser is the same shape as the header menu beside it.
+     */
+    const chooseBoardColumn = (): void => {
+      closeHeadMenu(false);
+      const table = spec.source && 'table' in spec.source ? spec.source.table : null;
+      if (!table) return;
+      const el = document.createElement('div');
+      el.className = 'sheaf-view-menu';
+      el.setAttribute('role', 'dialog');
+      el.setAttribute('aria-label', 'Group the board by');
+      const title = document.createElement('p');
+      title.className = 'sheaf-view-menu-title';
+      title.textContent = 'Group the board by';
+      const columns = document.createElement('div');
+      columns.className = 'sheaf-view-menu-actions';
+      const close = (restore: boolean): void => {
+        if (headMenu?.el !== el) return;
+        headMenu = null;
+        el.remove();
+        document.removeEventListener('mousedown', onPress, true);
+        layout.setAttribute('aria-expanded', 'false');
+        if (restore && layout.isConnected) layout.focus({ preventScroll: true });
+      };
+      const onPress = (e: MouseEvent): void => {
+        if (!el.isConnected) return document.removeEventListener('mousedown', onPress, true);
+        const on = e.target as Node | null;
+        if (on && (el.contains(on) || layout.contains(on))) return;
+        close(false);
+      };
+      table.headers.forEach((_, c) => {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'sheaf-view-menu-apply';
+        b.textContent = spoken(c);
+        b.addEventListener('click', () => {
+          close(false);
+          rewriteQuery((body) => setViewKey(setViewKey(body, 'layout', 'board'), 'group', columnName(c)), () => layout);
+        });
+        columns.appendChild(b);
+      });
+      el.append(title, columns);
+      el.addEventListener('keydown', (e) => {
+        e.stopPropagation();
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          close(true);
+        }
+      });
+      document.addEventListener('mousedown', onPress, true);
+      headMenu = { el, owner: layout, close };
+      layout.setAttribute('aria-expanded', 'true');
+      wrap.appendChild(el);
+      const at = layout.getBoundingClientRect();
+      const base = wrap.getBoundingClientRect();
+      el.style.left = `${Math.max(0, at.left - base.left)}px`;
+      el.style.top = `${at.bottom - base.top + 2}px`;
+      el.querySelector<HTMLButtonElement>('button')?.focus({ preventScroll: true });
+    };
+
     /** Give each header of a table view its sort button and its menu button. */
     const dressHeaders = (): void => {
       const q = spec.query;
@@ -1286,6 +1406,23 @@ class ViewWidget extends WidgetType {
       inline.classList.toggle('is-disabled', !!notInline);
       inline.title =
         notInline ?? `Replace this view with a CSV block holding the rows of ${source?.label ?? 'its file'}. The file stays where it is.`;
+      /*
+       * The layout control, on a view whose rows can be read: a view with no source
+       * has no columns to group by and nothing to draw either way. Read-only leaves
+       * it visible and disabled, so the layout is still something a reader can see
+       * the view has, rather than a control that vanishes.
+       */
+      const grouped = source && 'table' in source ? source.table : null;
+      layout.hidden = !grouped;
+      layout.textContent = query.layout === 'board' ? 'Show as table' : 'Show as board';
+      const locked = view.state.readOnly;
+      layout.setAttribute('aria-disabled', String(locked));
+      layout.classList.toggle('is-disabled', locked);
+      layout.title = locked
+        ? 'This document is read-only.'
+        : query.layout === 'board'
+          ? 'Show these rows as a table again, taking the board’s two lines out of the query.'
+          : 'Show these rows as a board of cards, grouped by a column you pick.';
       const key = JSON.stringify({ q: queryKey(query), label: source?.label ?? null });
       if (key !== lastKey) {
         pinned.clear();
@@ -1359,7 +1496,7 @@ class ViewWidget extends WidgetType {
           board = null;
           frame.appendChild(drawTable(headers, rows, result.columns, order, unmatched, draft));
           dressHeaders();
-          add.hidden = !editable();
+          showEditable(wrap, add, editable());
           if (picked) cellAt(picked.row, picked.col)?.classList.add('is-focus');
         }
       } else {
@@ -1507,6 +1644,12 @@ function buildViews(state: EditorState): { decos: DecorationSet; wanted: string[
       if (node.name !== 'FencedCode') return;
       const open = doc.lineAt(node.from);
       if (fenceLang(doc.sliceString(node.from, open.to)) !== 'view') return false;
+      // Only once it is closed. An opening fence with no closer parses as a FencedCode
+      // running to the end of the document, so a view read from one is drawn over
+      // everything the person has not finished typing, and the fence they type next lands
+      // above the block it was meant to close. Data blocks and diagrams ask the same
+      // question of the same node.
+      if (node.node.getChildren('CodeMark').length < 2) return false;
       // A view inside a list item or a quote carries the container's marks on every
       // line, and is read with them taken off, as a CSV block there is. Anything else
       // before the fence on its line, such as a list bullet, leaves it as text.

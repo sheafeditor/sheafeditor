@@ -26,6 +26,7 @@ const {
   resolveAddress,
   stripJsonc,
   readConfig,
+  DEFAULT_CONFIG,
   createSheafServer,
   hostIsLoopback,
   originIsOurs,
@@ -45,7 +46,7 @@ const ASSET_ROOT = join(import.meta.dirname, '..');
  * afterwards it writes itself, so a check that is about an outside change can
  * make one.
  */
-async function serving(files, body) {
+async function serving(files, body, assetRoot = ASSET_ROOT) {
   // Real path, because the checks compare what the server resolves against what
   // they built, and a temporary directory on macOS is reached through a link.
   const root = await realpath(await mkdtemp(join(tmpdir(), 'sheaf-serve-')));
@@ -54,7 +55,7 @@ async function serving(files, body) {
     await mkdir(join(target, '..'), { recursive: true });
     await writeFile(target, text, 'utf8');
   }
-  const server = createSheafServer({ root, assetRoot: ASSET_ROOT });
+  const server = createSheafServer({ root, assetRoot });
   await new Promise((ready) => server.listen(0, '127.0.0.1', ready));
   const port = server.address().port;
   const origin = `http://127.0.0.1:${port}`;
@@ -108,6 +109,95 @@ async function until(condition) {
   return false;
 }
 
+/**
+ * The event *name* and text of one document frame from the stream, or null if none arrives.
+ *
+ * Separate from `firstSetContent`, which returns the text alone, because the name is where the
+ * flag lives: every `data:` line of the frame is a line of the person's document, so there is
+ * nowhere in the body to put a flag they could not also have typed.
+ */
+async function firstDocumentFrame(origin, path, trigger) {
+  const control = new AbortController();
+  const res = await fetch(`${origin}/api/events?path=${encodeURIComponent(path)}`, {
+    headers: { 'x-sheaf-local': '1' },
+    signal: control.signal,
+  });
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  const deadline = setTimeout(() => control.abort(), 4000);
+  await trigger();
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) return null;
+      buffer += decoder.decode(value, { stream: true });
+      const blocks = buffer.split('\n\n');
+      buffer = blocks.pop() ?? '';
+      for (const block of blocks) {
+        const name = block.split('\n', 1)[0];
+        if (!name.startsWith('event: ')) continue;
+        return {
+          event: name.slice('event: '.length),
+          text: block.split('\n').filter((l) => l.startsWith('data: ')).map((l) => l.slice('data: '.length)).join('\n'),
+        };
+      }
+    }
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(deadline);
+    control.abort();
+  }
+}
+
+/**
+ * Up to `want` frames from the stream, and whatever arrived before the wait ran out.
+ *
+ * One write can produce two frames — the document, then the words to say about it — so a reader
+ * that stops at the first cannot see the pair, and one that waits for both cannot tell "the
+ * second never came" from "the second is not supposed to come". Returning what arrived makes
+ * both of those an assertion about a count.
+ */
+async function documentFrames(origin, path, want, trigger) {
+  const control = new AbortController();
+  const res = await fetch(`${origin}/api/events?path=${encodeURIComponent(path)}`, {
+    headers: { 'x-sheaf-local': '1' },
+    signal: control.signal,
+  });
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  const found = [];
+  let buffer = '';
+  // Long enough that a frame which is coming has arrived, short enough that a check asserting
+  // one did not come costs a second rather than the whole suite's patience.
+  const deadline = setTimeout(() => control.abort(), 1200);
+  await trigger();
+  try {
+    while (found.length < want) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const blocks = buffer.split('\n\n');
+      buffer = blocks.pop() ?? '';
+      for (const block of blocks) {
+        const name = block.split('\n', 1)[0];
+        if (!name.startsWith('event: ')) continue;
+        found.push({
+          event: name.slice('event: '.length),
+          text: block.split('\n').filter((l) => l.startsWith('data: ')).map((l) => l.slice('data: '.length)).join('\n'),
+        });
+      }
+    }
+  } catch {
+    // The deadline, which is how a check that expects fewer frames than `want` ends.
+  } finally {
+    clearTimeout(deadline);
+    control.abort();
+  }
+  return found;
+}
+
 /** The text of one `setContent` from the event stream, or null if none arrives. */
 async function firstSetContent(origin, path, trigger) {
   const control = new AbortController();
@@ -149,6 +239,25 @@ const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 /* --- The checks -------------------------------------------------------------- */
 
 const cases = [
+  /*
+   * Which build served the page. A browser tab has no Extensions pane to consult,
+   * so the footer is the only place the question can be answered there.
+   */
+
+  ['the folder page names the build in its footer, and escapes what it puts there', () =>
+    serving({ 'a.md': '# A' }, async ({ get }) => {
+      const html = await (await get('/')).text();
+      // The stamp run-tests.mjs compiles in, so this reads the real path through
+      // buildStamp.ts rather than its fallback.
+      const inside = html.match(/<footer>([\s\S]*?)<\/footer>/)?.[1] ?? null;
+      const named = inside !== null && inside.includes('Sheaf 0.2.0') && inside.includes('abc1234') && inside.includes('a browser tab');
+      // Whatever a stamp holds arrives inside an element, so it goes through the same
+      // escaping as a file name rather than being trusted for being ours. Read from
+      // the footer's own text: reaching past the closing tag finds the next element's
+      // bracket and says nothing, which is how the first draft of this failed.
+      return named && !/[<>]/.test(inside);
+    })],
+
   /* The boundary, which is what keeps a link in a document from reaching the disk. */
 
   ['a path climbing out of the folder is not resolved', () =>
@@ -208,6 +317,71 @@ const cases = [
     serving({ 'notes/shot.txt': 'inside' }, async ({ get }) => {
       const res = await get('/file/notes/shot.txt');
       return res.status === 200 && (await res.text()) === 'inside';
+    })],
+
+  /*
+   * An SVG is the one type served from here that a browser treats as a document
+   * able to hold script, and everything under `/file/` came out of somebody's
+   * project: a repository cloned from anywhere, a picture a designer sent. This
+   * origin also answers `/api/doc`, which writes a file, so an SVG opened as a
+   * page rather than drawn into an `<img>` would be script sitting next to the
+   * write endpoint. Whether a link in a document can navigate there today is a
+   * separate question from whether the bytes should be able to do anything if it
+   * can, and this is the answer to the second one.
+   *
+   * The policy has to forbid script and leave the document no origin of ours.
+   * `sandbox` gives it an origin of its own, so a fetch it makes is cross-origin
+   * to this server and arrives without the header the API requires.
+   */
+  /*
+   * The page's own policy, which is the boundary in this host the way the webview's is in
+   * VS Code. A document can put inline HTML, an image address and table cells drawn as
+   * HTML onto this page, and what stops any of it from running as code is this one string
+   * in `page.ts`. Nothing asked what it said until now, so widening it was a one-word edit
+   * that every gate would have passed.
+   *
+   * Two directives read differently here than in the extension, for reasons rather than by
+   * accident, and the check has to allow exactly that much. `script-src 'self'` rather than
+   * a nonce, because the page loads its scripts as files from this server. And `connect-src
+   * 'self'` is present, where in VS Code there is none at all: this page has to reach
+   * `/api/doc` to read and write the document. `'self'` is the whole of what it may reach,
+   * which is what keeps the editor from carrying a document anywhere else.
+   */
+  ['the editor page allows script only from this server, and connections only to it', () =>
+    serving({ 'a.md': '# A' }, async ({ get }) => {
+      const html = await (await get('/edit/a.md')).text();
+      const tag = /<meta http-equiv="Content-Security-Policy"[^>]*>/.exec(html)?.[0];
+      const csp = tag ? /content="([^"]*)"/.exec(tag)?.[1] : undefined;
+      if (!csp) throw new Error(`no Content-Security-Policy in the ${html.length}-character page: this check is proving nothing`);
+      const directive = (name) => new RegExp(`(?:^|;)\\s*${name}\\s([^;]*)`).exec(csp)?.[1]?.trim();
+      const wrong = [];
+      if (directive('default-src') !== `'none'`) wrong.push(`default-src is "${directive('default-src')}" rather than 'none'`);
+      if (directive('script-src') !== `'self'`) wrong.push(`script-src is "${directive('script-src')}" rather than 'self' alone`);
+      if (directive('connect-src') !== `'self'`) wrong.push(`connect-src is "${directive('connect-src')}", so the page may reach somewhere other than this server`);
+      const img = directive('img-src') ?? '';
+      for (const bad of ['http:', '*', `'unsafe-inline'`]) if (img.includes(bad)) wrong.push(`img-src allows ${bad}`);
+      if (wrong.length) throw new Error(wrong.join('; '));
+      return true;
+    })],
+
+  ['an SVG is served with a policy that forbids script, since this origin also writes files', () =>
+    serving({ 'logo.svg': '<svg xmlns="http://www.w3.org/2000/svg"><script>1</script></svg>' }, async ({ get }) => {
+      const res = await get('/file/logo.svg');
+      const policy = res.headers.get('content-security-policy') ?? '';
+      // A boolean, because this runner takes anything truthy as a pass and an
+      // object reporting `ok: false` would sail through saying nothing.
+      if (res.status !== 200) throw new Error(`the SVG came back ${res.status}`);
+      if (!policy) throw new Error('no content-security-policy on the response, so script inside the SVG runs on this origin');
+      if (!/sandbox/.test(policy) || !/default-src 'none'/.test(policy)) {
+        throw new Error(`policy is "${policy}", which does not both sandbox the document and forbid its fetches`);
+      }
+      return true;
+    })],
+
+  ['a picture that cannot hold script is left alone, so the policy is not a blanket', () =>
+    serving({ 'shot.png': 'not really a png' }, async ({ get }) => {
+      const res = await get('/file/shot.png');
+      return res.status === 200 && res.headers.get('content-security-policy') === null;
     })],
 
   ['every spelling of a path climbing out of the folder is refused', () =>
@@ -354,6 +528,33 @@ const cases = [
       );
     })],
 
+  ['the folder’s documents are listed for completing a link, in the form a link is written in', () =>
+    serving(
+      {
+        'a.md': '# A',
+        'notes/b.md': '# B',
+        'notes/c.txt': 'plain',
+        'node_modules/d.md': '# not this',
+        '.hidden/e.md': '# nor this',
+      },
+      async ({ get }) => {
+        // The page asks for this when somebody types a link's `(`, and the editor waits
+        // 1.5 seconds before offering only the current document's headings, so the route
+        // not existing cost a pause and then nothing. Relative POSIX form, because that is
+        // what a link is written in and what the editor's own matching expects.
+        const res = await get('/api/files');
+        const files = (await res.json()).files ?? [];
+        return (
+          res.status === 200 &&
+          files.includes('a.md') &&
+          files.includes('notes/b.md') &&
+          files.includes('notes/c.txt') &&
+          !files.some((f) => f.startsWith('node_modules/')) &&
+          !files.some((f) => f.includes('.hidden'))
+        );
+      }
+    )],
+
   ['opening a document says this host has no terminal, by the value and not merely the field', () =>
     serving({ 'a.md': '# A' }, async ({ get }) => {
       const doc = await (await get('/api/doc?path=a.md')).json();
@@ -374,7 +575,7 @@ const cases = [
       { 'a.md': '# A', '.vscode/settings.json': '{\n  // width\n  "sheaf.contentWidth": "900px",\n}\n' },
       async ({ get }) => {
         const doc = await (await get('/api/doc?path=a.md')).json();
-        return doc.config.contentWidth === '900px' && doc.config.doubleClickToEditSource === true;
+        return doc.config.contentWidth === '900px' && doc.config.doubleClickToEditSource === false;
       }
     )],
 
@@ -470,6 +671,104 @@ const cases = [
       return text === '# A from somewhere else\n';
     })],
 
+  /* A write from outside that lands on top of unsaved typing.
+   *
+   * This is the race the editor is meant to be open in: somebody types, the save follows a
+   * moment later, and a tool writes the whole file from text it read before that. The outside
+   * write wins, which is what any editor does with a file that changed underneath it. What was
+   * missing here was any sign that it cost the person something — the frame reached the tab
+   * marked as somebody else's ordinary edit, so their own Undo did not offer their text back.
+   *
+   * The flag rides on the event's *name*, so that is what is read. The type cannot hold this:
+   * TypeScript lets a subscriber declare fewer parameters than its signature, so the flag can be
+   * dropped on the floor and still compile, which is the shape of the defect being fixed.
+   */
+  ['a write that takes what the tab just typed is named as having taken it', () =>
+    serving({ 'a.md': 'Line one.\n' }, async ({ origin, root, get, post }) => {
+      await get('/api/doc?path=a.md');
+      // The tab types, which is what puts anything on record to lose.
+      await post('/api/doc', { path: 'a.md', text: 'Line one. and a bit typed just now\n' });
+      const frame = await firstDocumentFrame(origin, 'a.md', async () => {
+        await new Promise((r) => setTimeout(r, 120));
+        // A tool writing the file from a copy it read before the typing landed.
+        await writeFile(join(root, 'a.md'), 'Line one.\nSomething else entirely.\n', 'utf8');
+      });
+      return frame?.event === 'contentTookTypedText' && frame.text === 'Line one.\nSomething else entirely.\n';
+    })],
+
+  /* And the words to say, quoting what was taken.
+   *
+   * A second frame rather than a field on the first, because that one's body is the person's own
+   * document line for line and there is no room in it for a sentence of ours they could not also
+   * have typed. Built on the server from the same two functions the extension host uses, so the
+   * two hosts cannot come to describe one event differently.
+   *
+   * What is asserted is that the taken text is quoted in it, not the wording. A check pinning the
+   * sentence would fail on an improvement to it and say nothing about whether the person can tell
+   * what they lost.
+   */
+  ['the notice naming what a write took quotes the text and reaches the tab', () =>
+    serving({ 'a.md': 'Line one.\n' }, async ({ origin, root, get, post }) => {
+      await get('/api/doc?path=a.md');
+      await post('/api/doc', { path: 'a.md', text: 'Line one. and a distinctive phrase\n' });
+      const frames = await documentFrames(origin, 'a.md', 2, async () => {
+        await new Promise((r) => setTimeout(r, 120));
+        await writeFile(join(root, 'a.md'), 'Line one.\nSomething else entirely.\n', 'utf8');
+      });
+      const notice = frames.find((f) => f.event === 'notice');
+      return (
+        // Both frames, in that order: the document goes first, so the offer to undo it refers to
+        // something the editor is already holding as an undo step.
+        frames[0]?.event === 'contentTookTypedText' &&
+        notice !== undefined &&
+        notice.text.includes('a distinctive phrase') &&
+        notice.text.includes('Undo')
+      );
+    })],
+
+  /* The control: a write that took nothing says nothing. A host that sent a notice on every
+   * outside write would pass the check above and tell the person their work had gone every time
+   * anything touched the file, which is worse than the silence it replaced. */
+  ['a write that took nothing sends no notice', () =>
+    serving({ 'a.md': 'Line one.\n' }, async ({ origin, root, get, post }) => {
+      await get('/api/doc?path=a.md');
+      await post('/api/doc', { path: 'a.md', text: 'Line one. and a distinctive phrase\n' });
+      const frames = await documentFrames(origin, 'a.md', 2, async () => {
+        await new Promise((r) => setTimeout(r, 120));
+        await writeFile(join(root, 'a.md'), 'Line one. and a distinctive phrase\nAppended elsewhere.\n', 'utf8');
+      });
+      return frames.length === 1 && frames[0].event === 'setContent';
+    })],
+
+  /* The control, and it is the half that makes the check above mean anything: a write that
+   * leaves the person's work alone must NOT be named as having taken it. Without this, a host
+   * that flagged every frame would pass the check above perfectly and tell the person their text
+   * had gone every time anything touched the file. */
+  ['a write that leaves the tab\u2019s typing alone is named as an ordinary change', () =>
+    serving({ 'a.md': 'Line one.\n' }, async ({ origin, root, get, post }) => {
+      await get('/api/doc?path=a.md');
+      await post('/api/doc', { path: 'a.md', text: 'Line one. and a bit typed just now\n' });
+      const frame = await firstDocumentFrame(origin, 'a.md', async () => {
+        await new Promise((r) => setTimeout(r, 120));
+        // A write that keeps what was typed and adds a line somewhere else.
+        await writeFile(join(root, 'a.md'), 'Line one. and a bit typed just now\nAppended elsewhere.\n', 'utf8');
+      });
+      return frame?.event === 'setContent' && frame.text === 'Line one. and a bit typed just now\nAppended elsewhere.\n';
+    })],
+
+  /* And the other control: a document nobody has typed into. There is nothing on record, so
+   * whatever a write does to it, it took none of the person's work. A host that flagged on the
+   * texts differing rather than on what was typed would fail here. */
+  ['a write to a document the tab never typed into is an ordinary change', () =>
+    serving({ 'a.md': 'Line one.\n' }, async ({ origin, root, get }) => {
+      await get('/api/doc?path=a.md');
+      const frame = await firstDocumentFrame(origin, 'a.md', async () => {
+        await new Promise((r) => setTimeout(r, 120));
+        await writeFile(join(root, 'a.md'), 'Replaced wholesale.\n', 'utf8');
+      });
+      return frame?.event === 'setContent' && frame.text === 'Replaced wholesale.\n';
+    })],
+
   ['a change on disk reaches the tab with its line endings written as newlines', () =>
     serving({ 'a.md': 'one\r\n' }, async ({ origin, root, get }) => {
       await get('/api/doc?path=a.md');
@@ -539,22 +838,21 @@ const cases = [
    * question, not a thing to assert here. This check exists so that if the
    * answer changes, it fails and somebody reads this.
    */
-  ['a save that crosses a keystroke is lost, and what is left is a whole document (recorded, not endorsed)', () =>
+  ['a save that crosses somebody else’s write keeps both changes', () =>
     serving({ 'a.md': 'top\nbottom\n' }, async ({ get, post, read, root }) => {
       await get('/api/doc?path=a.md');
       // The write lands inside the watcher's window, so the tab is still
-      // holding the text it was given.
+      // holding the text it was given and knows nothing about it.
       await writeFile(join(root, 'a.md'), 'TOP FROM SOMEWHERE ELSE\nbottom\n', 'utf8');
       await post('/api/doc', { path: 'a.md', text: 'top\nbottom\ntyped\n' });
-      const settled = await until(async () => (await read('a.md')) === 'top\nbottom\ntyped\n');
+      // Both: the line somebody else rewrote, and the line the person typed. This
+      // used to be the tab's text whole, with the other write gone and nothing said.
+      const want = 'TOP FROM SOMEWHERE ELSE\nbottom\ntyped\n';
+      const settled = await until(async () => (await read('a.md')) === want);
       if (!settled) return false;
-      const text = await read('a.md');
-      // The tab's text, whole. Not a hybrid, and not the other write.
-      const whole = text === 'top\nbottom\ntyped\n';
-      const lost = !text.includes('SOMEWHERE ELSE');
       // And the server is not left holding a view that disagrees with the file.
       const reread = await (await get('/api/doc?path=a.md')).json();
-      return whole && lost && reread.text === text;
+      return reread.text === want;
     })],
 
   ['the server does not write a file whose current bytes it has not read', () =>
@@ -658,30 +956,6 @@ const cases = [
     return asked.size > 0 && missing.length === 0;
   }],
 
-  /*
-   * A blank line between blocks is drawn short by a class the editor adds and the
-   * stylesheet sizes, so the two halves have to agree about the class's name, and
-   * the size has to be one CodeMirror's height map can read. A vertical margin is
-   * space the map cannot see, and a height short by it drifts posAtCoords until
-   * clicks land on the wrong line.
-   */
-  ['the class the editor puts on a short blank line is sized in the stylesheet, without a margin', async () => {
-    const root = join(import.meta.dirname, '..');
-    const stylesheet = await readFile(join(root, 'media', 'webview.css'), 'utf8');
-    const source = await readFile(join(root, 'src', 'webview', 'blankLines.ts'), 'utf8');
-    const name = /BLANK_LINE_CLASS\s*=\s*'([\w-]+)'/.exec(source)?.[1];
-    if (!name) return false;
-    const rule = new RegExp(`\\.cm-line\\.${name}\\s*\\{([^}]*)\\}`).exec(stylesheet)?.[1];
-    if (!rule) {
-      console.log(`   media/webview.css has no rule sizing .cm-line.${name}`);
-      return false;
-    }
-    if (/(^|[\s;])margin/.test(rule)) {
-      console.log(`   .cm-line.${name} sets a margin, which CodeMirror's height map cannot see`);
-      return false;
-    }
-    return /(^|[\s;])height\s*:/.test(rule);
-  }],
 
   /*
    * The toolbar marks itself when its controls fold onto a second row, and the
@@ -761,17 +1035,34 @@ const cases = [
       return res.status === 200 && text.includes('--vscode-editorWidget-background');
     })],
 
+  ['the diagram library is served as JavaScript, which a browser requires before it will run a module', async () => {
+    // An extension directory of its own, holding a module where the build puts Mermaid's.
+    const assets = await realpath(await mkdtemp(join(tmpdir(), 'sheaf-assets-')));
+    await mkdir(join(assets, 'media', 'mermaid', 'chunks'), { recursive: true });
+    await writeFile(join(assets, 'media', 'mermaid', 'chunks', 'a.mjs'), 'export default 1;', 'utf8');
+    return serving(
+      { 'a.md': '# A' },
+      async ({ get }) => {
+        const res = await get('/media/mermaid/chunks/a.mjs');
+        return res.status === 200 && /^text\/javascript/.test(res.headers.get('content-type') ?? '');
+      },
+      assets
+    );
+  }],
+
   /* The pages. */
 
-  ['the front page lists the folder\'s Markdown and nothing else', () =>
+  ['the front page lists the folder\'s documents, .txt among them, and nothing else', () =>
     serving(
-      { 'a.md': '#', 'notes/b.markdown': '#', 'c.txt': 'x', '.hidden/d.md': '#', 'node_modules/e.md': '#' },
+      { 'a.md': '#', 'notes/b.markdown': '#', 'c.txt': 'x', 'logo.png': 'x', '.hidden/d.md': '#', 'node_modules/e.md': '#' },
       async ({ get }) => {
         const html = await (await get('/')).text();
         return (
           html.includes('/edit/a.md') &&
           html.includes('/edit/notes/b.markdown') &&
-          !html.includes('c.txt') &&
+          // A .txt is where plenty of notes live, and here it opens like any other.
+          html.includes('/edit/c.txt') &&
+          !html.includes('logo.png') &&
           !html.includes('.hidden') &&
           !html.includes('node_modules')
         );
@@ -817,10 +1108,111 @@ const cases = [
   ['a double slash inside a string is not a comment', () =>
     stripJsonc('{"a": "http://x/y"}') === '{"a": "http://x/y"}'],
 
+  /* What a file name can do to the pages it appears on. A name comes off someone
+     else's disk as often as not, and both pages print one. */
+
+  ['a file name carrying markup is printed as text in the folder listing', () => {
+    const name = 'a<img src=x onerror="alert(1)">.md';
+    return serving({ [name]: '# A\n' }, async ({ get }) => {
+      const html = await (await get('/')).text();
+      const escaped = 'a&lt;img src=x onerror=&quot;alert(1)&quot;&gt;.md';
+      if (!html.includes(escaped)) {
+        console.log(`   the listing does not carry the name as text: ${html.match(/<li>.*<\/li>/)?.[0] ?? 'no entry at all'}`);
+        return false;
+      }
+      // The name's own angle brackets, anywhere in the page, would be markup.
+      if (html.includes('<img src=x')) return console.log('   the name reaches the page as a tag') ?? false;
+      return true;
+    });
+  }],
+
+  ['a path carrying markup is printed as text on the editor page', () => {
+    // A single name cannot hold a slash, so `</title` looks unreachable. A path of two
+    // names is not: a folder called `b<` and a file called `title>...` make one between
+    // them, and the title element is RCDATA, which only `</title` ends.
+    const name = 'b</title><img src=x onerror="alert(1)">.md';
+    return serving({ [name]: '# B\n' }, async ({ get }) => {
+      const html = await (await get(`/edit/${encodeURI(name)}`)).text();
+      // The boot data names the file too, and `</script` would end that element.
+      const boot = html.match(/<script type="application\/json" id="sheaf-boot">(.*?)<\/script>/s);
+      if (!boot) return console.log('   there is no boot element on the page') ?? false;
+      if (boot[1].includes('<')) return console.log(`   the boot data carries a raw <: ${boot[1]}`) ?? false;
+      if (JSON.parse(boot[1]).file !== name) return console.log(`   the boot data names ${JSON.parse(boot[1]).file}`) ?? false;
+      // Compared whole, because a lazy match would stop at an injected `</title>` and
+      // read back the harmless text in front of it.
+      const want = `<title>${escapeHtml(name)} \u00b7 Sheaf</title>`;
+      if (!html.includes(want)) {
+        console.log(`   the title is not the path as text: ${html.match(/<title>[^]*?<\/title>/)?.[0]}`);
+        return false;
+      }
+      return true;
+    });
+  }],
+
   ['settings nested under a sheaf object are read too', () =>
     serving({ 'a.md': '#', '.vscode/settings.json': '{"sheaf": {"revealSyntaxOnLine": true}}' }, async ({ root }) =>
       readConfig(root).revealSyntaxOnLine === true
     )],
+
+  ['a setting that names a mode is honoured word for word, rather than as true or false', () =>
+    serving(
+      {
+        'a.md': '#',
+        '.vscode/settings.json':
+          '{"sheaf.tableOfContents": "collapsed", "sheaf.frontMatter": "shown", "sheaf.comments": "hidden"}',
+      },
+      // Over HTTP rather than through `readConfig`, because the value reaching the page is
+      // the thing that decides what a person sees.
+      async ({ get }) => {
+        const { config } = await (await get('/api/doc?path=a.md')).json();
+        return (
+          config.tableOfContents === 'collapsed' && config.frontMatter === 'shown' && config.comments === 'hidden'
+        );
+      }
+    )],
+
+  ['a setting the toolbar can also toggle still arrives from the folder', () =>
+    serving({ 'a.md': '#', '.vscode/settings.json': '{"sheaf.lineNumbers": true}' }, async ({ get }) => {
+      const { config } = await (await get('/api/doc?path=a.md')).json();
+      return config.lineNumbers === true;
+    })],
+
+  ['a folder that still spells tableOfContents as true gets the outline it asked for', () =>
+    serving({ 'a.md': '#', '.vscode/settings.json': '{"sheaf.tableOfContents": true}' }, async ({ root }) =>
+      readConfig(root).tableOfContents === 'shown'
+    )],
+
+  ['a setting nobody set is the default package.json declares, so a browser tab and VS Code agree', async () => {
+    const declared = JSON.parse(await readFile(join(ASSET_ROOT, 'package.json'), 'utf8')).contributes.configuration
+      .properties;
+    const wrong = Object.entries(DEFAULT_CONFIG).filter(
+      ([key, value]) => !same(declared[`sheaf.${key}`]?.default, value)
+    );
+    if (wrong.length) {
+      console.log(
+        `   ${wrong
+          .map(([key, value]) => `sheaf.${key} defaults to ${JSON.stringify(declared[`sheaf.${key}`]?.default)} and the browser uses ${JSON.stringify(value)}`)
+          .join('; ')}`
+      );
+    }
+    return wrong.length === 0;
+  }],
+
+  ['the folder server sends every setting the editor page reads', async () => {
+    const fields = async (path, declaration) => {
+      const text = await readFile(join(ASSET_ROOT, path), 'utf8');
+      const start = text.indexOf(declaration);
+      const body = text.slice(start + declaration.length, text.indexOf('\n}\n', start));
+      return new Set([...body.matchAll(/^\s{2}(\w+)\??:/gm)].map((m) => m[1]));
+    };
+    const page = await fields('src/webview/main.ts', 'interface EditorConfig {');
+    const sent = new Set(Object.keys(DEFAULT_CONFIG));
+    const missing = [...page].filter((key) => !sent.has(key));
+    const spare = [...sent].filter((key) => !page.has(key));
+    if (missing.length) console.log(`   the page reads ${missing.join(', ')} and the folder server never sends it`);
+    if (spare.length) console.log(`   the folder server sends ${spare.join(', ')} and the page reads no such setting`);
+    return missing.length === 0 && spare.length === 0;
+  }],
 
   /* The command line. */
 
@@ -840,6 +1232,32 @@ const cases = [
 
   ['an option nobody knows is refused rather than ignored', () =>
     'error' in parseArgs(['--host', '0.0.0.0'])],
+
+  /*
+   * A browser asks for both of these on its own, whether a page links an icon or not, so
+   * before they were routed every page load logged a 404 in the console a person reads when
+   * something is actually wrong. One of those 404s was read as a missing bundle chunk once.
+   */
+  ['a browser asking for an icon on its own gets one rather than a 404', () =>
+    serving({ 'a.md': '# A' }, async ({ get }) => {
+      const answers = [];
+      for (const at of ['/favicon.ico', '/apple-touch-icon.png']) {
+        const res = await get(at);
+        answers.push({ at, status: res.status, type: res.headers.get('content-type') });
+      }
+      // The type comes from the file sent rather than from the path asked for, so the .ico
+      // path answers as a PNG, which every browser accepts. A 200 of the wrong type would
+      // be refused by `nosniff` and would look exactly like the 404 this replaces.
+      return answers.every((a) => a.status === 200 && a.type === 'image/png');
+    })],
+
+  ['both pages link the icon rather than leaving the browser to ask', () =>
+    serving({ 'a.md': '# A' }, async ({ get }) => {
+      const folder = await (await get('/')).text();
+      const doc = await (await get('/edit/a.md')).text();
+      const linked = (html) => /<link href="\/media\/icon\.png" rel="icon" \/>/.test(html);
+      return linked(folder) && linked(doc);
+    })],
 ];
 
 let passed = 0;

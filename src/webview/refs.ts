@@ -64,6 +64,30 @@ export function tableRowRef(fileName: string, ref: { start: number; end: number;
   return quotedRef(`${fileName}:${range}${ref.label ? ` (${ref.label})` : ''}`, ref.text);
 }
 
+/* ---- A ref for an open cell ------------------------------------------------ */
+
+/*
+ * A table cell edits in an editor of its own whose document is that one cell, so its
+ * line numbers are not the file's and `buildRef` would name line 1 of every cell in
+ * the document. The grid knows where its rows land once the file is saved, and the
+ * right-click menu and the Copy ref chord both already ask it.
+ *
+ * Registered rather than imported, because the grid's own module sits below the cell
+ * editor, which sits below the selection toolbar: a toolbar that imported it directly
+ * would close that loop. The page wires it once, so every surface gets the one answer.
+ */
+let cellRefs: ((el: Element) => string | null) | null = null;
+
+/** Give the page a way to name the cell an element is inside. */
+export function setCellRefSource(fn: ((el: Element) => string | null) | null): void {
+  cellRefs = fn;
+}
+
+/** The ref for the cell `el` sits in, or null outside a grid or where no page wired one. */
+export function cellRefAt(el: Element | null): string | null {
+  return el && cellRefs ? cellRefs(el) : null;
+}
+
 /* ---- The host ------------------------------------------------------------- */
 
 export interface BlockRefHost {

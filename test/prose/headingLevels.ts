@@ -98,6 +98,35 @@ export const scenarios: Scenario[] = [
       currentTurnInto('Configuration', 'paragraph') === 'text',
   },
   {
+    /*
+     * An alert's marker line is chrome, so a conversion takes it with the quote rather than
+     * leaving it behind as text. Stripping the `>` alone handed a person their words plus
+     * `[!NOTE]` as literal characters, which is not what any conversion means.
+     *
+     * A title is the exception and is the discriminating case here: the label drawn in place of
+     * the marker is the title when there is one and the type's name when there is not, so the
+     * title is the only part of that line that was ever the person's own words.
+     *
+     * The control is a plain quote. Nothing about this may change a quote that is not an alert,
+     * and a version that simply dropped the first line of every converted quote would pass every
+     * alert case here and fail that one.
+     */
+    name: 'converting an alert to text keeps its title and its body, and drops the marker line',
+    run: () => {
+      const untitled = setTo('> [!NOTE]\n> Something worth knowing', 'quote', 'text') === 'Something worth knowing';
+      const titled =
+        setTo('> [!WARNING] Mind the gap\n> Body here', 'quote', 'text') === 'Mind the gap\nBody here';
+      // Every type, and a fold marker, are the same line to a conversion.
+      const folded = setTo('> [!TIP]-\n> Body here', 'quote', 'text') === 'Body here';
+      const lower = setTo('> [!caution]\n> Body here', 'quote', 'text') === 'Body here';
+      // CONTROL: a plain quote keeps every line it had.
+      const plainQuote = setTo('> First line\n> Second line', 'quote', 'text') === 'First line\nSecond line';
+      // CONTROL: a quote whose first line only looks like a marker is not one, so it stays.
+      const notAMarker = setTo('> [NOTE] no bang\n> Body here', 'quote', 'text') === '[NOTE] no bang\nBody here';
+      return untitled && titled && folded && lower && plainQuote && notAMarker;
+    },
+  },
+  {
     name: 'a deep heading inside a quote or a list item is still the quote or the item it sits in',
     run: () => currentTurnInto('> #### Deep', 'quote') === 'quote' && currentTurnInto('- #### Deep', 'item') === 'bullet',
   },

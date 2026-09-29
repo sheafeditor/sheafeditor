@@ -19,6 +19,8 @@
  * that looks like markup is inert on the page.
  */
 
+import { buildLine } from '../buildStamp';
+
 /** Text that is safe between tags and inside a double-quoted attribute. */
 export function escapeHtml(text: string): string {
   return text
@@ -57,6 +59,7 @@ export function editorPage(file: string): string {
   <meta http-equiv="Content-Security-Policy" content="${CSP}" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="robots" content="noindex" />
+  <link href="/media/icon.png" rel="icon" />
   <!-- The theme first: webview.css resolves every colour through a variable
        this defines, and a variable with nothing behind it leaves the element
        transparent rather than falling back to anything. -->
@@ -68,10 +71,24 @@ export function editorPage(file: string): string {
   <div class="sheaf-app">
     <div id="toolbar" class="sheaf-toolbar" role="toolbar" aria-label="Formatting"></div>
     <div id="editor" class="sheaf-root"></div>
+    <!-- Where the page says what an outside write took. A browser tab has no notification
+         surface of its own, and this is host chrome rather than part of the editor, which is
+         why it is here and not in the bundle. Empty and hidden until there is something to
+         say. -->
+    <div id="notice" class="sheaf-notice" role="status" aria-live="polite" hidden></div>
   </div>
   <script type="application/json" id="sheaf-boot">${embeddedJson({ file })}</script>
+  <!--
+    The shim first and as a classic script, so the global it defines exists before the
+    editor's module scope runs: a classic script blocks and runs in order, while a
+    module is deferred whatever its position.
+
+    The editor is a module because it is split into chunks and fetches a grammar only
+    when a fence asks for one. The policy's script-src of 'self' covers those chunks,
+    since they come from this server beside the entry.
+  -->
   <script src="/serve-host.js"></script>
-  <script src="/media/webview.js"></script>
+  <script type="module" src="/media/webview.js"></script>
 </body>
 </html>`;
 }
@@ -97,6 +114,7 @@ export function indexPage(folder: string, files: string[]): string {
   <meta http-equiv="Content-Security-Policy" content="${CSP}" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="robots" content="noindex" />
+  <link href="/media/icon.png" rel="icon" />
   <title>Sheaf</title>
   <style>
     :root { color-scheme: light dark; --ink: #1f2328; --dim: #656d76; --line: #d8dee4; --bg: #ffffff; }
@@ -116,6 +134,7 @@ export function indexPage(folder: string, files: string[]): string {
     a { display: block; padding: 10px 4px; color: inherit; text-decoration: none; }
     a:hover, a:focus-visible { background: color-mix(in srgb, var(--ink) 6%, transparent); }
     .empty { color: var(--dim); }
+    footer { color: var(--dim); font-size: 12px; margin: 32px 0 0; }
   </style>
 </head>
 <body>
@@ -123,6 +142,7 @@ export function indexPage(folder: string, files: string[]): string {
     <h1>Sheaf</h1>
     <p class="folder">${escapeHtml(folder)}</p>
 ${body}
+    <footer>${escapeHtml(buildLine('a browser tab'))}</footer>
   </main>
 </body>
 </html>`;

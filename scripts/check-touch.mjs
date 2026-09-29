@@ -17,11 +17,11 @@
  * either is missing this says so and exits 0, because a missing browser is not a
  * broken document. A measurement that actually runs and disagrees fails.
  */
-import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { serveForCheck } from './serve-for-check.mjs';
 
 const REPO = dirname(dirname(fileURLToPath(import.meta.url)));
 const require = createRequire(join(REPO, 'package.json'));
@@ -31,7 +31,14 @@ const PHONE = { width: 390, height: 844 };
 const DESK = { width: 1200, height: 900 };
 /** A document with a table in it, which is what made the column too wide. */
 const DOC = 'wren-4/log/incident-2244-11-17.md';
-const PORT = 39411;
+/**
+ * How long the local server gets to answer before this gives up and says so.
+ *
+ * Generous, because a cold start on a loaded machine is slow and a needless failure here
+ * costs a whole gate run. It is a ceiling rather than a wait: the normal case ends as soon
+ * as the port answers, which is well under a second.
+ */
+const SERVER_START_MS = 20_000;
 
 const CHROME = [
   process.env.SHEAF_CHROME,
@@ -57,20 +64,6 @@ try {
   skip('playwright-core is not installed; set PLAYWRIGHT_CORE to its folder');
 }
 
-/** Start the local server on `sample/` and wait for it to say it is listening. */
-async function serve() {
-  const server = spawn(process.execPath, [join(REPO, 'dist', 'serve.js'), 'sample', '--port', String(PORT), '--no-open'], {
-    cwd: REPO,
-    stdio: ['ignore', 'pipe', 'inherit'],
-  });
-  await new Promise((resolve) => {
-    const done = () => resolve();
-    server.stdout.on('data', (b) => String(b).includes(String(PORT)) && done());
-    setTimeout(done, 4000);
-  });
-  return server;
-}
-
 /** The measurements a page reports about its own layout. */
 const measure = (page) =>
   page.evaluate(() => {
@@ -88,7 +81,11 @@ const measure = (page) =>
     };
   });
 
-const server = await serve();
+const { server, base } = await serveForCheck({
+  repo: REPO,
+  root: 'sample',
+  whenAbsent: 'Without it every measurement below would fail against a refused connection and read as a layout fault.',
+});
 const browser = await chromium.launch({ executablePath: CHROME });
 const failures = [];
 const say = (name, ok, detail) => {
@@ -102,7 +99,7 @@ try {
     ['a wide pane with a mouse', DESK, false],
   ]) {
     const page = await browser.newPage({ viewport, hasTouch: touch, isMobile: touch });
-    await page.goto(`http://127.0.0.1:${PORT}/edit/${DOC}`, { waitUntil: 'load' });
+    await page.goto(`${base}/edit/${DOC}`, { waitUntil: 'load' });
     await page.waitForTimeout(2500);
     const m = await measure(page);
     await page.close();
@@ -133,7 +130,7 @@ try {
   }
 } finally {
   await browser.close();
-  server.kill();
+  server.kill('SIGKILL');
 }
 
 if (failures.length) {

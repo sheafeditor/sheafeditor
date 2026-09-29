@@ -102,10 +102,12 @@ export const scenarios: Scenario[] = [
       const ok =
         line(p, 2) === 'Inside emphasis: first line' &&
         line(p, 3) === 'second line, still italic' &&
-        line(p, 5) === ' In a quote, first line' &&
-        line(p, 6) === ' second line of the same quote.' &&
-        line(p, 8) === '•  In a list item, first line' &&
-        line(p, 10) === '•  A second item, first line' &&
+        // No leading spaces: a marker now takes the space after it with it, and the gap after
+        // a bullet is drawn by the box it sits in rather than typed into the line.
+        line(p, 5) === 'In a quote, first line' &&
+        line(p, 6) === 'second line of the same quote.' &&
+        line(p, 8) === '•In a list item, first line' &&
+        line(p, 10) === '•A second item, first line' &&
         // The emphasis runs through the break rather than ending at it. A mark
         // that covers more than one line is drawn once per line, so the italic
         // text arrives as the two halves of the one span.
@@ -174,5 +176,77 @@ export const scenarios: Scenario[] = [
         p.destroy();
         return ok;
       }),
+  },
+  {
+    name: 'Shift+Enter in a heading writes nothing, rather than splitting it into a heading and a paragraph',
+    run: () => {
+      const doc = P0 + '## Second section';
+      const p = mountProse(doc);
+      p.select(doc.indexOf('section'));
+      p.press('Shift-Enter');
+      const ok = p.doc() === doc;
+      p.destroy();
+      return ok;
+    },
+  },
+  {
+    name: 'Shift+Enter at the start of an unmarked line opens a plain blank line, with no backslash left on it',
+    run: () => {
+      const doc = P0 + 'Before bold after';
+      const p = mountProse(doc);
+      p.select(P0.length);
+      p.press('Shift-Enter');
+      // A break needs text in front of it, and there is none here, so what lands is an
+      // ordinary blank line rather than one holding a hard-break marker that draws as
+      // nothing. On a marked line the answer differs; the task item below covers that.
+      const ok = p.doc() === P0 + '\nBefore bold after' && !screen(p).includes('\\');
+      p.destroy();
+      return ok;
+    },
+  },
+  {
+    name: 'Shift+Enter against the text of a task item writes nothing, so no line holds just its checkbox',
+    run: () => {
+      const doc = P0 + '- [ ] Open task';
+      const p = mountProse(doc);
+      // Past the marker: the first position a person can see the caret in.
+      p.select(P0.length + '- [ ] '.length);
+      p.press('Shift-Enter');
+      const ok = p.doc() === doc;
+      p.destroy();
+      return ok;
+    },
+  },
+  {
+    name: 'a break at the end of a quote line leaves the caret past the quote marker, so what is typed next joins the quote',
+    run: () => {
+      const doc = P0 + '> Quoted line';
+      const p = mountProse(doc);
+      p.select(doc.length);
+      p.press('Shift-Enter');
+      const broke = p.doc() === P0 + '> Quoted line\\\n> ';
+      const last = p.view.state.doc.line(p.view.state.doc.lines);
+      // The new line's whole source is the quote's marker, so it draws as empty. Which side
+      // of the marker the caret is on is what decides whether that matters: past it, the
+      // next character joins the quote's text; in front of it, the character would land
+      // before the `>` and the line would stop being a quote at all.
+      const pastTheMarker = last.text === '> ' && p.view.state.selection.main.head === last.to;
+      p.view.dispatch(p.view.state.replaceSelection('x'));
+      const ok = broke && pastTheMarker && p.doc() === P0 + '> Quoted line\\\n> x';
+      p.destroy();
+      return ok;
+    },
+  },
+  {
+    name: 'Shift+Enter with text in front of the caret still writes the break',
+    run: () => {
+      const doc = P0 + 'Before bold after';
+      const p = mountProse(doc);
+      p.select(P0.length + 'Before'.length);
+      p.press('Shift-Enter');
+      const ok = p.doc() === P0 + 'Before\\\n bold after';
+      p.destroy();
+      return ok;
+    },
   },
 ];

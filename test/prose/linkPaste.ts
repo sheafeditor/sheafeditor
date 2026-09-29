@@ -5,7 +5,7 @@
  */
 
 import { Scenario, mountProse } from '../harness';
-import { handleLinkPaste, markdownLink, pastedUrl } from '../../src/webview/linkPaste';
+import { handleDocPathPaste, handleLinkPaste, markdownLink, pastedDocPath, pastedUrl, setDocTitleHost } from '../../src/webview/linkPaste';
 import { setupImageIngestion } from '../../src/webview/images';
 
 interface Pasted {
@@ -344,6 +344,120 @@ export const scenarios: Scenario[] = [
       const out = p.doc();
       p.destroy();
       return !out.includes('](');
+    },
+  },
+
+  /* ---- Pasting a path to another document ---- */
+
+  {
+    /*
+     * Which clipboard text is a path to another document.
+     *
+     * The rule is the extension plus one of three shapes, because a path arrives as a path
+     * rather than as an address and has to be told apart from prose that ends the same way.
+     * A sentence that happens to end in `.md` is far commoner than a path with a space in it,
+     * so a spaced one has to say it is a path.
+     */
+    name: 'a pasted path to a document is told apart from prose and from a web address',
+    run: () => {
+      const yes = [
+        'notes/plan.md',
+        '../plan.markdown',
+        './plan.md',
+        '/Users/someone/notes/plan.md',
+        '/Users/someone/my notes/plan.md',
+        './my notes/plan.md',
+        'file:///Users/someone/notes/plan.md',
+        'C:\\notes\\plan.md',
+        '  notes/plan.md\n',
+      ];
+      const no = [
+        '',
+        'notes/plan.txt',
+        'plan.md extra',
+        'See the plan in plan.md',
+        'https://example.com/plan.md',
+        'plan.md\nother.md',
+        'mailto:someone@example.com',
+      ];
+      const badYes = yes.filter((t) => pastedDocPath(t) === null);
+      const badNo = no.filter((t) => pastedDocPath(t) !== null);
+      return {
+        ok: !badYes.length && !badNo.length,
+        detail: `not read as a path: ${JSON.stringify(badYes)}; read as one and should not be: ${JSON.stringify(badNo)}`,
+      };
+    },
+  },
+  {
+    /*
+     * Pasting a path with nothing selected writes a link carrying the target's own title.
+     *
+     * Only the host can answer what a path names, so the write happens when the answer
+     * arrives rather than when the paste does. A host that says the path names nothing gets
+     * the plain paste back, at the same place, so a paste never silently does nothing.
+     */
+    name: 'pasting a path to a document links it by its title, and pastes plainly when the host has no answer',
+    run: async () => {
+      const asked: string[] = [];
+      const run = async (
+        answer: { address: string; title: string } | null,
+        text = 'notes/plan.md'
+      ): Promise<string> => {
+        setDocTitleHost((path) => {
+          asked.push(path);
+          return Promise.resolve(answer);
+        });
+        const p = mountProse('Read ');
+        p.select(5);
+        const handled = handleDocPathPaste(p.view, text);
+        // The answer arrives on a microtask, which is where the write happens.
+        await Promise.resolve();
+        await Promise.resolve();
+        const out = `${handled ? 'handled' : 'left alone'}: ${p.doc()}`;
+        p.destroy();
+        setDocTitleHost(null);
+        return out;
+      };
+      const titled = await run({ address: 'notes/plan.md', title: 'Launch plan' });
+      const none = await run(null);
+      // No host at all — the site's demo — is the paste it always was.
+      setDocTitleHost(null);
+      const noHost = handleDocPathPaste(mountProse('Read ').view, 'notes/plan.md');
+      const want = 'handled: Read [Launch plan](notes/plan.md)';
+      return {
+        ok: titled === want && none === 'handled: Read notes/plan.md' && noHost === false && asked.length === 2,
+        detail:
+          `with a title ${JSON.stringify(titled)}` +
+          (titled === want ? '' : ` rather than ${JSON.stringify(want)}`) +
+          `; with no answer ${JSON.stringify(none)}; with no host at all it was ${noHost ? 'taken' : 'left alone'}; the host was asked ${JSON.stringify(asked)}`,
+      };
+    },
+  },
+  {
+    name: 'a pasted path is left alone where a link would be markup, and where anything is selected',
+    run: async () => {
+      setDocTitleHost(() => Promise.resolve({ address: 'notes/plan.md', title: 'Launch plan' }));
+      const at = (doc: string, needle: string, offset = 1): boolean => {
+        const p = mountProse(doc);
+        p.select(doc.indexOf(needle) + offset);
+        const handled = handleDocPathPaste(p.view, 'notes/plan.md');
+        p.destroy();
+        return handled;
+      };
+      const code = at('```\nlet x = 1\n```\n', 'let x');
+      const inline = at('Try `npm ci` now.\n', 'npm');
+      const front = at('---\ntitle: A\n---\n\nBody.\n', 'title');
+      const inLink = at('Read [the plan](plan.md) now.\n', 'the plan');
+      // With words selected, the address links the words instead: that is the other paste.
+      const p = mountProse('Read the docs today.');
+      p.select(9, 13);
+      const selected = handleDocPathPaste(p.view, 'notes/plan.md');
+      p.destroy();
+      setDocTitleHost(null);
+      return {
+        ok: !code && !inline && !front && !inLink && !selected,
+        detail: `taken in: ${[['a code block', code], ['inline code', inline], ['front matter', front], ['a link', inLink], ['a selection', selected]].filter(([, v]) => v).map(([n]) => n).join(', ') || 'none'}`,
+      };
     },
   },
 ];

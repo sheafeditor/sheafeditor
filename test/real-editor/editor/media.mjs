@@ -1093,19 +1093,33 @@ export const scenarios = [
   {
     id: 'data.csv-grid.e12',
     feature: 'data.csv-grid',
-    name: 'A ~~~csv fence, an upper-case ```CSV fence and an unclosed fence at the end of the file all show as grids and keep their fences on edit',
+    name: 'A ~~~csv fence and an upper-case ```CSV fence show as grids and keep their fences on edit; an unclosed one stays as text',
     run: async (S) => {
+      /*
+       * Two grids, not three. The fence at the end has no closer, and `ccd3a5b` settled
+       * that a fence with no closer is not a block yet: every fenced block waits for
+       * the line that closes it before it is drawn as anything, which is how Markdown itself
+       * reads an opening fence and what makes typing a data table out by hand safe. This
+       * scenario asked for all three and was written before that, so it had been red ever
+       * since with nobody running this area.
+       *
+       * The unclosed fence is kept in the document deliberately: it is the control on the
+       * other two, since a change that drew every fence whether or not it closed would still
+       * pass a scenario that only looked at the closed ones.
+       */
       const DOC = 'Intro paragraph above.\n\n~~~csv\na,b\n1,2\n~~~\n\n```CSV\nc,d\n3,4\n```\n\nOutro paragraph below.\n\n```csv\ne,f\n5,6';
       const file = await S.fresh('csv-fences', DOC);
       const shown = (await grids(S)).map((g) => g.badge);
+      const lastAsText = await S.eval(() => (document.querySelector('.cm-content')?.textContent ?? '').includes('e,f'));
       await typeInCell(S, 0, 1, '9', 0);
       await typeInCell(S, 0, 1, '8', 1);
-      await typeInCell(S, 0, 1, '7', 2);
       await S.caret('Outro', 2);
-      const want = DOC.replace('1,2', '1,9').replace('3,4', '3,8').replace('5,6', '5,7');
+      const want = DOC.replace('1,2', '1,9').replace('3,4', '3,8');
       let d = await diskChange(S, file, DOC);
       for (let i = 0; i < 10 && d !== want; i++) d = await diskChange(S, file, d, 1000);
-      return { ok: j(shown) === j(['CSV', 'CSV', 'CSV']) && d === want, detail: `badges ${j(shown)} file ${show(d)}` };
+      if (j(shown) !== j(['CSV', 'CSV'])) return { ok: false, detail: `badges ${j(shown)}, and a tilde fence and an upper-case one are both CSV grids` };
+      if (!lastAsText) return { ok: false, detail: 'the unclosed fence at the end was drawn as a grid, and a fence with no closer is not a block yet' };
+      return { ok: d === want, detail: `badges ${j(shown)}; the unclosed fence stayed text; file ${show(d)}` };
     },
   },
   {

@@ -7,6 +7,13 @@ media/webview.js.map
 media/katex.css
 media/katex-fonts/
 media/katex-LICENSE.txt
+
+# Mermaid's published module, its chunks and its licence, copied the same way.
+media/mermaid/
+
+# The editor's own chunks, written by the build: a grammar, and everything else a
+# document only sometimes needs. Their names carry a hash, so they change every build.
+media/editor/
 *.vsix
 .DS_Store
 *.log
@@ -19,6 +26,7 @@ test/textSync.bundle.cjs
 test/host.bundle.cjs
 test/prose.bundle.cjs
 test/server.bundle.cjs
+test/browserHost.bundle.cjs
 
 # Real-world corpus, downloaded on demand by scripts/fetch-wild-corpus.mjs.
 sample/wild/files/

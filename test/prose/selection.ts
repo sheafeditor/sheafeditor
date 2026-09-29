@@ -3,7 +3,6 @@ import { setClipboardHost } from '../../src/webview/hostClipboard';
 import { setBlockRefHost } from '../../src/webview/refs';
 import { revealField } from '../../src/webview/livePreview';
 import { hint } from '../../src/webview/shortcuts';
-
 const G: any = globalThis;
 
 const toolbar = (p: Prose): HTMLElement | null => p.view.dom.querySelector<HTMLElement>('.sheaf-seltb');
@@ -54,6 +53,46 @@ export const scenarios: Scenario[] = [
       const after = toolbar(p);
       p.destroy();
       return before === null && shown !== null && role === 'toolbar' && after === null;
+    },
+  },
+  {
+    name: 'a selected divider raises no selection toolbar, alone or inside a quote; a word, or a paragraph with the divider, still does',
+    run: () => {
+      const doc = 'Above text.\n\n---\n\n> ---\n\nBelow text.';
+      const p = mountProse(doc);
+      const rules = (): Element[] => Array.from(p.view.contentDOM.querySelectorAll('hr.md-hr'));
+      const click = (el: Element | undefined): void => {
+        if (!el) return;
+        const init = { bubbles: true, cancelable: true, button: 0, detail: 1 };
+        el.dispatchEvent(new G.MouseEvent('mousedown', init));
+        // The press redraws the rule's line, so the release goes to the document, where
+        // a real one would arrive whatever it landed on.
+        document.dispatchEvent(new G.MouseEvent('mouseup', init));
+      };
+      const picked = (): string => {
+        const s = p.view.state.selection.main;
+        return p.view.state.sliceDoc(s.from, s.to);
+      };
+      p.select(0);
+      click(rules()[0]);
+      const clicked = { text: picked(), bar: toolbar(p) !== null };
+      p.select(0);
+      click(rules()[1]);
+      const quoted = { text: picked(), bar: toolbar(p) !== null };
+      // The rule's characters selected as a plain range, as a drag or Shift+arrows can.
+      const rule = doc.indexOf('---');
+      p.select(rule, rule + 3);
+      const range = toolbar(p) !== null;
+      p.select(0, 5);
+      const word = toolbar(p) !== null;
+      p.select(0, rule + 3);
+      const across = toolbar(p) !== null;
+      p.destroy();
+      const got = { clicked, quoted, range, word, across };
+      const ok =
+        clicked.text === '---' && !clicked.bar && quoted.text === '---' && !quoted.bar && !range && word && across;
+      if (!ok) console.log(JSON.stringify(got));
+      return ok;
     },
   },
   {
@@ -288,18 +327,36 @@ export const scenarios: Scenario[] = [
     },
   },
   {
-    name: 'the Link button links a selection, and unlinks one inside a link',
+    name: 'the Link button links a selection, and opens the popover on one already inside a link',
     run: () => {
       const p = mountProse('[see](https://a.io) x');
       p.select(1, 4);
       const label = button(p, 'link').getAttribute('aria-label');
       button(p, 'link').click();
+      // The popover takes the space the toolbar was in, since the Link button is on the toolbar.
+      const kept = p.doc();
+      const field = popover(p)?.querySelector<HTMLInputElement>('.sheaf-linkpop-url');
+      const focused = !!field && document.activeElement === field && field.value === 'https://a.io';
+      p.press('Mod-Shift-k');
       const unlinked = p.doc();
       p.select(0, 3);
       button(p, 'link').click();
+      // Words that are not a link yet: the popover asks for the address and the file waits.
+      const pending = p.doc();
+      const url = popover(p)?.querySelector<HTMLInputElement>('.sheaf-linkpop-url');
+      url!.value = 'https://b.io';
+      url!.dispatchEvent(new G.Event('input', { bubbles: true }));
+      url!.dispatchEvent(new G.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
       const linked = p.doc();
       p.destroy();
-      return label === 'Remove link' && unlinked === 'see x' && linked === '[see](url) x';
+      return (
+        /^Edit link \(/.test(label ?? '') &&
+        kept === '[see](https://a.io) x' &&
+        focused &&
+        unlinked === 'see x' &&
+        pending === 'see x' &&
+        linked === '[see](https://b.io) x'
+      );
     },
   },
   {

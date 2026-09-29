@@ -742,4 +742,42 @@ export const scenarios: Scenario[] = [
       return ok;
     },
   },
+  {
+    /*
+     * An image sized by height alone is drawn at that height.
+     *
+     * It is valid HTML, it is what GitHub and every previewer draw from, and it is what a person
+     * gets when they paste an `<img>` in from somewhere else. The height was parsed, kept on the
+     * props and written back out faithfully, and never reached the element, so a picture sized to
+     * 90 pixels tall was drawn across the whole column with nothing to say why.
+     *
+     * Four cases, because each of the other three is a way the fix could be wrong: a width alone
+     * must still win, both together must still be the width's business — that is what a resize
+     * writes and what keeps the two in proportion — and neither must stay as it was. jsdom has no
+     * layout, so what is read is the style the element carries rather than the box it draws; the
+     * pixels are measured in Chromium, where the height-only picture comes out 192x90.
+     */
+    name: 'an image with a height and no width is drawn at that height',
+    run: () => {
+      const doc =
+        'Intro.\n\n<img src="assets/dot.png" alt="by height" height="90">\n\n' +
+        '<img src="assets/dot.png" alt="by width" width="640">\n\n' +
+        '<img src="assets/dot.png" alt="both" width="320" height="45">\n\n' +
+        '<img src="assets/dot.png" alt="neither">\n\nAfter.\n';
+      const p = mountShipped(doc);
+      const styled = Object.fromEntries(
+        images(p).map((i) => [i.alt, `${i.style.width || '-'}/${i.style.height || '-'}`])
+      );
+      const unchanged = p.doc() === doc;
+      p.destroy();
+      const want = { 'by height': '-/90px', 'by width': '640px/-', both: '320px/-', neither: '-/-' };
+      const wrong = Object.entries(want).filter(([k, v]) => styled[k] !== v);
+      return {
+        ok: wrong.length === 0 && unchanged,
+        detail:
+          (wrong.length ? wrong.map(([k, v]) => `${k} carries ${styled[k]} rather than ${v}`).join('; ') : 'all four sized as written') +
+          (unchanged ? '' : '; the document changed'),
+      };
+    },
+  },
 ];

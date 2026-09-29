@@ -247,11 +247,16 @@ const RAIL_GAP = 8;
 /** How far down the viewport a heading has to reach before it is the one being read. */
 const READING_LINE = 0.25;
 
+/** How much of the rail is drawn. */
+export type OutlineState = 'shown' | 'collapsed' | 'hidden';
+
 export interface TableOfContents {
   /** The rail itself, for the tests and for anyone who needs to look at it. */
   readonly el: HTMLElement;
-  /** Show or hide the rail, as `sheaf.tableOfContents` says. */
-  setEnabled(on: boolean): void;
+  /** Draw the rail in full, as its header alone, or not at all. */
+  setState(next: OutlineState): void;
+  state(): OutlineState;
+  /** Whether the rail is on screen at all, in either of the two states that draw it. */
   enabled(): boolean;
   /**
    * The toolbar button was pressed. True when that only brought a panel back that had
@@ -271,11 +276,27 @@ export interface TableOfContents {
  * Build the rail and put it in `parent`, ahead of the editor so that Tab reaches it
  * straight from the toolbar. It starts hidden; `setEnabled` is what shows it.
  */
-export function createTableOfContents(parent: HTMLElement, getView: () => EditorView | undefined): TableOfContents {
+export function createTableOfContents(
+  parent: HTMLElement,
+  getView: () => EditorView | undefined,
+  onFold?: (state: OutlineState) => void
+): TableOfContents {
   const nav = document.createElement('nav');
   nav.className = 'sheaf-toc';
   nav.setAttribute('aria-label', 'Table of contents');
   nav.hidden = true;
+
+  /*
+   * The header, which is also the control. It is there in both states that draw
+   * anything: a chevron that only appears once the list is folded away would be a
+   * control a person has to guess at, and folding is the thing they are most likely to
+   * want after opening the list once.
+   */
+  const header = document.createElement('button');
+  header.className = 'sheaf-toc-header';
+  header.type = 'button';
+  header.textContent = 'Contents';
+  nav.appendChild(header);
 
   const list = document.createElement('div');
   list.className = 'sheaf-toc-list';
@@ -290,6 +311,8 @@ export function createTableOfContents(parent: HTMLElement, getView: () => Editor
 
   parent.insertBefore(nav, parent.firstChild);
 
+  let state: OutlineState = 'hidden';
+  /** Whether the rail is drawn at all, which is both of the states that are not hidden. */
   let on = false;
   /** True while the pane is too narrow for a rail, so the list is a panel over the text. */
   let overlay = false;
@@ -338,6 +361,12 @@ export function createTableOfContents(parent: HTMLElement, getView: () => Editor
       return;
     }
     nav.hidden = false;
+    const folded = state === 'collapsed';
+    nav.classList.toggle('is-folded', folded);
+    header.setAttribute('aria-expanded', String(!folded));
+    header.title = folded ? 'Show the headings' : 'Fold the headings away';
+    list.hidden = folded;
+    if (folded) empty.hidden = true;
     // A panel slides in from the edge, and a transition needs the element to have been
     // laid out before the class that moves it arrives. One frame is what that costs.
     if (nav.classList.contains('is-open')) return;
@@ -423,8 +452,9 @@ export function createTableOfContents(parent: HTMLElement, getView: () => Editor
       list.appendChild(entry);
       return entry;
     });
-    // A document with no headings says so. An empty rail reads as the feature being broken.
-    empty.hidden = entries.length > 0;
+    // A document with no headings says so. An empty rail reads as the feature being
+    // broken. Folded away, there is nothing to say it in.
+    empty.hidden = entries.length > 0 || state === 'collapsed';
     current = -1;
     setTabStop(tabStop);
   };
@@ -485,13 +515,28 @@ export function createTableOfContents(parent: HTMLElement, getView: () => Editor
     });
   };
 
+  /*
+   * The chevron folds the list away and opens it again, for the document in front of
+   * the person. Hiding the rail altogether is the toolbar's button and the setting:
+   * a control that could remove itself would leave nothing to bring it back.
+   */
+  header.addEventListener('click', () => {
+    if (state === 'hidden') return;
+    state = state === 'collapsed' ? 'shown' : 'collapsed';
+    if (state === 'shown') refresh();
+    else layout();
+    onFold?.(state);
+  });
+
   return {
     el: nav,
     enabled: () => on,
-    setEnabled(next: boolean): void {
-      if (next === on) return;
-      on = next;
-      // Turning it on always shows it, panel or rail; the person has just asked for it.
+    state: () => state,
+    setState(next: OutlineState): void {
+      if (next === state) return;
+      state = next;
+      on = next !== 'hidden';
+      // Drawing it always brings it into view, panel or rail; the person has just asked.
       closed = false;
       if (on) refresh();
       else layout();

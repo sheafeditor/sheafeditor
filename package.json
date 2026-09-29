@@ -37,9 +37,6 @@
     "tables"
   ],
   "main": "./dist/extension.js",
-  "bin": {
-    "sheaf": "./dist/serve.js"
-  },
   "activationEvents": [
     "onStartupFinished"
   ],
@@ -57,6 +54,16 @@
           }
         ],
         "priority": "default"
+      },
+      {
+        "viewType": "sheaf.text",
+        "displayName": "Sheaf (WYSIWYG)",
+        "selector": [
+          {
+            "filenamePattern": "*.txt"
+          }
+        ],
+        "priority": "option"
       },
       {
         "viewType": "sheaf.csv",
@@ -94,8 +101,38 @@
         "category": "Sheaf"
       },
       {
+        "command": "sheaf.showTableOfContents",
+        "title": "Show Table of Contents",
+        "category": "Sheaf"
+      },
+      {
+        "command": "sheaf.collapseTableOfContents",
+        "title": "Collapse Table of Contents",
+        "category": "Sheaf"
+      },
+      {
+        "command": "sheaf.hideTableOfContents",
+        "title": "Hide Table of Contents",
+        "category": "Sheaf"
+      },
+      {
         "command": "sheaf.toggleComments",
         "title": "Toggle Comments",
+        "category": "Sheaf"
+      },
+      {
+        "command": "sheaf.showFrontMatter",
+        "title": "Show Front Matter",
+        "category": "Sheaf"
+      },
+      {
+        "command": "sheaf.collapseFrontMatter",
+        "title": "Collapse Front Matter",
+        "category": "Sheaf"
+      },
+      {
+        "command": "sheaf.hideFrontMatter",
+        "title": "Hide Front Matter",
         "category": "Sheaf"
       },
       {
@@ -117,6 +154,11 @@
         "command": "sheaf.stopBrowser",
         "title": "Stop Serving to the Browser",
         "category": "Sheaf"
+      },
+      {
+        "command": "sheaf.about",
+        "title": "About",
+        "category": "Sheaf"
       }
     ],
     "keybindings": [
@@ -124,50 +166,50 @@
         "command": "sheaf.copyRef",
         "key": "ctrl+shift+c",
         "mac": "cmd+shift+c",
-        "when": "activeCustomEditorId == 'sheaf.wysiwyg' || activeCustomEditorId == 'sheaf.csv'"
+        "when": "activeCustomEditorId == 'sheaf.wysiwyg' || activeCustomEditorId == 'sheaf.text' || activeCustomEditorId == 'sheaf.csv'"
       },
       {
         "command": "sheaf.copyRef",
         "key": "ctrl+shift+alt+r",
         "mac": "cmd+shift+alt+r",
-        "when": "activeCustomEditorId == 'sheaf.wysiwyg' || activeCustomEditorId == 'sheaf.csv'"
+        "when": "activeCustomEditorId == 'sheaf.wysiwyg' || activeCustomEditorId == 'sheaf.text' || activeCustomEditorId == 'sheaf.csv'"
       },
       {
         "command": "sheaf.sendRefToTerminal",
         "key": "ctrl+shift+alt+t",
         "mac": "cmd+shift+alt+t",
-        "when": "activeCustomEditorId == 'sheaf.wysiwyg' || activeCustomEditorId == 'sheaf.csv'"
+        "when": "activeCustomEditorId == 'sheaf.wysiwyg' || activeCustomEditorId == 'sheaf.text' || activeCustomEditorId == 'sheaf.csv'"
       }
     ],
     "menus": {
       "commandPalette": [
         {
           "command": "sheaf.copyRef",
-          "when": "activeCustomEditorId == 'sheaf.wysiwyg' || activeCustomEditorId == 'sheaf.csv'"
+          "when": "activeCustomEditorId == 'sheaf.wysiwyg' || activeCustomEditorId == 'sheaf.text' || activeCustomEditorId == 'sheaf.csv'"
         },
         {
           "command": "sheaf.sendRefToTerminal",
-          "when": "activeCustomEditorId == 'sheaf.wysiwyg' || activeCustomEditorId == 'sheaf.csv'"
+          "when": "activeCustomEditorId == 'sheaf.wysiwyg' || activeCustomEditorId == 'sheaf.text' || activeCustomEditorId == 'sheaf.csv'"
         }
       ],
       "explorer/context": [
         {
           "command": "sheaf.openWithWysiwyg",
-          "when": "resourceExtname =~ /^\\.(md|markdown)$/i",
+          "when": "resourceExtname =~ /^\\.(md|markdown|txt)$/i",
           "group": "navigation@10"
         }
       ],
       "editor/title/context": [
         {
           "command": "sheaf.openWithWysiwyg",
-          "when": "resourceExtname =~ /^\\.(md|markdown)$/i",
+          "when": "resourceExtname =~ /^\\.(md|markdown|txt)$/i",
           "group": "navigation@10"
         }
       ],
       "editor/context": [
         {
           "command": "sheaf.openWithWysiwyg",
-          "when": "editorLangId == markdown && resourceExtname =~ /^\\.(md|markdown)$/i",
+          "when": "resourceExtname =~ /^\\.(md|markdown)$/i && editorLangId == markdown || resourceExtname =~ /^\\.txt$/i && editorLangId == plaintext",
           "group": "navigation@10"
         }
       ]
@@ -190,6 +232,12 @@
           "type": "boolean",
           "default": true,
           "description": "Automatically save the file a short moment after you stop typing, the way a notes app does. When off, edits still update the document but you save manually (or via VS Code's files.autoSave)."
+        },
+        "sheaf.lineNumbers": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show line numbers down the left of the document. The button at the right of the formatting toolbar turns them on and off, and the choice is remembered for every document you open, the way VS Code remembers its own.",
+          "scope": "window"
         },
         "sheaf.revealSyntaxOnLine": {
           "type": "boolean",
@@ -214,10 +262,43 @@
           "default": "show",
           "description": "How to draw the notes written into a document as <!-- ... -->, which are invisible to a reader and never published. A comment on its own lines is drawn as a box labelled Comment, with a chevron that shuts it down to its first line. Hiding them leaves a small marker in place of each, so you can still see where a note is and bring it back with a click. Toggle Comments turns this on and off."
         },
+        "sheaf.frontMatter": {
+          "type": "string",
+          "enum": [
+            "shown",
+            "collapsed",
+            "hidden"
+          ],
+          "enumDescriptions": [
+            "Draw every line of the front matter, as written.",
+            "Draw one strip naming the front matter and the document's title, with a chevron that opens it.",
+            "Draw nothing, and take no height: the text begins where it would in a file with no front matter."
+          ],
+          "default": "collapsed",
+          "description": "How much of a document's YAML front matter to draw. Collapsed is one strip that says the metadata is there and which document it belongs to, which keeps a long block from pushing the first heading off the screen. Hidden draws nothing at all; the lines are still in the file, still saved, and a find or a select-all still reaches them, so nothing is lost by putting them away. Putting the caret in the block opens it whatever this says, and Sheaf: Show, Collapse and Hide Front Matter set it from the Command Palette.",
+          "scope": "window"
+        },
         "sheaf.tableOfContents": {
-          "type": "boolean",
-          "default": false,
-          "description": "Show a panel to the right of the text listing the document's headings, so a long file's shape is visible and any section is one click away. The heading you are reading is marked as you scroll it past the top of the window. This applies to every Markdown file you open in Sheaf; the toolbar's list button turns it on and off."
+          "type": [
+            "string",
+            "boolean"
+          ],
+          "enum": [
+            "shown",
+            "collapsed",
+            "hidden",
+            true,
+            false
+          ],
+          "enumDescriptions": [
+            "List the document's headings beside the text.",
+            "Show the Contents header with its list folded away.",
+            "Show nothing, and leave the margin to the text.",
+            "The same as shown.",
+            "The same as hidden."
+          ],
+          "default": "hidden",
+          "description": "Whether to list the document's headings in a panel to the right of the text, so a long file's shape is visible and any section is one click away. The heading you are reading is marked as you scroll it past the top of the window. Collapsed keeps the header and folds the list away, and the chevron on it opens and closes the list for the document you are in. This is the default for every file; the toolbar's list button shows and hides it, and true and false still mean shown and hidden for anyone who set them."
         }
       }
     }
@@ -228,14 +309,32 @@
     "watch": "node esbuild.mjs --watch",
     "check-types": "tsc --noEmit",
     "check-docs": "node scripts/check-docs.mjs",
+    "check-private-terms": "node scripts/check-private-terms.mjs",
+    "version": "node scripts/stamp-changelog.mjs && git add CHANGELOG.md",
+    "stamp-changelog": "node scripts/stamp-changelog.mjs",
+    "check-scenarios": "node scripts/check-scenarios.mjs",
+    "check-samples": "node scripts/check-samples.mjs",
     "gen:corpus": "node scripts/gen-corpus.mjs",
+    "gen:emoji": "node scripts/gen-emoji.mjs",
     "gen:icons": "node scripts/build-icons.mjs",
     "check-corpus": "node scripts/gen-corpus.mjs --check",
+    "check-emoji": "node scripts/gen-emoji.mjs --check",
     "fetch:wild": "node scripts/fetch-wild-corpus.mjs",
     "gen:wren4": "node scripts/gen-wren4.mjs",
     "check-icons": "node scripts/build-icons.mjs --check",
     "check-render": "node scripts/check-render.mjs",
     "check-touch": "node scripts/check-touch.mjs",
+    "check-paging": "node scripts/check-paging.mjs",
+    "check-caret": "node scripts/check-caret.mjs",
+    "check-indent": "node scripts/check-indent.mjs",
+    "check-code-colours": "node scripts/check-code-colours.mjs",
+    "check-hover-bar": "node scripts/check-hover-bar.mjs",
+    "check-css-line-padding": "node scripts/check-css-line-padding.mjs",
+    "check-diagrams": "node scripts/check-diagrams.mjs",
+    "check-table-widths": "node scripts/check-table-widths.mjs",
+    "check-cell-source": "node scripts/check-cell-source.mjs",
+    "measure:tables": "node scripts/measure-tables.mjs",
+    "profile:keystroke": "node scripts/profile-table-keystroke.mjs",
     "gates": "node scripts/gates.mjs",
     "serve": "node dist/serve.js",
     "test": "node scripts/run-tests.mjs",
@@ -248,17 +347,23 @@
     "test:host": "node scripts/run-tests.mjs host",
     "test:prose": "node scripts/run-tests.mjs prose",
     "test:server": "node scripts/run-tests.mjs server",
+    "test:harness": "node scripts/run-tests.mjs harness",
+    "test:browser-host": "node scripts/run-tests.mjs browser-host",
+    "reap:runs": "node scripts/reap-runs.mjs",
     "test:editor": "node test/real-editor/run-editor.mjs",
     "test:editor:unit": "node test/real-editor/run-unit.mjs",
-    "package:clean": "node scripts/package-clean.mjs"
+    "package:clean": "node scripts/package-clean.mjs",
+    "check-editing": "node --max-old-space-size=8192 scripts/check-editing.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
     "@types/vscode": "^1.90.0",
     "@vscode/vsce": "^3.9.2",
     "esbuild": "^0.24.0",
+    "gemoji": "^8.1.0",
     "jsdom": "^25.0.0",
     "ovsx": "^1.1.1",
+    "playwright-core": "1.56.1",
     "typescript": "^5.6.0"
   },
   "dependencies": {
@@ -272,7 +377,7 @@
     "@lezer/common": "^1.2.3",
     "@lezer/highlight": "^1.2.1",
     "@lezer/markdown": "^1.4.2",
-    "crelt": "^1.0.6",
-    "katex": "^0.18.7"
+    "katex": "^0.18.7",
+    "mermaid": "^12.0.0"
   }
 }

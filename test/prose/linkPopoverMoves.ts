@@ -11,6 +11,7 @@ const G: any = globalThis;
 
 const popover = (p: Prose): HTMLElement | null => p.view.dom.querySelector<HTMLElement>('.sheaf-linkpop');
 const field = (p: Prose): HTMLInputElement | null => popover(p)?.querySelector<HTMLInputElement>('.sheaf-linkpop-url') ?? null;
+const textField = (p: Prose): HTMLInputElement | null => popover(p)?.querySelector<HTMLInputElement>('.sheaf-linkpop-text') ?? null;
 
 /** Type `value` into the popover's address field the way a person does. */
 const type = (input: HTMLInputElement, value: string): void => {
@@ -29,6 +30,49 @@ const report = 'Plain words first.\n\nRead the [guide](https://a.io/g) first.';
 const inGuide = report.indexOf('[guide') + 2;
 
 export const scenarios: Scenario[] = [
+  {
+    /*
+     * The popover edits a link's words as well as its address.
+     *
+     * Changing what a link *says* used to mean editing around brackets that are not on the
+     * screen, in an editor whose whole argument is that they are not on the screen. The address
+     * had a field and the words did not.
+     *
+     * Three things are read, and the third is the one that makes this worth having. Both fields
+     * arrive filled from the link. Enter in *either* saves *both*, because a person who changed
+     * both and pressed Enter in one of them has said what they want twice over, and saving only
+     * the field they were in would drop the other edit silently. And the two together are one
+     * change, so one undo puts the link back as it was rather than leaving it half edited.
+     */
+    name: 'the link popover edits a link\u2019s words and its address together, in one undo step',
+    run: () => {
+      const p = mountProse(report);
+      p.select(inGuide);
+      const words = textField(p);
+      const address = field(p);
+      if (!words || !address) {
+        p.destroy();
+        return { ok: false, detail: `the popover has ${words ? '' : 'no text field'}${!words && !address ? ' and ' : ''}${address ? '' : 'no address field'}` };
+      }
+      const filled = `${words.value}/${address.value}`;
+      type(words, 'the handbook');
+      type(address, 'https://b.io/h');
+      // Enter in the *text* field, which is the half that would be dropped by saving one.
+      enter(words);
+      const after = p.doc();
+      p.press('Mod-z');
+      const undone = p.doc();
+      p.destroy();
+      const want = 'Plain words first.\n\nRead the [the handbook](https://b.io/h) first.';
+      return {
+        ok: filled === 'guide/https://a.io/g' && after === want && undone === report,
+        detail:
+          `fields arrived as ${JSON.stringify(filled)}; saving gave ${JSON.stringify(after)}` +
+          (after === want ? '' : ` rather than ${JSON.stringify(want)}`) +
+          `; one undo gave ${JSON.stringify(undone)}`,
+      };
+    },
+  },
   {
     name: 'an address being typed in the link popover survives text added or removed above the link',
     run: () => {

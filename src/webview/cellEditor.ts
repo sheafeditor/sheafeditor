@@ -29,17 +29,93 @@
  * is what keeps the two kinds of cell answering the same keys the same way.
  */
 
-import { EditorState, Extension } from '@codemirror/state';
+import { EditorState, Extension, Facet } from '@codemirror/state';
 import { EditorView, KeyBinding, keymap } from '@codemirror/view';
 import { defaultKeymap, history, redo, undo } from '@codemirror/commands';
 import { markdown, commonmarkLanguage } from '@codemirror/lang-markdown';
 import { markdownDialect } from './markdownDialect';
 import { livePreview, revealField } from './livePreview';
+import { toggleWholeReveal } from './revealBlock';
 import { selectionToolbar } from './selectionToolbar';
 import { setDismissed, toolbarShown } from './floatingState';
 import { buildEditingKeymap } from './shortcuts';
-import { pendingMarks } from './toolbar';
-import { linkAddressAt, openLink } from './linkTarget';
+
+/*
+ * Which editor an open cell is, for the chrome that sits outside the table.
+ *
+ * The top toolbar is mounted once, against the document's own editor, and a cell opened for
+ * editing is a *different* `EditorView` with its own state, its own history and its own
+ * keymap. So a toolbar button pressed while a cell was open ran against the outer document
+ * and formatted whatever had been selected there last, which in a long document is anywhere.
+ * The word in the cell was untouched, the cell closed, and nothing said so.
+ *
+ * The keys were never affected, which is why this could go unnoticed: Cmd+B works in a cell
+ * because the keymap is in the cell's own extensions, and the floating selection toolbar works
+ * for the same reason. Only the chrome mounted once, outside, could reach the wrong editor.
+ *
+ * `null` means no cell has focus, so the outer editor is the right target. A returned record
+ * means a cell does, and its `view` is the editor to act on, or `null` for a data cell, which
+ * is a plain text box with no editor behind it and nothing a Markdown control can do to it.
+ * The caller draws its controls unavailable in that case rather than acting somewhere else.
+ */
+/**
+ * True on an editor whose whole document is one cell's inline content.
+ *
+ * A cell holds one line and its parser is built without the block constructs, so a heading, a
+ * list, a quote, a fence or a divider has no meaning in it: running one writes the marker into
+ * the cell's text, where `- ` is two characters of a value rather than a bullet. Chrome that
+ * offers those reads this and draws them unavailable instead, which is the rule that a control
+ * unable to reach the selection says so rather than doing something else.
+ *
+ * A fact about the editor rather than a list held by the chrome, so the next surface that offers
+ * a block command asks the same question and cannot disagree with the toolbar about the answer.
+ */
+export const inlineOnlyEditor = Facet.define<boolean, boolean>({
+  combine: (values) => values.length > 0 && values[0],
+});
+
+interface FocusedCell {
+  /** The cell's editor, or null for a data cell, which is a plain text box. */
+  view: EditorView | null;
+  /** The element focus lands on, which is the text box itself for a data cell. */
+  host: HTMLElement;
+}
+let focusedCell: FocusedCell | null = null;
+let cellActivity: (() => void) | null = null;
+
+/**
+ * The cell that is open for editing, or null when the outer editor is the right target.
+ *
+ * **An open cell, not a focused one, and that distinction is the whole of it.** Asking
+ * `hasFocus` was the first version and it was wrong for the two dropdowns: their menu items
+ * take focus when pressed, so by the time the handler ran the cell no longer had it, the outer
+ * editor was handed back as the target, and Heading 1 put a `#` on the first line of the
+ * document exactly as before. The buttons did not show this because each one cancels its own
+ * `mousedown` to keep the selection, so focus never left them. One reading of the same control
+ * surface, two answers, and only a probe that pressed every one of them found it.
+ *
+ * Being open is the honest signal in any case: the grid commits and destroys the editor when
+ * focus leaves the table, so its lifetime is exactly the period during which the chrome should
+ * be pointed at it, and nothing about which element happens to hold focus mid-gesture comes
+ * into it.
+ */
+export function focusedCellEditor(): FocusedCell | null {
+  if (!focusedCell) return null;
+  return focusedCell.host.isConnected ? focusedCell : null;
+}
+
+/**
+ * Register a callback for when the focused cell changes or its content does, so chrome showing
+ * the state of a selection can follow it into the cell and back out.
+ *
+ * One callback rather than a list: there is one toolbar, and a second caller would be a sign
+ * that this wants to be a facet on the view instead.
+ */
+export function onCellEditorActivity(cb: () => void): void {
+  cellActivity = cb;
+}
+import { pendingMarks } from './pendingMarks';
+import { HeldLink, contextMenuOnLink, pressOnLinkIn, releaseOnLinkIn } from './linkGesture';
 import { installLinkPaste } from './linkPaste';
 
 /** An open cell, whichever kind it is. The grid knows a cell through this and nothing else. */
@@ -135,6 +211,27 @@ function inlineFormattingKeymap(): KeyBinding[] {
 }
 
 /**
+ * Mod-Alt-e shows the cell's own raw Markdown, and shows it again as a rendered cell.
+ *
+ * It is the same key that shows a paragraph's source, doing the same thing one scope in.
+ * A cell holding `**start**. hello world` drew a bold word with no way to find out what was
+ * under it: the key was not in the cell's keymap, and the table's own `</>` reveals the whole
+ * table, which answers a different question and loses the cell in a wall of pipes.
+ *
+ * **The range is the whole cell, which is the whole document here**, because a cell editor's
+ * document is that one cell. `toggleWholeReveal` is that, and it is shared with the cell's
+ * toolbar button and its right-click item so the three cannot drift apart.
+ *
+ * Leaving the cell needs nothing here, because leaving it destroys the editor and the next
+ * open builds a fresh one with no reveal.
+ *
+ * The table's `</>` is untouched and still opens the table's source.
+ */
+function revealChord(): KeyBinding[] {
+  return [{ key: 'Mod-Alt-e', run: toggleWholeReveal }];
+}
+
+/**
  * Undo and redo inside a cell are the cell's own, as they were in the text box it
  * replaced. They stop here: the webview host forwards every Ctrl or Cmd with Z or Y
  * that reaches the window to VS Code, which would otherwise also undo the file.
@@ -190,23 +287,6 @@ const oneLine = EditorState.transactionFilter.of((tr) => {
   };
 });
 
-/** Cmd/Ctrl-click on a rendered link in a cell opens it, as it does in prose. */
-function openLinkUnder(e: MouseEvent, view: EditorView): boolean {
-  if (!(e.metaKey || e.ctrlKey)) return false;
-  let pos: number | null = null;
-  try {
-    pos = view.posAtCoords({ x: e.clientX, y: e.clientY });
-  } catch {
-    return false; // no layout to hit-test against
-  }
-  if (pos == null) return false;
-  const url = linkAddressAt(view.state, pos);
-  if (!url) return false;
-  e.preventDefault();
-  e.stopPropagation();
-  openLink(url);
-  return true;
-}
 
 /**
  * The keys the grid owns rather than the editor: Tab and Enter move between cells
@@ -305,6 +385,13 @@ function plainCell(spec: CellEditorSpec): CellEditor {
   });
   area.addEventListener('compositionstart', () => spec.onComposing(true));
   area.addEventListener('compositionend', () => spec.onComposing(false));
+  /*
+   * A data cell has no editor behind it, so it registers itself with a null view. That is what
+   * tells the chrome outside to draw its Markdown controls unavailable rather than run them
+   * against the outer document, which is what they did before and what nobody could see.
+   */
+  focusedCell = { view: null, host: area };
+  cellActivity?.();
   area.addEventListener('input', (e) => {
     edited = true;
     spec.onMeasure(area.value);
@@ -323,7 +410,10 @@ function plainCell(spec: CellEditorSpec): CellEditor {
       if (spec.selectAll) area.select();
     },
     destroy: () => {
-      /* nothing beyond the element, which the cell drops */
+      // Nothing beyond the element, which the cell drops. The registration goes with it, so
+      // the chrome outside stops treating a removed text box as the thing with focus.
+      if (focusedCell?.host === area) focusedCell = null;
+      cellActivity?.();
     },
   };
 }
@@ -337,6 +427,15 @@ function markdownCell(spec: CellEditorSpec): CellEditor {
   host.addEventListener(
     'keydown',
     (e) => {
+      /*
+       * A key typed in the link popover belongs to the popover. The popover is a tooltip of the
+       * cell's own editor, so it sits inside this host and this listener sees its keys on the way
+       * down, before the popover does. All three keys the grid claims were wrong there: Enter
+       * committed the cell instead of saving the link, Escape closed the cell instead of the
+       * popover, and Tab stepped to the next cell instead of moving between the two fields.
+       */
+      const target = e.target as Element | null;
+      if (typeof target?.closest === 'function' && target.closest('.sheaf-linkpop')) return;
       // With the selection toolbar up, Escape puts the toolbar away and the cell
       // stays open, as it does over a paragraph; the next Escape backs out of the edit.
       if ((e as KeyboardEvent).key === 'Escape' && toolbarShown(view.state)) {
@@ -349,7 +448,33 @@ function markdownCell(spec: CellEditorSpec): CellEditor {
     },
     true
   );
-  host.addEventListener('mousedown', (e) => openLinkUnder(e as MouseEvent, view), true);
+  /*
+   * A click on a link in an open cell opens it, as one in prose does. The press only
+   * remembers the link and lets the editor place the caret; the release opens it if nothing
+   * moved, so a drag that starts on a link still selects. `linkGesture.ts` holds both halves
+   * and the closed cell's version of the same reasoning is `pressOnLink` in `tables.ts`.
+   */
+  let heldInCell: HeldLink | null = null;
+  host.addEventListener(
+    'mousedown',
+    (e) => {
+      const { opened, hold } = pressOnLinkIn(view, e as MouseEvent);
+      heldInCell = hold;
+      if (opened) e.stopPropagation();
+    },
+    true
+  );
+  host.addEventListener(
+    'mouseup',
+    (e) => {
+      const held = heldInCell;
+      heldInCell = null;
+      if (releaseOnLinkIn(view, e as MouseEvent, held)) e.stopPropagation();
+    },
+    true
+  );
+  // And a right-click on one opens its popover rather than any menu.
+  host.addEventListener('contextmenu', (e) => contextMenuOnLink(view, e as MouseEvent), true);
   host.addEventListener('mousedown', (e) => {
     // The cell keeps the press: the grid's own cell handler would end the edit.
     e.stopPropagation();
@@ -368,14 +493,20 @@ function markdownCell(spec: CellEditorSpec): CellEditor {
   host.addEventListener('keydown', keepInCell);
   host.addEventListener('keypress', keepInCell);
   host.addEventListener('keyup', keepInCell);
-  // Inside an open cell the platform's own cut, copy and paste menu is the right
-  // one, as it is in the plain field. The table menu reads a right-click anywhere
-  // in the editor's content and would open over the text instead, so the event
-  // stops at the cell.
-  host.addEventListener('contextmenu', (e) => e.stopPropagation());
+  /*
+   * No `contextmenu` listener, deliberately. A right-click here goes on to the document's
+   * own menu, which recognises an open cell ahead of the grid and builds itself against
+   * the cell's editor: Edit Markdown, Copy ref, the marks and Clear formatting.
+   *
+   * It used to stop here so the platform's cut, copy and paste menu opened instead. That
+   * was the lesser of two wrongs: the alternative at the time was the table's row and
+   * column menu opening over text somebody was typing, because the cell sits inside the
+   * grid. A data cell is a plain text box and the menu still leaves those to the platform.
+   */
 
   const extensions: Extension[] = [
     cellLanguage,
+    inlineOnlyEditor.of(true),
     history(),
     revealField,
     livePreview,
@@ -391,7 +522,25 @@ function markdownCell(spec: CellEditorSpec): CellEditor {
       spec.onMeasure(update.state.doc.toString());
       spec.onInput();
     }),
-    keymap.of([...inlineFormattingKeymap(), ...historyChords(spec)]),
+    /*
+     * Tell the chrome outside the table which editor it should be acting on and showing the
+     * state of. Focus decides the target; a change or a new selection inside the cell is what
+     * makes a button's own drawn state stale.
+     */
+    EditorView.domEventHandlers({
+      focusin: () => {
+        cellActivity?.();
+        return false;
+      },
+      focusout: () => {
+        cellActivity?.();
+        return false;
+      },
+    }),
+    EditorView.updateListener.of((update) => {
+      if (update.docChanged || update.selectionSet) cellActivity?.();
+    }),
+    keymap.of([...revealChord(), ...inlineFormattingKeymap(), ...historyChords(spec)]),
     keymap.of(defaultKeymap),
   ];
 
@@ -410,6 +559,10 @@ function markdownCell(spec: CellEditorSpec): CellEditor {
   // a word, or Cmd+A, which selects that same whole value on purpose.
   view.dispatch({ effects: setDismissed.of({ toolbar: true, popover: true }) });
 
+  // Open, so the chrome outside the table acts on this cell until it is destroyed.
+  focusedCell = { view, host };
+  cellActivity?.();
+
   return {
     host,
     rendered: true,
@@ -418,7 +571,13 @@ function markdownCell(spec: CellEditorSpec): CellEditor {
     },
     contains: (node) => !!node && (host === node || host.contains(node)),
     focus: () => view.focus(),
-    destroy: () => view.destroy(),
+    destroy: () => {
+      // The chrome outside must stop targeting an editor that is going away, or a button
+      // pressed afterwards would run against a destroyed view.
+      if (focusedCell?.view === view) focusedCell = null;
+      view.destroy();
+      cellActivity?.();
+    },
   };
 }
 

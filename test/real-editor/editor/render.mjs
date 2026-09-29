@@ -51,39 +51,77 @@ const styleOf = (S, needle) =>
     const l = [...document.querySelectorAll('.cm-content > .cm-line')].find((x) => x.textContent.includes(needle));
     if (!l) return null;
     const cs = getComputedStyle(l);
-    return { cls: l.className, fontSize: parseFloat(cs.fontSize), fontFamily: cs.fontFamily, color: cs.color, borderLeft: parseFloat(cs.borderLeftWidth), fontWeight: cs.fontWeight };
+    return {
+      cls: l.className,
+      fontSize: parseFloat(cs.fontSize),
+      fontFamily: cs.fontFamily,
+      color: cs.color,
+      borderLeft: parseFloat(cs.borderLeftWidth),
+      fontWeight: cs.fontWeight,
+      // A quote's rule is a repeating gradient rather than a border, one band per level of
+      // nesting, so its width is what says how many levels are drawn. `backgroundSize` resolves
+      // to pixels here, which is why it is worth reading at all.
+      backgroundImage: cs.backgroundImage,
+      backgroundSize: cs.backgroundSize,
+    };
   }, needle);
 
 const hrCount = (S) => S.eval(() => document.querySelectorAll('hr.md-hr').length);
 
 /**
  * Every rendered line's text and drawn height, in document order, for the checks
- * on blank lines. `marked` is the class the stylesheet sizes a short blank line
- * with, so a failure says whether the class or the pixels went wrong.
+ * that a blank line is a line. `cls` is there so a failure can say what was on a
+ * line whose height came out wrong.
  */
 const lineBoxes = (S) =>
   S.eval(() =>
     [...document.querySelectorAll('.cm-content > .cm-line')].map((l) => ({
       text: l.textContent,
-      marked: l.classList.contains('sheaf-blank-line'),
+      cls: l.className,
       height: Math.round(l.getBoundingClientRect().height),
     }))
   );
 
-/** Scroll with the mouse wheel over the editor until `needle` is rendered on screen. */
+/** How far from the top and bottom edges a line has to be before it counts as on screen. */
+const WHEEL_MARGIN = 40;
+
+/**
+ * Scroll with the mouse wheel over the editor until `needle` is rendered on screen.
+ *
+ * **The step has to be smaller than the band it is aiming at, or the target can jump clean over
+ * it.** A line counts as arrived when it sits `WHEEL_MARGIN` inside both edges, so the band is
+ * the window less twice that; a step wider than the band can take the line from below it to
+ * above it in one turn, and then every remaining turn only scrolls further past. What that looks
+ * like is not a scroll that stops in the wrong place, it is 80 turns to the bottom of the
+ * document and a target that was never drawn, which reads as the element not existing.
+ *
+ * It was a flat 700px against a band of about 620 in a driven VS Code window, so whether a given
+ * line was reachable depended on where in the document it happened to fall. A change that made
+ * list items 4px taller moved one line from a step that landed to one that jumped, and the
+ * scenario failed with "no visible element". The step is capped here instead, so the arithmetic
+ * cannot be wrong: at most three fifths of the band per turn means at least two turns inside it.
+ *
+ * An explicit `dy` is still honoured for direction and for a deliberately small step, and only
+ * its magnitude is capped.
+ */
 async function wheelTo(S, needle, { dy = 700, max = 80 } = {}) {
   const f = await S.frame();
   const box = await (await f.frameElement()).boundingBox();
   await S.page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  const band = await S.eval((margin) => window.innerHeight - 2 * margin, WHEEL_MARGIN);
+  const step = Math.sign(dy) * Math.min(Math.abs(dy), Math.max(120, Math.round(band * 0.6)));
   for (let i = 0; i < max; i++) {
-    const seen = await S.eval((needle) => {
-      const l = [...document.querySelectorAll('.cm-content > .cm-line')].find((x) => x.textContent.includes(needle));
-      if (!l) return false;
-      const r = l.getBoundingClientRect();
-      return r.top > 40 && r.bottom < window.innerHeight - 40;
-    }, needle);
+    const seen = await S.eval(
+      ([needle, margin]) => {
+        const l = [...document.querySelectorAll('.cm-content > .cm-line')].find((x) => x.textContent.includes(needle));
+        if (!l) return false;
+        const r = l.getBoundingClientRect();
+        return r.top > margin && r.bottom < window.innerHeight - margin;
+      },
+      [needle, WHEEL_MARGIN]
+    );
     if (seen) return true;
-    await S.page.mouse.wheel(0, dy);
+    await S.page.mouse.wheel(0, step);
     await S.sleep(120);
   }
   return false;
@@ -364,7 +402,13 @@ const allScenarios = [
       await S.caret('two', 1);
       await S.type('Z');
       const d = await S.disk();
-      const ok = /^•\s+one$/.test(r[0]) && /^•\s+two$/.test(r[1]) && /^•\s+star$/.test(r[3]) && /^•\s+plus$/.test(r[5]) && r[7] === '7. seven' && r[10] === '1) paren' && d === DOC.replace('- two', '- tZwo');
+      /*
+       * No space between a marker and its words. A marker takes the source space after it off
+       * the screen with it, and the gap a reader sees is drawn by the box the marker sits in
+       * rather than typed into the line. The number and its delimiter are still the document's
+       * own text, which is what these two rows are for.
+       */
+      const ok = /^•one$/.test(r[0]) && /^•two$/.test(r[1]) && /^•star$/.test(r[3]) && /^•plus$/.test(r[5]) && r[7] === '7.seven' && r[10] === '1)paren' && d === DOC.replace('- two', '- tZwo');
       return { ok, detail: `rendered ${show(r)} disk ${show(d)}` };
     },
   },
@@ -429,8 +473,20 @@ const allScenarios = [
       await S.caret('second', 2);
       await S.type('Z');
       const d = await S.disk();
-      const ok = !r[0].includes('>') && !r[1].includes('>') && r[2] === 'lazy line' && st.borderLeft >= 2 && lazy.borderLeft >= 2 && d === '> quoted **text** here\n> seZcond line\nlazy line\n\nafter\n';
-      return { ok, detail: `rendered ${show(r)} border ${st.borderLeft}/${lazy.borderLeft} disk ${show(d)}` };
+      /*
+       * The rule is a repeating gradient now rather than a `border-left`, one band per level of
+       * nesting, so `borderLeft` reads 0 on a correctly drawn quote and asserting it would fail
+       * for the wrong reason. What is asserted instead is that the gradient is there and that it
+       * is one level wide, 20px, on both the quote's own line and its lazy continuation.
+       *
+       * This says the rule is configured, not that it is painted, and those are different
+       * questions: a gradient that resolves and paints nothing would satisfy this. The painted
+       * pixel is read in `scripts/check-indent.mjs`, which takes a screenshot and compares 2px
+       * into a band against the gap 12px in, on the same line so the control cannot drift.
+       */
+      const ruled = (s) => s && /gradient/.test(s.backgroundImage) && parseFloat(s.backgroundSize) === 20;
+      const ok = !r[0].includes('>') && !r[1].includes('>') && r[2] === 'lazy line' && ruled(st) && ruled(lazy) && d === '> quoted **text** here\n> seZcond line\nlazy line\n\nafter\n';
+      return { ok, detail: `rendered ${show(r)} rule ${st.backgroundSize}/${lazy.backgroundSize} gradient ${/gradient/.test(st.backgroundImage)} disk ${show(d)}` };
     },
   },
   {
@@ -691,17 +747,15 @@ const allScenarios = [
       await S.press('Meta+z');
       await S.sleep(400);
       const undone = await S.disk();
-      // The text below, not the text above: with the divider selected, the bar that floats
-      // over a selection sits on the line above it, and a press there lands on the bar.
-      // Either line answers the question, which is whether a click elsewhere puts the
-      // block selection away.
-      await S.caret('Below', 3);
+      // The text above, which is where the bar that floats over a selection would sit
+      // if a selected divider raised one. It raises none, so the press reaches the text.
+      await S.caret('Above', 3);
       await S.sleep(300);
       const beside = await lineOfRule();
       const marked = picked.selected && apart(before, after) > 12;
       return {
         ok: marked && !typed.includes('Z---') && undone === DOC && beside && !beside.selected,
-        detail: `selected ${picked.selected}, pixel ${showColour(before)} -> ${showColour(after)}; after typing Z ${show(typed)}; after Cmd+Z ${undone === DOC ? 'back as it was' : show(undone)}; after clicking Below the divider selected ${beside?.selected}`,
+        detail: `selected ${picked.selected}, pixel ${showColour(before)} -> ${showColour(after)}; after typing Z ${show(typed)}; after Cmd+Z ${undone === DOC ? 'back as it was' : show(undone)}; after clicking Above the divider selected ${beside?.selected}`,
       };
     },
   },
@@ -985,7 +1039,9 @@ const allScenarios = [
       await fresh(S, 'html-details', '<details>\n<summary>More</summary>\n\nThis is **inside** it.\n\n- a list item\n\n</details>\n');
       await S.caret('inside', 2);
       const r = (await S.rendered()).split('\n');
-      return { ok: r[3] === 'This is inside it.' && /^•\s+a list item$/.test(r[5]), detail: show(r) };
+      // No space after the bullet: the marker takes the source space with it and the box draws
+      // the gap. See render.lists-tasks.e05.
+      return { ok: r[3] === 'This is inside it.' && /^•a list item$/.test(r[5]), detail: show(r) };
     },
   },
 
@@ -1240,14 +1296,38 @@ const allScenarios = [
   {
     id: 'render.reveal-on-line.e02',
     feature: 'render.reveal-on-line',
-    name: 'With the setting on, clicking the first line of a two-line quote shows the markers of the whole quote',
+    /*
+     * This used to require the `>` on both lines, and a quote is the one marker in
+     * Sheaf deliberately kept hidden on a revealed line.
+     *
+     * The `>` used to show, dim, and the reason recorded for it was "so the quote
+     * rule persists", which was true while the rule was a `border-left` on a line
+     * that had a `>` on it. The rule is a repeating gradient on the line itself now,
+     * one band per level, and survives whether the marker is drawn or not: the reason
+     * expired and the exception outlived it. What it cost was a quote's words moving
+     * 14px right as the caret arrived and back as it left, because the drawn `> ` sat
+     * in front of words the computed indent had already made room for.
+     *
+     * So what this asserts is the pair: the line does reveal, which its own `**`
+     * proves, and the `>` is not what it reveals. Without the first half it would
+     * pass on a change that stopped revealing anything at all, which is the whole of
+     * what a reveal scenario is for.
+     */
+    name: 'With the setting on, clicking one line of a two-line quote shows both lines\' markers, and neither line\'s `>`',
     run: async (S) => {
       await setSettings(S, { 'sheaf.revealSyntaxOnLine': true });
       try {
         await fresh(S, 'rol-quote', '> first **line** here\n> second **line** here\n\nafter\n');
         await S.caret('first', 2);
         const r = (await S.rendered()).split('\n');
-        return { ok: r[0].startsWith('>') && r[1].startsWith('>'), detail: show(r) };
+        const revealed = r[0].includes('**line**') && r[1].includes('**line**');
+        const noMarker = !r[0].includes('>') && !r[1].includes('>');
+        // The control that the setting is doing anything at all: the line below the
+        // quote is not part of it and is rendered, so `after` carries no markers.
+        return {
+          ok: revealed && noMarker && r[3] === 'after',
+          detail: `${show(r)}; revealed ${revealed}, quote marker hidden ${noMarker}`,
+        };
       } finally {
         await setSettings(S, { 'sheaf.revealSyntaxOnLine': false });
       }
@@ -1393,6 +1473,21 @@ const allScenarios = [
     run: async (S) => {
       const path = await S.open('stress/deep-nesting.md');
       const r = (await S.rendered()).split('\n').find((l) => l.includes('Level 10:'));
+      /*
+       * Scrolled to first, which this did not do and which is why it threw rather than
+       * failed: "has nothing painted at its point". `S.caret` clicks a coordinate, and
+       * level 10 is on line 16 of the file but 883px down the page, because the nine
+       * items above it are long enough at their indents to wrap several times each. In
+       * a window shorter than that it has a perfectly good rectangle with nothing
+       * painted in it, and the click lands on the page instead.
+       *
+       * That reads as the line being unreachable, which is the thing this scenario is
+       * for, so it has to be ruled out before the question can be asked at all. The
+       * same trap is written up in `scripts/check-indent.mjs`, whose own ten-level case
+       * scrolls for the same reason.
+       */
+      const seen = await wheelTo(S, 'Level 10:');
+      if (!seen) return { ok: false, detail: 'the tenth level never came on screen to be clicked' };
       await S.caret('Level 10', 3);
       await S.type('Z');
       const d = await S.disk(path);
@@ -1402,107 +1497,121 @@ const allScenarios = [
 
   /* ---- render.blank-lines ----
    *
-   * A blank line that only separates two blocks draws as a gap rather than as a
-   * full line of body text. Only a real window can settle these: jsdom has no
-   * layout, so it can say which lines carry the class but not how tall any of
-   * them is, where a click lands, or what ArrowDown does.
+   * A blank line is a line, at the height of a line of text, wherever it sits and
+   * wherever the caret is. Only a real window can settle these: jsdom has no
+   * layout, so it can read a class but not how tall anything is, where a click
+   * lands, or what ArrowDown does.
+   *
+   * These read the opposite way round from the way they used to. A blank line
+   * separating two blocks drew a third of a line tall, grew when the caret reached
+   * it and shrank when it left, and these five scenarios asserted every part of
+   * that. What it cost was that the document moved while a person worked in it, so
+   * the shrinking is gone and what is checked now is that nothing moves.
    */
   {
     id: 'render.blank-lines.e01',
     feature: 'render.blank-lines',
-    name: 'The blank line between two paragraphs draws as a gap, a third the height of a line of text',
+    name: 'The blank line between two paragraphs is exactly as tall as a line of text',
     run: async (S) => {
       const DOC = 'First paragraph.\n\nSecond paragraph.\n';
       await fresh(S, 'blank-gap', DOC);
       await S.caret('First', 2);
       const b = await lineBoxes(S);
-      const gap = b[1];
-      const text = b[0];
-      const ok = !!gap && gap.text === '' && gap.marked && gap.height <= 12 && text.height >= 20 && gap.height < text.height / 2;
-      return { ok, detail: `blank line ${gap?.height}px (marked ${gap?.marked}), paragraph ${text?.height}px` };
+      const [text, gap, below] = b;
+      const ok =
+        !!gap &&
+        gap.text === '' &&
+        // Identical, not merely similar: the same line height, to the pixel.
+        gap.height === text.height &&
+        gap.height === below.height &&
+        // The control. A document of three 0px lines would satisfy equality alone.
+        text.height >= 20;
+      return { ok, detail: `paragraph ${text?.height}px, blank line ${gap?.height}px, paragraph ${below?.height}px` };
     },
   },
   {
     id: 'render.blank-lines.e02',
     feature: 'render.blank-lines',
-    name: 'Clicking the short blank line puts the caret on that line and gives it back its full height',
+    name: 'Clicking the blank line puts the caret on it and moves nothing on the screen',
     run: async (S) => {
       const DOC = 'First paragraph.\n\nSecond paragraph.\n';
       await fresh(S, 'blank-click', DOC);
       await S.caret('First', 2);
-      const before = (await lineBoxes(S))[1];
+      const before = await lineBoxes(S);
       await S.click({ sel: '.cm-content > .cm-line', nth: 1, dx: 8 });
       const st = await S.state();
-      const after = (await lineBoxes(S))[1];
+      const after = await lineBoxes(S);
       // Typed into the line the click chose, so the file says where the caret landed.
       await S.type('X');
       const d = await S.disk();
-      const ok = before.height <= 12 && st.line === 2 && !after.marked && after.height >= 20 && d === 'First paragraph.\nX\nSecond paragraph.\n';
-      return { ok, detail: `${before.height}px -> caret on line ${st.line}, ${after.height}px (marked ${after.marked}); file ${show(d)}` };
+      const heights = (b) => b.map((l) => l.height).join(',');
+      const ok =
+        st.line === 2 &&
+        // The caret arriving changes no height anywhere, which is the whole point.
+        heights(before) === heights(after) &&
+        d === 'First paragraph.\nX\nSecond paragraph.\n';
+      return { ok, detail: `caret on line ${st.line}; heights ${heights(before)} -> ${heights(after)}; file ${show(d)}` };
     },
   },
   {
     id: 'render.blank-lines.e03',
     feature: 'render.blank-lines',
-    name: 'ArrowDown and ArrowUp land on the short blank line rather than stepping over it',
+    name: 'Arrowing down through a blank line lands on it and shifts nothing below it',
     run: async (S) => {
       const DOC = 'First paragraph.\n\nSecond paragraph.\n';
       await fresh(S, 'blank-arrows', DOC);
       await S.caret('First', 2);
+      const tops = () => S.eval(() => [...document.querySelectorAll('.cm-content > .cm-line')].map((l) => Math.round(l.getBoundingClientRect().top)));
+      const start = await tops();
       await S.press('ArrowDown');
       const onGap = await S.state();
-      const grown = (await lineBoxes(S))[1];
+      const onIt = await tops();
       await S.press('ArrowDown');
       const below = await S.state();
       await S.press('ArrowUp');
       const back = await S.state();
+      const end = await tops();
       const d = await S.disk();
-      const ok = onGap.line === 2 && grown.height >= 20 && below.line === 3 && back.line === 2 && d === DOC;
+      const ok =
+        onGap.line === 2 &&
+        below.line === 3 &&
+        back.line === 2 &&
+        // Every line's top edge is where it was, at every step. This is what the
+        // shrinking could not do: the caret arriving used to push the second
+        // paragraph down by two thirds of a line.
+        onIt.join() === start.join() &&
+        end.join() === start.join() &&
+        start.length === 4 &&
+        d === DOC;
       return {
         ok,
-        detail: `down to line ${onGap.line} (${grown.height}px), down to ${below.line}, up to ${back.line}; file unchanged ${d === DOC}`,
+        detail: `down to line ${onGap.line}, down to ${below.line}, up to ${back.line}; tops ${start.join()} -> ${onIt.join()} -> ${end.join()}; file unchanged ${d === DOC}`,
       };
     },
   },
   {
     id: 'render.blank-lines.e04',
     feature: 'render.blank-lines',
-    name: 'A heading and the table under it sit two lines apart, not three, and the file is untouched',
+    name: 'Two blank lines between two paragraphs are twice the gap of one, and the file is untouched',
     run: async (S) => {
-      const path = await S.open('wren-4/log/incident-2244-11-17.md');
-      const before = readFileSync(path, 'utf8');
-      await S.caret('What happened', 2);
-      const gap = await S.eval(() => {
-        const heading = [...document.querySelectorAll('.cm-content > .cm-line')].find((l) => l.textContent.trim() === 'Timeline');
-        if (!heading) return { error: 'no Timeline heading on screen' };
-        const blank = heading.nextElementSibling;
-        // The first table drawn after the heading, however deep in the element that carries it.
-        let table = null;
-        for (let el = heading.nextElementSibling; el && !table; el = el.nextElementSibling) {
-          table = el.matches?.('table') ? el : el.querySelector?.('table') ?? null;
-        }
-        if (!table || !blank) return { error: 'no table under the Timeline heading' };
-        const h = heading.getBoundingClientRect();
-        const t = table.getBoundingClientRect();
-        return {
-          between: Math.round(t.top - h.bottom),
-          blank: Math.round(blank.getBoundingClientRect().height),
-          marked: blank.classList.contains('sheaf-blank-line'),
-        };
-      });
-      const after = readFileSync(path, 'utf8');
-      // 77px before the blank line was shortened, 45px after. The rest is the table's
-      // own hover bar, which reserves 29px above every table whether or not it is
-      // showing; shrinking that is its own piece of work, with a real question in it
-      // about what the bar is allowed to cover.
-      const ok = !gap.error && gap.marked && gap.blank <= 10 && gap.between <= 46 && after === before;
-      return { ok, detail: gap.error ?? `heading to table ${gap.between}px, blank line ${gap.blank}px (marked ${gap.marked}); file unchanged ${after === before}` };
+      // The reading the shrinking could not express. Each blank line drew a third of
+      // a line, and the one the caret was nearest drew full, so two of them looked
+      // like about one and a half rather than like two.
+      const DOC = 'One.\n\nTwo.\n\n\nThree.\n';
+      await fresh(S, 'blank-double', DOC);
+      await S.caret('One', 2);
+      const b = await lineBoxes(S);
+      const line = b[0].height;
+      const single = b[1].height;
+      const double = b[3].height + b[4].height;
+      const ok = single === line && double === 2 * line && line >= 20 && (await S.disk()) === DOC;
+      return { ok, detail: `line ${line}px, one blank ${single}px, two blanks ${double}px` };
     },
   },
   {
     id: 'render.blank-lines.e05',
     feature: 'render.blank-lines',
-    name: 'The block handle still reaches the paragraph under a short blank line',
+    name: 'The block handle still reaches the paragraph under a blank line',
     run: async (S) => {
       const DOC = 'First paragraph.\n\nSecond paragraph.\n';
       await fresh(S, 'blank-grip', DOC);
@@ -1522,7 +1631,20 @@ const allScenarios = [
   {
     id: 'render.code-fence.e01',
     feature: 'render.code-fence',
-    name: 'A code block draws no backticks, its language sits at the top right, and Edit Markdown shows the fence as written',
+    /*
+     * The language label this used to assert was removed, deliberately: it was
+     * `float: right`, and the block handle takes its position from the first
+     * coordinate in the block, which is on the fence line, so the label carried the
+     * block's + and grip 172px past the right edge of the text column while every
+     * other block's sat in the left margin. Removing the label was chosen over
+     * moving it. What it costs is that a reader cannot see a block's language at a
+     * glance; it is still in the file, still colours the code, and Edit Markdown
+     * shows it, which is also how it is changed.
+     *
+     * So the chip is read and asserted absent rather than simply not looked for. An
+     * assertion deleted says nothing if the label ever comes back on a `float`.
+     */
+    name: 'A code block draws no backticks and no language label, and Edit Markdown shows the fence as written',
     run: async (S) => {
       const DOC = 'Before.\n\n```js\nconst x = 1;\nconst y = 2;\n```\n\nAfter.\n';
       await S.fresh('code-fence', DOC);
@@ -1537,12 +1659,31 @@ const allScenarios = [
             text: rows.map((l) => l.textContent),
             fences: fences.length,
             heights: fences.map((l) => Math.round(l.getBoundingClientRect().height)),
-            // The chip at the right edge of the block rather than in the middle of it.
+            // Absent, and its text if it is not, so a failure says what came back.
             chip: chip ? chip.textContent : null,
-            chipRight: chip && code ? Math.round(code.getBoundingClientRect().right - chip.getBoundingClientRect().right) : null,
           };
         });
       const drawn = await shape();
+      /*
+       * The handle, which is the other half of the label's removal and was asserted
+       * nowhere in a real window.
+       *
+       * `blockHandle.ts` takes the handle's position from the first coordinate in the
+       * block, which is on the fence line. The label was `float: right`, so that
+       * coordinate came back at the right-hand end and carried the block's + and grip
+       * 172px past the right edge of the text column, where every other block's sits in
+       * the left margin. A label returning in any form, under any class, moves the
+       * handle again, so this is what says the removal arrived whole.
+       */
+      await S.hover({ text: 'const x = 1;', offset: 2 });
+      const handle = await S.eval(() => {
+        const h = document.querySelector('.sheaf-block-handle');
+        const code = [...document.querySelectorAll('.cm-content > .cm-line')].find((l) => l.textContent.includes('const x = 1;'));
+        if (!h || h.hidden || !code) return { shown: false };
+        const r = h.getBoundingClientRect();
+        if (!(r.width > 4 && r.height > 4)) return { shown: false };
+        return { shown: true, fromText: Math.round(r.left - code.getBoundingClientRect().left) };
+      });
       // Edit Markdown is how any block shows what it is written as, and a fence is a
       // marker like any other: the caret alone leaves it hidden, as it does everywhere.
       await S.caret('const x = 1;', 2);
@@ -1562,22 +1703,27 @@ const allScenarios = [
           !drawn.text.some((t) => t.includes('`')) &&
           drawn.fences === 2 &&
           drawn.heights.every((h) => h > 0 && h <= 14) &&
-          drawn.chip === 'js' &&
-          drawn.chipRight !== null &&
-          drawn.chipRight < 40 &&
+          drawn.chip === null &&
+          // The handle is drawn at all, and to the left of the words rather than at
+          // the far end of the column. Both halves: a handle that never appeared would
+          // satisfy a position assertion on its own.
+          handle.shown &&
+          handle.fromText < 0 &&
           // Under the caret it is a full line of raw text again.
           !!onFence &&
           (onFence.text ?? '').trim() === '```js' &&
           (onFence.height ?? 0) > 14 &&
           d === DOC,
-        detail: `${JSON.stringify(drawn)}; under the caret ${JSON.stringify(onFence)}${d === DOC ? '' : '; the file changed'}`,
+        detail:
+          `${JSON.stringify(drawn)}; handle ${JSON.stringify(handle)}; under the caret ${JSON.stringify(onFence)}` +
+          `${d === DOC ? '' : '; the file changed'}`,
       };
     },
   },
   {
     id: 'render.spacing.e01',
     feature: 'render.spacing',
-    name: 'A heading carries its own space above it, so a section is separated by more than the blank line',
+    name: 'A heading carries the same space above it at every level, so a section is separated by more than the blank line',
     run: async (S) => {
       const DOC = 'Intro paragraph here.\n\n## Pulse format\n\nThe body under it.\n\n# A title\n\nMore body.\n';
       await S.fresh('heading-rhythm', DOC);
@@ -1607,7 +1753,14 @@ const allScenarios = [
           // stylesheet aimed at one class where CodeMirror's own theme uses two.
           m.h2.top > 8 &&
           m.h1.top > 8 &&
-          // Asymmetric: the space belongs above the heading, not below it.
+          // The same at both levels, which is the fix. It used to be an em of the
+          // heading's own size, so an h1 got 32px and an h6 got 21px: air that
+          // shrank as the heading did, when the smaller heading is the one that
+          // needs finding. All six levels are compared in scripts/check-indent.mjs;
+          // these two are the ones this document holds.
+          m.h2.top === m.h1.top &&
+          // Asymmetric: the space belongs above the heading, not below it. The
+          // blank line under a heading is already a full line of separation.
           m.h2.bottom < m.h2.top / 3 &&
           m.h1.bottom < m.h1.top / 3 &&
           // Enough to separate a section, not so much that the document is airy.
@@ -1618,6 +1771,43 @@ const allScenarios = [
           d === DOC,
         detail: `${JSON.stringify(m)}${d === DOC ? '' : '; the file changed'}`,
       };
+    },
+  },
+  // ---------------------------------------------------------------- emoji shortcodes
+  {
+    id: 'render.emoji.e01',
+    feature: 'render.emoji',
+    name: 'Shortcodes draw as painted characters, a name nobody knows stays as typed, and clicking after one types in the right place',
+    run: async (S) => {
+      const DOC = 'Build passed :white_check_mark: and :+1: from Ops.\n\nDocked 10:30:45, :not_a_shortcode: stays.\n';
+      await fresh(S, 'emoji-shortcodes', DOC);
+      await S.sleep(800);
+      // jsdom reports every box as zero, so this is the half only a real window can
+      // answer: that the character was painted rather than replaced by nothing.
+      const boxes = await S.eval(() =>
+        [...document.querySelectorAll('.cm-content .tok-emoji')].map((e) => ({
+          char: e.textContent,
+          w: Math.round(e.getBoundingClientRect().width),
+          h: Math.round(e.getBoundingClientRect().height),
+        }))
+      );
+      const first = await line(S, 1);
+      const second = await line(S, 3);
+      // Click in front of the tick, press Right once, and type. The replacement is an
+      // atomic range, so one Right has to step over the whole `:white_check_mark:`
+      // rather than into it, and the letter lands after its closing colon.
+      await S.caret('Build passed ', 13);
+      await S.page.keyboard.press('ArrowRight');
+      await S.page.keyboard.type('X');
+      await S.sleep(1200);
+      const disk = await S.disk();
+      const ok =
+        first === 'Build passed ✅ and 👍 from Ops.' &&
+        second === 'Docked 10:30:45, :not_a_shortcode: stays.' &&
+        boxes.length === 2 &&
+        boxes.every((b) => b.w >= 6 && b.h >= 6) &&
+        disk === DOC.replace(':white_check_mark: and', ':white_check_mark:X and');
+      return { ok, detail: `line1 ${show(first)} line3 ${show(second)} boxes ${JSON.stringify(boxes)} disk ${show(disk)}` };
     },
   },
   {

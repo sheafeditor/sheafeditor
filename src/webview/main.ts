@@ -7,6 +7,7 @@
  * source and Cmd/Ctrl-click link opening.
  */
 
+import type { FromWebview } from '../protocol';
 import { EditorState, Transaction, Compartment } from '@codemirror/state';
 import { EditorView, lineNumbers } from '@codemirror/view';
 import { isolateHistory, undo } from '@codemirror/commands';
@@ -14,30 +15,38 @@ import { setDocumentSourceMode, setLivePreviewConfig } from './livePreview';
 import { revealOnDoubleClick } from './revealBlock';
 import { paragraphTripleClick } from './paragraphSelect';
 import { editorExtensions } from './editorExtensions';
-import { mountToolbar, refreshToolbar, reflectTableOfContents } from './toolbar';
+import { mountToolbar, nextTocState, refreshToolbar, reflectLineNumbers, reflectTableOfContents, tocButtonState } from './toolbar';
+import { focusedCellEditor, onCellEditorActivity } from './cellEditor';
 import { createTableOfContents } from './tableOfContents';
 import { createShortcutsOverlay } from './shortcuts';
 import { ContextMenuDeps, mountContextMenu } from './contextmenu';
-import { setClipboardHost, handleClipboardText } from './hostClipboard';
+import { setClipboardHost } from './hostClipboard';
 import { setWorkspaceFilesHost, handleWorkspaceFiles, setLinkCompleteDocument } from './linkComplete';
 import { setBlockRefHost } from './blocks';
 import { CommentsMode, handleCommentFolds, setCommentFoldsHost, setCommentsMode } from './comments';
+import { FrontMatterMode, handleFrontMatterState, setFrontMatterHost, setFrontMatterMode } from './frontMatterView';
 import { setResourceBaseUri, setupImageIngestion, handleImageSaved } from './images';
-import { headingPosition, linkAddressAt, openLink, setFragmentHost, setLinkHost } from './linkTarget';
+import { setDocTitleHost } from './linkPaste';
+import { headingPosition, setFragmentHost, setLinkHost } from './linkTarget';
+import { HeldLink, contextMenuOnLink, pressOnLinkIn, releaseOnLinkIn } from './linkGesture';
 import { contentWidth, DEFAULT_CONTENT_WIDTH } from './theme';
 import { coveredEnd } from './selectionExtent';
-import { buildRef, tableRowRef } from './refs';
-import { tableRowRefAt, setTableWidthsHost, handleTableWidths, setTableBoardsHost, handleTableBoards, setMoveToFile } from './tables';
-import { viewBlocks, setDataFileHost, handleDataFile, handleDataFileCreated, moveBlockToFile } from './viewBlock';
+import { buildRef, setCellRefSource, tableRowRef } from './refs';
+import { tableRowRefAt, setTableWidthsHost, handleTableWidths, setTableBoardsHost, handleTableBoards, setMoveToFile, setCreateView } from './tables';
+import { remeasureAllTables } from './columnLayout';
+import { viewBlocks, setDataFileHost, handleDataFile, handleDataFileCreated, moveBlockToFile, createViewOf } from './viewBlock';
 import { minimalEdit, toWebviewText } from '../textSync';
 import { outsideWrite } from './changeMarks';
 
 interface EditorConfig {
   contentWidth: string;
+  /** Whether the line-number gutter is drawn. A setting, so it outlives a document. */
+  lineNumbers?: boolean;
   revealSyntaxOnLine: boolean;
   doubleClickToEditSource: boolean;
-  tableOfContents: boolean;
+  tableOfContents: 'shown' | 'collapsed' | 'hidden' | boolean;
   comments: CommentsMode;
+  frontMatter: FrontMatterMode;
 }
 
 type ToWebview =
@@ -76,9 +85,10 @@ type ToWebview =
   | { type: 'undoOutsideChange' }
   | { type: 'configChanged'; config: EditorConfig }
   | { type: 'imageSaved'; id: string; path?: string; error?: string }
-  | { type: 'clipboardText'; id: string; text: string }
   /** The answer to `workspaceFilesRead`: the workspace's files, relative to its folder. */
   | { type: 'workspaceFiles'; id: string; files: string[] }
+  /** The answer to `docTitleRead`: what a pasted path names, or nothing when it names nothing to link. */
+  | { type: 'docTitle'; id: string; address?: string; title?: string }
   /**
    * The answer to `tableWidthsRead`: the column widths set by hand in this document's
    * tables, by table key, each by column index. A host that keeps none never answers.
@@ -94,6 +104,8 @@ type ToWebview =
    * comment key. A host that keeps none never answers.
    */
   | { type: 'commentFolds'; id: string; folds: Record<string, true> }
+  | { type: 'frontMatterState'; id: string; state: FrontMatterMode | null }
+  | { type: 'outlineState'; id: string; state: 'shown' | 'collapsed' | 'hidden' | null }
   /**
    * A data file a view reads: the answer to `dataFileRead` (carrying its `id`), or
    * sent again when the file changes. `text` is the file, or `error` says why not.
@@ -106,7 +118,7 @@ type ToWebview =
   | { type: 'toggleSourceMode' };
 
 interface VsCodeApi {
-  postMessage(message: unknown): void;
+  postMessage(message: FromWebview): void;
   getState(): unknown;
   setState(state: unknown): void;
 }
@@ -117,47 +129,149 @@ const rootEl = document.getElementById('editor') as HTMLElement;
 const toolbarEl = document.getElementById('toolbar') as HTMLElement;
 const shortcutsOverlay = createShortcutsOverlay(document.body);
 
-// Line-number gutter, toggled on/off at runtime from the toolbar via a
-// reconfigurable compartment (empty extension = no gutter).
-let lineNumbersOn = false;
+/*
+ * Line-number gutter, drawn through a reconfigurable compartment so it can go on and off
+ * without rebuilding the editor (an empty extension is no gutter).
+ *
+ * Whether it is on belongs to `config`, which is the setting, and not to a variable here.
+ * It used to be one, and the cost was that turning them on lasted until the document closed:
+ * every document opened without them and anybody who works with them on turned them back on
+ * every time. The toolbar asks the host to write the setting, the host writes it globally,
+ * and every open editor hears about it through the configuration-change listener it already
+ * has, which is also how a second editor stays in step with the first.
+ */
 const lineNumberCompartment = new Compartment();
+// `config` arrives with `init`, and the editor is built from the same message, so this is
+// read once before it is set. Off until the setting says otherwise is the right default and
+// the same one the setting declares.
+const lineNumbersOn = (): boolean => config?.lineNumbers === true;
 
-/** Flip the line-number gutter and return its new visibility (for the toolbar). */
+/**
+ * Says on the editor's root whether line numbers are on, so a table's row numbers can
+ * follow the document's.
+ *
+ * A class rather than a message into `tables.ts`, because what changes is only what is
+ * drawn: the row-number column is also how a row is selected and how rows are dragged,
+ * so the cell stays exactly where it is and the stylesheet decides whether it shows a
+ * number. `columnLayout.ts` measures a stand-in carrying that same class, inside the
+ * table it is laying out, so the width it reserves narrows with the real thing and
+ * nothing has to be told twice.
+ */
+function reflectLineNumbersOnRoot(on: boolean): void {
+  if (!rootEl || rootEl.classList.contains('line-numbers') === on) return;
+  rootEl.classList.toggle('line-numbers', on);
+  // The column widths are cached against what each table holds, and none of that has
+  // changed, so they have to be told the gutter beside them has.
+  remeasureAllTables();
+}
+
+/** Ask for the line-number gutter to flip, and say what it will become (for the toolbar). */
 function toggleLineNumbers(): boolean {
-  lineNumbersOn = !lineNumbersOn;
-  view?.dispatch({
-    effects: lineNumberCompartment.reconfigure(lineNumbersOn ? lineNumbers() : []),
-  });
+  const next = !lineNumbersOn();
+  // Drawn here rather than waiting for the setting to come back, so the button and the
+  // gutter answer the press together. `applyConfig` reconfigures to the same thing when the
+  // change arrives, and to the setting's value if the write did not land.
+  view?.dispatch({ effects: lineNumberCompartment.reconfigure(next ? lineNumbers() : []) });
+  reflectLineNumbersOnRoot(next);
   view?.focus();
-  return lineNumbersOn;
+  vscode.postMessage({ type: 'setLineNumbers', on: next });
+  return next;
 }
 
 // The table of contents: a rail of the document's headings, in the page margin beside
 // the text. It goes in ahead of the editor so that Tab reaches it straight from the
 // toolbar, and it is empty and hidden until `sheaf.tableOfContents` says otherwise.
-const toc = createTableOfContents(rootEl, () => view);
+/**
+ * This document's own heading-list state, when it has one, which wins over the setting.
+ * Kept by the host under the document's own key, as the front matter's is.
+ */
+let ownOutline: 'shown' | 'collapsed' | 'hidden' | null = null;
+let outlineSeq = 0;
+
+const toc = createTableOfContents(rootEl, () => view, (state) => {
+  // The header was pressed: this document, from now on. The toolbar button has to follow,
+  // or it would go on saying the list is showing and its next press would be wrong.
+  ownOutline = state;
+  reflectTableOfContents(state);
+  vscode.postMessage({ type: 'outlineStateWrite', state });
+});
+
+/**
+ * Set the rail's state for this document, or hand the document back to the setting with
+ * `null`. The header's own press goes through the callback above; this is for the menu,
+ * which can also reset, and which has to draw the result itself because no configuration
+ * change is coming to do it.
+ */
+function setOutlineForDocument(state: 'shown' | 'collapsed' | 'hidden' | null): void {
+  ownOutline = state;
+  vscode.postMessage({ type: 'outlineStateWrite', state });
+  const drawn = state ?? outlineState(config.tableOfContents);
+  toc.setState(drawn);
+  reflectTableOfContents(drawn);
+}
 
 /**
  * The toolbar button was pressed.
  *
- * Turning the panel on or off is a change to a setting rather than to this editor, so
- * the host makes it, in user settings, and every open Sheaf editor hears about it
- * through the configuration-change path it already has. The one press that is not a
- * setting change is the one that brings a panel back after it was closed on a narrow
- * pane, where the setting was on the whole time.
+ * Which of the three states the panel is in is a setting rather than a property of this
+ * editor, so the host makes the change, in user settings, and every open Sheaf editor
+ * hears about it through the configuration-change path it already has. The one press that
+ * is not a setting change is the one that brings a panel back after it was closed on a
+ * narrow pane, where the setting was on the whole time.
  */
 function toggleTableOfContents(): void {
   if (toc.reopened()) return;
-  vscode.postMessage({ type: 'setTableOfContents', on: !toc.enabled() });
+  // Three states, so the button cycles: showing, folded, gone, showing. It writes the
+  // setting, and it drops this document's own state at the same time. A document that
+  // kept its own would go on ignoring the setting, and the press would look like it did
+  // nothing at all.
+  const next = nextTocState(tocButtonState());
+  if (ownOutline !== null) {
+    ownOutline = null;
+    vscode.postMessage({ type: 'outlineStateWrite', state: null });
+  }
+  // Drawn and folded straight away, rather than waiting for the setting to come back: a
+  // control that does nothing for a round trip reads as a control that did not work.
+  toc.setState(next);
+  reflectTableOfContents(next);
+  vscode.postMessage({ type: 'setTableOfContents', on: next });
 }
+
+/*
+ * The editor the top toolbar acts on and reports the state of.
+ *
+ * Usually the document's own. While a table cell is open for editing it is that cell's editor,
+ * which is a separate `EditorView` with its own state and history: without this the toolbar ran
+ * against the outer document and formatted whatever had last been selected there, so a button
+ * pressed while looking at a cell changed a line somewhere else, left the cell's own word
+ * alone, and said nothing. Undo and Redo were the worst of it, because they read the outer
+ * history and would have stepped the document's while the person was inside a cell.
+ *
+ * `undefined` while a *data* cell has focus. A CSV or TSV field is a plain text box holding
+ * data rather than Markdown, so there is no editor to act on and nothing Bold could mean; the
+ * toolbar draws itself unavailable, which is the ticket's rule that a control unable to reach
+ * the current selection says so rather than acting somewhere else.
+ */
+const toolbarTarget = (): EditorView | undefined => {
+  const cell = focusedCellEditor();
+  if (!cell) return view;
+  return cell.view ?? undefined;
+};
+
+/*
+ * A cell gaining or losing focus, and typing or selecting inside one, all change what the
+ * buttons should be showing, and none of them is an update to the outer editor, so none of them
+ * reaches the listener below.
+ */
+onCellEditorActivity(() => refreshToolbar(toolbarTarget()));
 
 mountToolbar(
   toolbarEl,
-  () => view,
+  toolbarTarget,
   shortcutsOverlay.toggle,
   () => vscode.postMessage({ type: 'openAsText' }),
   toggleLineNumbers,
-  lineNumbersOn,
+  lineNumbersOn(),
   toggleTableOfContents,
   false
 );
@@ -168,6 +282,42 @@ let fileName = '';
 setClipboardHost((message) => vscode.postMessage(message));
 setWorkspaceFilesHost((message) => vscode.postMessage(message));
 setLinkHost((message) => vscode.postMessage(message));
+
+/*
+ * What a pasted path names, asked of the host. Only it can say: the page cannot read another
+ * file, and cannot work out what a relative path is relative to.
+ *
+ * The timeout is what keeps a paste from being swallowed by a host that answers nothing. A
+ * host with no such message ignores it, and an unanswered request resolves to null, so the
+ * paste lands as text a quarter of a second later rather than never.
+ */
+const DOC_TITLE_TIMEOUT_MS = 250;
+const docTitleAsked = new Map<string, (answer: { address: string; title: string } | null) => void>();
+let docTitleSeq = 0;
+
+/** The host's answer to `docTitleRead`, by the id it was asked with. */
+function handleDocTitle(id: string, address?: string, title?: string): void {
+  const done = docTitleAsked.get(id);
+  if (!done) return;
+  docTitleAsked.delete(id);
+  done(address && title !== undefined ? { address, title } : null);
+}
+
+setDocTitleHost(
+  (path) =>
+    new Promise((resolve) => {
+      const id = `doctitle-${++docTitleSeq}`;
+      const timer = setTimeout(() => {
+        docTitleAsked.delete(id);
+        resolve(null);
+      }, DOC_TITLE_TIMEOUT_MS);
+      docTitleAsked.set(id, (answer) => {
+        clearTimeout(timer);
+        resolve(answer);
+      });
+      vscode.postMessage({ type: 'docTitleRead', id, path });
+    })
+);
 
 /**
  * Scroll to the heading a fragment names and leave the caret there, so the place
@@ -199,6 +349,19 @@ const contextMenuDeps: ContextMenuDeps = {
   // The terminal lives in the extension host, so the menu asks for the command rather than doing
   // it. The host already knows the selection: the same message the shortcut reads.
   sendRefToTerminal: () => vscode.postMessage({ type: 'runCommand', command: 'sheaf.sendRefToTerminal' }),
+  // The rail is this page's, not the document's, so the menu is told what it is doing.
+  outline: {
+    state: () => toc.state(),
+    isOwn: () => ownOutline !== null,
+    setForDocument: setOutlineForDocument,
+    everywhere: () => {
+      // The setting, and this document handed back to it, so the document the person set
+      // it from is not the one document that goes on ignoring it.
+      vscode.postMessage({ type: 'setTableOfContents', on: toc.state() });
+      setOutlineForDocument(null);
+    },
+    reset: () => setOutlineForDocument(null),
+  },
 };
 mountContextMenu(rootEl, contextMenuDeps);
 
@@ -209,6 +372,14 @@ setBlockRefHost({
   // that window are the ones with a terminal to send to. So the menu's own test for
   // the terminal answers this too, rather than a second flag that could disagree.
   hasEditorKeys: () => contextMenuDeps.sendRefToTerminal !== undefined,
+});
+
+// What Copy ref names inside an open table cell. The grid answers, because a cell's
+// own editor counts from line 1 of that cell; this is the builder the right-click
+// menu and the chord already use, so every surface names one cell one way.
+setCellRefSource((el) => {
+  const row = tableRowRefAt(el);
+  return row ? tableRowRef(fileName, row) : null;
 });
 
 /* ---- A data file shown as a grid ------------------------------------------ */
@@ -362,13 +533,26 @@ for (const event of ['focusin', 'keyup', 'pointerup']) {
 // auto-save on this, so the close finds nothing unsaved to ask about.
 window.addEventListener('blur', () => vscode.postMessage({ type: 'blur' }));
 
-let config: EditorConfig = {
+/**
+ * What each setting is when no host says otherwise.
+ *
+ * Every host sends a `config` at `init`, and not every host sends all of it: the
+ * website's demo sends three of these. So a host's config is merged over this rather
+ * than replacing it, which is what makes these the settings' defaults rather than a
+ * value nothing ever reads. Without the merge each default would live a second time
+ * inside whichever `applyConfig` branch reads the setting, and the two copies would be
+ * free to disagree.
+ */
+const DEFAULT_CONFIG: EditorConfig = {
   contentWidth: DEFAULT_CONTENT_WIDTH,
   revealSyntaxOnLine: false,
   doubleClickToEditSource: false,
-  tableOfContents: false,
+  tableOfContents: 'hidden',
   comments: 'show',
+  frontMatter: 'collapsed',
 };
+
+let config: EditorConfig = { ...DEFAULT_CONFIG };
 
 // Guards against echoing host-originated changes back to the host.
 let applyingRemote = false;
@@ -391,15 +575,41 @@ const editableCompartment = new Compartment();
 /** Marks transactions that originated from the host, so we don't echo them back. */
 const remoteAnnotation = Transaction.remote;
 
+/**
+ * The setting's value as one of the three states. `true` and `false` are what it held
+ * when it was a boolean and still mean shown and hidden, so nobody who set one has to
+ * know the other two arrived.
+ */
+function outlineState(value: unknown): 'shown' | 'collapsed' | 'hidden' {
+  if (value === true || value === 'shown') return 'shown';
+  if (value === 'collapsed') return 'collapsed';
+  return 'hidden';
+}
+
 function applyConfig(view: EditorView | undefined): void {
   rootEl.style.setProperty('--md-content-width', contentWidth(config.contentWidth));
+  // The setting is where the gutter's state lives, so this is what makes a change made in
+  // one editor, or in the Settings pane, show in this one. Reconfiguring to what is already
+  // configured costs nothing, which is why it is unconditional.
+  if (view) {
+    view.dispatch({ effects: lineNumberCompartment.reconfigure(lineNumbersOn() ? lineNumbers() : []) });
+    // And the button, so it does not say the opposite of what the gutter is doing.
+    reflectLineNumbers(lineNumbersOn());
+    reflectLineNumbersOnRoot(lineNumbersOn());
+  }
   setLivePreviewConfig({ revealSyntaxOnLine: config.revealSyntaxOnLine });
   // Anything but `hidden` shows comments. A setting nobody can read must never end
   // in a comment being drawn as nothing at all.
   setCommentsMode(config.comments === 'hidden' ? 'hidden' : 'show');
-  // A data file has no headings to list.
-  toc.setEnabled(config.tableOfContents === true && !csvMode);
-  reflectTableOfContents(config.tableOfContents === true);
+  // And the same care for front matter: anything unreadable collapses rather than
+  // hides, so a person can always see that the metadata is there.
+  setFrontMatterMode(config.frontMatter === 'shown' || config.frontMatter === 'hidden' ? config.frontMatter : 'collapsed');
+  // A data file has no headings to list, so the rail is nothing there whatever the
+  // setting says. This document's own state comes first, then the setting, which is the
+  // default for the rest.
+  const outline = ownOutline ?? outlineState(config.tableOfContents);
+  toc.setState(csvMode ? 'hidden' : outline);
+  reflectTableOfContents(csvMode ? 'hidden' : outline);
   if (view) {
     // Force a decoration rebuild by dispatching an empty selection-preserving tx.
     view.dispatch({});
@@ -450,7 +660,7 @@ function buildState(text: string): EditorState {
   return EditorState.create({
     doc: text,
     extensions: [
-      lineNumberCompartment.of(lineNumbersOn ? lineNumbers() : []),
+      lineNumberCompartment.of(lineNumbersOn() ? lineNumbers() : []),
       editableCompartment.of(EditorView.editable.of(true)),
       csvMode ? fenceGuard : [],
       editorExtensions(shortcutsOverlay.toggle),
@@ -463,7 +673,10 @@ function buildState(text: string): EditorState {
           // text is no longer the step Undo would take back.
           outsideChangeIsOnTop = false;
         }
-        if (update.docChanged || update.selectionSet || update.focusChanged) refreshToolbar(update.view);
+        // Against whichever editor the toolbar is acting on, or the buttons would go on
+        // reporting the outer selection's state while a cell has focus, which is the same
+        // defect read rather than pressed.
+        if (update.docChanged || update.selectionSet || update.focusChanged) refreshToolbar(toolbarTarget());
         // The host keeps the latest selection so its commands can name it. A document
         // change counts as well as a selection change: text put in above the caret
         // moves it to another line without the selection itself being set.
@@ -472,13 +685,22 @@ function buildState(text: string): EditorState {
         // next frame rather than on the keystroke, so a burst of typing costs one pass.
         if (update.docChanged) toc.documentChanged();
       }),
-      // Cmd/Ctrl-click opens links, and double-click reveals an element's raw
-      // source. Both ride mousedown: see handleDoubleClick for why dblclick is
-      // too late. Triple-click goes through a selection style instead, so that
-      // CodeMirror runs it as its own gesture; paragraphSelect.ts says why.
+      // A click opens a link, and double-click reveals an element's raw source.
+      // Both ride mousedown: see handleDoubleClick for why dblclick is too late.
+      // A plain click opens on the release instead, so a drag that starts on a
+      // link still selects; linkGesture.ts holds both halves. Triple-click goes
+      // through a selection style instead, so that CodeMirror runs it as its own
+      // gesture; paragraphSelect.ts says why.
       paragraphTripleClick,
       EditorView.domEventHandlers({
         mousedown: (event, view) => handleLinkClick(event, view) || handleDoubleClick(event, view),
+        mouseup: (event, view) => {
+          const held = heldLink;
+          heldLink = null;
+          return releaseOnLinkIn(view, event, held);
+        },
+        // A right-click on a link opens its popover rather than the context menu.
+        contextmenu: (event, view) => contextMenuOnLink(view, event),
       }),
     ],
   });
@@ -553,18 +775,20 @@ function undoOutsideChange(): void {
   undo(view);
 }
 
-/** Cmd/Ctrl + click on a rendered link opens it, wherever it points. */
+/** The link this editor's last press landed on, for the release to decide about. */
+let heldLink: HeldLink | null = null;
+
+/**
+ * A press on a rendered link. The modifier opens it now; a plain press only remembers it,
+ * and the release opens it if nothing moved, so a drag that starts on a link still selects.
+ *
+ * False for a plain press, on purpose, so CodeMirror goes on to place the caret and begin a
+ * selection exactly as it would anywhere else in the text.
+ */
 function handleLinkClick(event: MouseEvent, view: EditorView): boolean {
-  if (!(event.metaKey || event.ctrlKey)) return false;
-  const pos = view.posAtCoords({ x: event.clientX, y: event.clientY });
-  if (pos == null) return false;
-  const url = linkAddressAt(view.state, pos);
-  if (url) {
-    event.preventDefault();
-    openLink(url);
-    return true;
-  }
-  return false;
+  const { opened, hold } = pressOnLinkIn(view, event);
+  heldLink = hold;
+  return opened;
 }
 
 /**
@@ -610,7 +834,7 @@ window.addEventListener('message', (e: MessageEvent<ToWebview>) => {
   const msg = e.data;
   switch (msg.type) {
     case 'init':
-      config = msg.config;
+      config = { ...DEFAULT_CONFIG, ...msg.config };
       fileName = msg.fileName;
       setLinkCompleteDocument(msg.fileName);
       // A host that cannot do a thing must not be offered as though it could.
@@ -627,6 +851,8 @@ window.addEventListener('message', (e: MessageEvent<ToWebview>) => {
       // A block is moved out to a file beside a Markdown document. The grid of a data
       // file is already the file, so it has nothing to move.
       setMoveToFile(csvMode ? null : moveBlockToFile);
+      // A data file's own grid is the file; a view of it belongs in a document, not here.
+      setCreateView(csvMode ? null : createViewOf);
       if (msg.notice !== undefined) {
         showingNotice = true;
         const notice = document.createElement('p');
@@ -646,11 +872,11 @@ window.addEventListener('message', (e: MessageEvent<ToWebview>) => {
     case 'imageSaved':
       handleImageSaved(msg.id, msg.path, msg.error);
       break;
-    case 'clipboardText':
-      handleClipboardText(msg.id, msg.text);
-      break;
     case 'workspaceFiles':
       handleWorkspaceFiles(msg.id, msg.files);
+      break;
+    case 'docTitle':
+      handleDocTitle(msg.id, msg.address, msg.title);
       break;
     case 'tableWidths':
       handleTableWidths(msg.id, msg.widths);
@@ -660,6 +886,13 @@ window.addEventListener('message', (e: MessageEvent<ToWebview>) => {
       break;
     case 'commentFolds':
       handleCommentFolds(msg.id, msg.folds);
+      break;
+    case 'frontMatterState':
+      handleFrontMatterState(msg.id, msg.state);
+      break;
+    case 'outlineState':
+      ownOutline = msg.state === 'shown' || msg.state === 'collapsed' || msg.state === 'hidden' ? msg.state : null;
+      applyConfig(view);
       break;
     case 'dataFile':
       handleDataFile(msg);
@@ -677,7 +910,7 @@ window.addEventListener('message', (e: MessageEvent<ToWebview>) => {
       revealFragment(msg.id);
       break;
     case 'configChanged':
-      config = msg.config;
+      config = { ...DEFAULT_CONFIG, ...msg.config };
       applyConfig(view);
       break;
     case 'toggleSourceMode':
@@ -705,6 +938,11 @@ setTableBoardsHost((message) => vscode.postMessage(message));
 // ahead of `ready` so a collapsed comment is drawn collapsed rather than shutting a
 // moment after it appears. With no answer a collapse lasts as long as this page.
 setCommentFoldsHost((message) => vscode.postMessage(message));
+// And a document's own front matter state, kept the same way, outside the file.
+setFrontMatterHost((message) => vscode.postMessage(message));
+// The heading list's, asked for at the same moment and for the same reason: a document
+// left folded should be drawn folded rather than flickering through the setting first.
+vscode.postMessage({ type: 'outlineStateRead', id: `outline-${++outlineSeq}` });
 
 // A view block naming a .csv or .tsv file asks the host for it. A host that cannot
 // read files never answers, and the view says so in place after a short wait.

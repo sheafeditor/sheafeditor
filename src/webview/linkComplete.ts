@@ -15,15 +15,17 @@
  * are read from this document's own syntax tree, so they never wait on anything.
  */
 
+import type { FromWebview } from '../protocol';
 import { EditorState, Extension, Prec, StateEffect, StateField } from '@codemirror/state';
 import { EditorView, ViewPlugin, ViewUpdate, keymap } from '@codemirror/view';
 import { syntaxTree } from '@codemirror/language';
 import { isolateHistory } from '@codemirror/commands';
 import { headingSlug } from './linkTarget';
 import { linkDestination } from './linkPopover';
-import { posInFrontMatter } from './frontMatter';
+import { frontMatterEnd, posInFrontMatter } from './frontMatter';
+import { relativeLink } from '../docLink';
 import { FloatingIcon, floatingIcon } from './floatingIcons';
-import { placeListAt } from './slashMenu';
+import { placeOrClose, whileScrolling } from './caretList';
 
 export interface LinkCompletionItem {
   /** What the row shows: a path relative to this document, or a heading's text. */
@@ -42,7 +44,7 @@ const FILES_TIMEOUT_MS = 1500;
 
 // ---- The file list, asked of the host --------------------------------------
 
-type Post = (message: unknown) => void;
+type Post = (message: FromWebview) => void;
 
 let post: Post | null = null;
 /** The document's path relative to its workspace folder, as the host named it. */
@@ -94,14 +96,14 @@ function requestFiles(): Promise<string[] | null> {
   });
 }
 
-/** `target` written relative to the folder `fromFile` sits in, in POSIX form. */
-export function relativePath(fromFile: string, target: string): string {
-  const from = fromFile.split('/').filter(Boolean).slice(0, -1);
-  const to = target.split('/').filter(Boolean);
-  let common = 0;
-  while (common < from.length && common < to.length - 1 && from[common] === to[common]) common++;
-  return '../'.repeat(from.length - common) + to.slice(common).join('/');
-}
+/**
+ * `target` written relative to the folder `fromFile` sits in, in POSIX form.
+ *
+ * Re-exported rather than kept here, since the hosts now write the same address for a pasted
+ * path: the completion and the paste offering different addresses for one file would be the
+ * same fact written twice.
+ */
+export const relativePath = relativeLink;
 
 const MARKDOWN_FILE = /\.(md|markdown)$/i;
 
@@ -140,14 +142,24 @@ const HEADING = /^(?:ATXHeading([1-6])|SetextHeading([12]))$/;
  * Every heading in the document with the anchor it answers to. A repeated heading
  * gets `-1`, `-2` and so on after the first, which is how GitHub and the other
  * renderers tell them apart.
+ *
+ * Front matter is skipped, and it has to be skipped by line rather than by node
+ * name. The Markdown dialect has no node for front matter, so the closing `---`
+ * parses as a setext heading's underline and the metadata line above it becomes a
+ * level-2 heading. It looks like a heading to the tree and is metadata to a reader,
+ * and no renderer gives it an anchor, so an address built from it points at
+ * nothing. The outline does the same test in `tableOfContents.ts`, which is why
+ * that list was right while this one was not.
  */
 export function documentHeadings(state: EditorState): Array<{ text: string; slug: string; level: number }> {
   const out: Array<{ text: string; slug: string; level: number }> = [];
   const seen = new Map<string, number>();
+  const front = frontMatterEnd(state.doc);
   syntaxTree(state).iterate({
     enter: (node) => {
       const m = HEADING.exec(node.name);
       if (!m) return undefined;
+      if (state.doc.lineAt(node.from).number <= front) return false;
       // The heading's own markers are syntax, not part of the name it answers to.
       const text = state
         .sliceDoc(node.from, node.to)
@@ -373,7 +385,17 @@ const completeView = ViewPlugin.fromClass(
     dom: HTMLElement | null = null;
     asked = 0;
     destroyed = false;
+    /** True once the list has been drawn beside its line. See `placeOrClose`. */
+    placed = false;
+    /** Redraws the list where its line has moved to while the document scrolls. */
+    private readonly scrolling = whileScrolling(() => this.dom, () => this.sync());
     constructor(readonly view: EditorView) {}
+    /** Close, once the view has finished the frame the measure was read in. */
+    private closeWhenTheFrameIsDone(): void {
+      setTimeout(() => {
+        if (this.view.state.field(completeField, false)) this.view.dispatch({ effects: closeComplete.of(null) });
+      }, 0);
+    }
     update(update: ViewUpdate): void {
       const value = update.state.field(completeField, false);
       if (value && value.session !== this.asked && canListFiles()) {
@@ -395,6 +417,7 @@ const completeView = ViewPlugin.fromClass(
       if (!c) {
         this.dom?.remove();
         this.dom = null;
+        this.placed = false;
         return;
       }
       if (!this.dom) {
@@ -443,12 +466,14 @@ const completeView = ViewPlugin.fromClass(
           }
         },
         write: (coords) => {
-          if (coords && this.dom) placeListAt(this.dom, coords);
+          if (!this.dom) return;
+          this.placed = placeOrClose(this.view, this.dom, coords, this.placed, () => this.closeWhenTheFrameIsDone());
         },
       });
     }
     destroy(): void {
       this.destroyed = true;
+      this.scrolling.stop();
       this.dom?.remove();
     }
   },

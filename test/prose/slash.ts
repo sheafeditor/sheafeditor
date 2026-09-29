@@ -102,9 +102,9 @@ export const scenarios: Scenario[] = [
         const first = writtenBy(item.label).replace(/^\n+/, '').split('\n')[0];
         return item.id === 'table' ? first.startsWith(item.hint!) && first.endsWith(item.hint!) : first.trimEnd() === item.hint;
       });
-      // Text writes no markup at all and the data table writes a fence with a language
-      // on it, so neither carries a hint, and neither row grows an element for one.
-      const bare = SLASH_ITEMS.filter((item) => !item.hint).map((item) => item.label).join('|') === 'Text|CSV data table';
+      // Text writes no markup at all, and the two fenced blocks write a fence with a
+      // language on it, so none of the three carries a hint or grows an element for one.
+      const bare = SLASH_ITEMS.filter((item) => !item.hint).map((item) => item.label).join('|') === 'Text|CSV data table|View of a table';
       const p = mountProse('');
       const rows = openRows(p);
       const shown = rows.every((row, i) => {
@@ -165,6 +165,30 @@ export const scenarios: Scenario[] = [
     },
   },
   {
+    name: 'the View row writes a view of the named table above the caret, and an empty one where there is none',
+    run: () => {
+      // A document with two named tables: the view reads the one above where it is
+      // being written, which is the one the person can see.
+      const doc = '```csv id=first\na,b\n1,2\n```\n\nBetween.\n\n```csv id=second\nc,d\n3,4\n```\n\nEnd.\n';
+      const p = mountProse(doc);
+      p.select(doc.indexOf('End.'));
+      type(p, '/view');
+      p.press('Enter');
+      const wrote = p.doc();
+      p.destroy();
+      const afterSecond = wrote.includes('```view\nfrom: #second\n```');
+      // Nothing named anywhere: the line is left for typing rather than guessed at.
+      // The menu opens at a line start, so the caret goes on the empty second line.
+      const q = mountProse('Just prose.\n\n');
+      q.select(12);
+      type(q, '/view');
+      q.press('Enter');
+      const bare = q.doc().includes('```view\nfrom: \n```');
+      q.destroy();
+      return afterSecond && bare && wrote.startsWith('```csv id=first');
+    },
+  },
+  {
     name: 'a typo keeps the slash menu open and backspacing brings the list back',
     run: () => {
       // The menu stays through every letter of the typo, and comes back at the
@@ -175,8 +199,9 @@ export const scenarios: Scenario[] = [
       backspace(p, 1);
       const stillNothing = listed(p)?.length === 0 && p.doc() === '/tabe';
       backspace(p, 1);
-      // Both table items carry the word, and the first of them is the one Enter takes.
-      const back = listed(p)?.join('|') === 'Table|CSV data table' && slashMenuOf(p.view.state)!.selected === 0 && p.doc() === '/tab';
+      // Every row with the word in it, and the first of them is the one Enter takes.
+      const back =
+        listed(p)?.join('|') === 'Table|CSV data table|View of a table' && slashMenuOf(p.view.state)!.selected === 0 && p.doc() === '/tab';
       p.press('Enter');
       const picked = !p.doc().includes('/tab') && /\| Column 1 \| Column 2 \| Column 3 \|/.test(p.doc());
       p.destroy();
@@ -185,7 +210,7 @@ export const scenarios: Scenario[] = [
       const q = mountProse('');
       type(q, '/tablee');
       backspace(q, 1);
-      const oneBack = listed(q)?.join('|') === 'Table|CSV data table' && q.doc() === '/table';
+      const oneBack = listed(q)?.join('|') === 'Table|CSV data table|View of a table' && q.doc() === '/table';
       q.destroy();
 
       // A typo three letters deep still recovers, and the item Enter takes is the first one.

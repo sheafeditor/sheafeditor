@@ -14,8 +14,32 @@
  */
 
 import { Scenario, mountProse } from '../harness';
+import { EditorView } from '@codemirror/view';
+import { ensureSyntaxTree } from '@codemirror/language';
+import { setDocumentSourceMode } from '../../src/webview/livePreview';
+import { breakOnAlertMarker } from '../../src/webview/typedIntoChrome';
+import { insertHardBreak } from '../../src/webview/toolbar';
+import { toggleBullet, toggleOrdered, toggleTask, toggleQuote, turnInto } from '../../src/webview/toolbar';
 
 type P = ReturnType<typeof mountProse>;
+
+/** Type `text` one character at a time, through the input handlers, the way a person does. */
+function type(p: P, text: string): void {
+  for (const ch of text) {
+    const { state } = p.view;
+    const { from, to } = state.selection.main;
+    let handled = false;
+    for (const handler of state.facet(EditorView.inputHandler)) {
+      if (handler(p.view, from, to, ch, () => state.update({ changes: { from, to, insert: ch } }))) {
+        handled = true;
+        break;
+      }
+    }
+    if (!handled) {
+      p.view.dispatch(state.update({ changes: { from, to, insert: ch }, selection: { anchor: from + ch.length }, userEvent: 'input.type' }));
+    }
+  }
+}
 
 const lines = (p: P): HTMLElement[] => Array.from(p.view.contentDOM.querySelectorAll<HTMLElement>('.cm-line'));
 
@@ -30,6 +54,26 @@ const count = (p: P, selector: string): number => p.view.contentDOM.querySelecto
 /** The labels drawn in place of marker lines, in document order. */
 const labels = (p: P): string[] =>
   Array.from(p.view.contentDOM.querySelectorAll<HTMLElement>('.md-alert-name')).map((e) => e.textContent ?? '');
+
+/**
+ * Focus the editor and parse the whole document, before any key is pressed.
+ *
+ * **Focus is the one that matters and it fails silently.** Every deletion handler begins
+ * `if (!view.hasFocus) return false`, because a menu that answers its own keys must not have
+ * the editor answer them too. An unfocused editor therefore declines all of them, and what a
+ * scenario sees is not a handler that is missing but CodeMirror's own default running instead:
+ * `[!OTE]`, `[!NTE]`, one character gone from the marker at every position, and the word-sized
+ * keys reading as unbound because nothing at all answered them. Every assertion below failed
+ * that way while the same presses were correct in a probe that had focused first.
+ *
+ * Parsing is the lesser half: a handler that walks the syntax tree gets one parsed only as far
+ * as the editor has drawn, and a freshly mounted editor in jsdom has drawn very little.
+ */
+function ready(p: P): P {
+  p.view.focus();
+  ensureSyntaxTree(p.view.state, p.view.state.doc.length, 5000);
+  return p;
+}
 
 export const scenarios: Scenario[] = [
   {
@@ -268,6 +312,225 @@ export const scenarios: Scenario[] = [
       const ok = typed && labels(p).join(',') === 'Note' && line(p, 3) === 'Body. More.';
       p.destroy();
       return ok;
+    },
+  },
+  {
+    /*
+     * Every block command on a callout's marker line, in one scenario, because this bug has
+     * been found three times and each time only one path had it.
+     *
+     * The marker line is chrome: there is no text of its own on screen, only a label drawn in
+     * place of `[!NOTE]`. So a block command takes that line with the quote instead of leaving
+     * the marker behind as literal characters. `blockModel.ts` was taught this first and moved
+     * nothing, because the commands go through `turnInto`; `turnInto` was taught next and left
+     * four behind, because Bullet list, Numbered list, Task list and Quote are toggles that mark
+     * lines themselves. All five ask one predicate now, and this drives all five so that a sixth
+     * path arriving without it fails here rather than being discovered later.
+     *
+     * The file is what is read, not the screen. A label that simply stopped being drawn would
+     * satisfy "no `[!NOTE]` visible" while having written it into the document.
+     */
+    name: 'no block command leaves a callout\u2019s marker behind as text',
+    run: () => {
+      const doc = 'Intro.\n\n> [!NOTE]\n> Body.\n';
+      const commands: [string, (v: EditorView) => boolean][] = [
+        ['Bullet list', toggleBullet],
+        ['Numbered list', toggleOrdered],
+        ['Task list', toggleTask],
+        ['Quote', toggleQuote],
+        ['Plain text', (v) => turnInto(v, 'text')],
+        ['Heading 1', (v) => turnInto(v, 'h1')],
+      ];
+      const leaked: string[] = [];
+      for (const [name, run] of commands) {
+        const p = mountProse(doc);
+        // The caret on the marker line, which is where a person clicking a callout puts it.
+        p.select(doc.indexOf('[!NOTE]') + 2);
+        run(p.view);
+        const after = p.doc();
+        p.destroy();
+        // In the file, and on the screen: either alone passes for the wrong reason.
+        if (/\[!NOTE\]/i.test(after)) leaked.push(`${name} wrote ${JSON.stringify(after)}`);
+      }
+      return { ok: leaked.length === 0, detail: leaked.length ? leaked.join('; ') : 'six commands, none left the marker behind' };
+    },
+  },
+  {
+    /*
+     * The control for the one above, and the reason it is a separate scenario: a command that
+     * removed the whole line would satisfy "no marker in the file" perfectly while taking the
+     * person's words with it. A titled callout is where that shows, because its title is the one
+     * part of that line anybody typed.
+     */
+    name: 'a titled callout keeps its title when a block command takes its marker',
+    run: () => {
+      const doc = 'Intro.\n\n> [!TIP] Worth knowing\n> Body.\n';
+      const kept: string[] = [];
+      for (const [name, run] of [
+        ['Bullet list', toggleBullet],
+        ['Quote', toggleQuote],
+        ['Plain text', (v: EditorView) => turnInto(v, 'text')],
+      ] as [string, (v: EditorView) => boolean][]) {
+        const p = mountProse(doc);
+        p.select(doc.indexOf('[!TIP]') + 2);
+        run(p.view);
+        const after = p.doc();
+        p.destroy();
+        if (!after.includes('Worth knowing')) kept.push(`${name} lost the title: ${JSON.stringify(after)}`);
+        if (!after.includes('Body.')) kept.push(`${name} lost the body: ${JSON.stringify(after)}`);
+      }
+      return { ok: kept.length === 0, detail: kept.length ? kept.join('; ') : 'the title and the body survive all three' };
+    },
+  },
+  {
+    /*
+     * A character typed on the marker line writes in the callout rather than inside `[!NOTE]`.
+     *
+     * The label is drawn in place of the marker, so the caret has as many positions along it as
+     * the marker has characters and every one of them looks like the same place. Typing at any
+     * of them used to give `[X!NOTE]`, which is not a marker, so the label vanished and the
+     * brackets came back as text: one keystroke and the construct the person was typing in was
+     * gone from the page.
+     *
+     * Three positions are driven, not one, because they are what makes the line ambiguous: the
+     * far left, the middle of the marker, and the end of the line. A fix keyed on the line's
+     * start would pass at one of them and fail at the other two.
+     */
+    name: 'a character typed anywhere on a callout\u2019s marker line goes into its body',
+    run: () => {
+      const doc = 'Intro.\n\n> [!NOTE]\n> Body.\n';
+      const marker = doc.indexOf('[!NOTE]');
+      const wrong: string[] = [];
+      for (const [where, at] of [['the left edge', marker], ['inside the marker', marker + 3], ['the line end', marker + 7]] as [string, number][]) {
+        const p = mountProse(doc);
+        p.select(at);
+        type(p, 'X');
+        const after = p.doc();
+        p.destroy();
+        if (after !== 'Intro.\n\n> [!NOTE]\n> XBody.\n') wrong.push(`${where} gave ${JSON.stringify(after)}`);
+      }
+      return { ok: wrong.length === 0, detail: wrong.length ? wrong.join('; ') : 'all three positions wrote into the body' };
+    },
+  },
+  {
+    /*
+     * The control, and the case the handler must not reach: a line whose Markdown is showing.
+     *
+     * `> [!question]- Why this way?` is how a person changes a callout's type or its title, and
+     * where the marker is on the screen it is the text being edited rather than chrome drawn
+     * over it. A handler that redirected there would make the type uneditable, which is a worse
+     * bug than the one it fixes and would not show up in any count of leaked markers.
+     *
+     * Source mode is the condition, not `revealSyntaxOnLine`. Measured: reveal-on-line does not
+     * open a callout's marker line at all, titled or folded or neither, so a control written
+     * against it would have passed while proving nothing. `showingSource` is what the handler
+     * asks, and source mode and Edit Markdown are what it answers to.
+     */
+    name: 'with its Markdown showing, a callout\u2019s marker line is typed into as written',
+    run: () => {
+      const doc = 'Intro.\n\n> [!NOTE]\n> Body.\n';
+      const p = mountProse(doc);
+      setDocumentSourceMode(p.view, p.view.dom.parentElement as HTMLElement, true);
+      const at = doc.indexOf('[!NOTE]') + 2;
+      p.select(at);
+      type(p, 'X');
+      const after = p.doc();
+      setDocumentSourceMode(p.view, p.view.dom.parentElement as HTMLElement, false);
+      p.destroy();
+      const want = 'Intro.\n\n> [!XNOTE]\n> Body.\n';
+      return { ok: after === want, detail: after === want ? 'typed where the caret was' : `gave ${JSON.stringify(after)} rather than ${JSON.stringify(want)}` };
+    },
+  },
+  {
+    /*
+     * Enter and Shift+Enter on the marker line, which are the same question as typing and need
+     * answering separately only because a break arrives as a key rather than as input.
+     *
+     * Left alone, Enter cuts `> [!NOTE]` in half and Shift+Enter writes a backslash into it, and
+     * either way the marker stops being one and the brackets come back as text. Both are driven,
+     * because they reach the editor by different routes — a keymap entry and `insertHardBreak` —
+     * and one predicate is asked from both. Two paths is how this rule has been missed three
+     * times already in this feature.
+     */
+    name: 'Enter and Shift+Enter on a callout\u2019s marker line open a line in its body',
+    run: () => {
+      const doc = 'Intro.\n\n> [!NOTE]\n> Body.\n';
+      const at = doc.indexOf('[!NOTE]') + 3;
+      const wrong: string[] = [];
+      for (const [key, run] of [['Enter', breakOnAlertMarker], ['Shift+Enter', insertHardBreak]] as [string, (v: EditorView) => boolean][]) {
+        const p = mountProse(doc);
+        p.select(at);
+        const answered = run(p.view);
+        const after = p.doc();
+        p.destroy();
+        if (!answered) wrong.push(`${key} was not answered at all`);
+        // The marker survives byte for byte, and a line arrived in the body.
+        else if (!after.startsWith('Intro.\n\n> [!NOTE]\n>')) wrong.push(`${key} gave ${JSON.stringify(after)}`);
+        else if (after === doc) wrong.push(`${key} changed nothing`);
+      }
+      return { ok: wrong.length === 0, detail: wrong.length ? wrong.join('; ') : 'both keys left the marker alone and opened a line' };
+    },
+  },
+  {
+    /*
+     * All six delete keys, at three positions each, and the answer is the same eighteen times:
+     * the callout's formatting goes and its words stay.
+     *
+     * There is nothing on the marker line a person put there, so no position has a
+     * character-sized answer that means anything: each looks like the same place and each left a
+     * different broken marker. `[!NOTE` and `[NOTE]` are not markers, so the label came back as
+     * brackets and one keystroke left the wreckage of a construct on the screen. Delete at the
+     * end is the same rather than symmetric: joining the body up would give `> [!NOTE]Body`,
+     * which is not a callout in any renderer.
+     *
+     * The word-sized keys are here because they *are* drivable through `runScopeHandlers`, which
+     * an earlier reading of this said they were not. That was true while the binding sat in the
+     * editing keymap; it is in the high-precedence one now, ahead of `markdownKeymap`, and all
+     * six arrive. Worth keeping all six: they reach the construct by two different code paths
+     * and this rule has been missed by a second path three times in one feature.
+     */
+    name: 'every delete key on a callout\u2019s marker line takes the callout, not half a marker',
+    run: () => {
+      const doc = 'Intro.\n\n> [!NOTE]\n> Body.\n';
+      const marker = doc.indexOf('[!NOTE]');
+      const want = 'Intro.\n\n> Body.\n';
+      const wrong: string[] = [];
+      for (const key of ['Backspace', 'Delete', 'Mod-Backspace', 'Alt-Backspace', 'Mod-Delete', 'Alt-Delete']) {
+        for (const [where, at] of [['the left edge', marker], ['the middle', marker + 3], ['the line end', marker + 7]] as [string, number][]) {
+          const p = ready(mountProse(doc));
+          p.select(at);
+          const answered = p.press(key);
+          const after = p.doc();
+          p.destroy();
+          if (!answered) wrong.push(`${key} at ${where} was not answered`);
+          else if (after !== want) wrong.push(`${key} at ${where} gave ${JSON.stringify(after)}`);
+        }
+      }
+      return { ok: wrong.length === 0, detail: wrong.length ? wrong.join('; ') : 'eighteen presses, all left the quote and its body' };
+    },
+  },
+  {
+    /*
+     * The control, and the one thing a delete on that line must not take: a title.
+     *
+     * It is the only part of the marker line anybody typed, so the rule that drops the line has
+     * to keep it, exactly as the block commands do. A fix that simply removed the line would
+     * satisfy every assertion above and silently eat the person's words.
+     */
+    name: 'a delete on a titled callout\u2019s marker line keeps the title',
+    run: () => {
+      const doc = 'Intro.\n\n> [!TIP] Worth knowing\n> Body.\n';
+      const want = 'Intro.\n\n> Worth knowing\n> Body.\n';
+      const wrong: string[] = [];
+      for (const key of ['Backspace', 'Delete', 'Alt-Backspace']) {
+        const p = ready(mountProse(doc));
+        p.select(doc.indexOf('[!TIP]') + 3);
+        p.press(key);
+        const after = p.doc();
+        p.destroy();
+        if (after !== want) wrong.push(`${key} gave ${JSON.stringify(after)}`);
+      }
+      return { ok: wrong.length === 0, detail: wrong.length ? wrong.join('; ') : 'all three kept the title and the body' };
     },
   },
 ];

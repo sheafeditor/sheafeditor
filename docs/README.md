@@ -1,34 +1,57 @@
 ---
 title: Documentation
-summary: How to install Sheaf, what every setting does, and how each feature behaves.
+summary: Install Sheaf, change its settings, and find how to do each thing in it.
 order: 0
 ---
 
-# Sheaf documentation
+# Documentation
 
-[Getting started](getting-started.md) installs Sheaf and covers the three controls you need on the first day.
+Find what you want to do below, and the page that shows you how. If you are new, start with [Getting started](getting-started.md): it installs Sheaf and covers the three controls you need on the first day. [Settings](settings.md) is the reference for every setting and command.
 
-[Settings](settings.md) is the reference for every setting and every command.
+## Write a document
 
-## Features
+- [Typing Markdown](features/typing-markdown.md): type the markers you already know, and use Enter, Shift+Enter and Tab the way Markdown expects.
+- [The toolbar](features/toolbar.md): set text style, make lists, quotes and code blocks, insert blocks, and undo.
+- [Formatting](features/formatting.md): make text bold, italic, highlighted or code, and write code blocks and inline HTML.
+- [Slash menu](features/slash-menu.md): insert a block by typing a slash.
+- [Blocks](features/blocks.md): move, duplicate, delete and convert whole blocks, with the grip or the keyboard.
+- [Menus](features/menus.md): use the toolbar over a selection and the right-click menu.
+- [Links](features/links.md): follow a link, or write one by picking a file or a heading.
+- [Images](features/images.md): paste or drop in pictures, then resize, align or caption them.
 
-- [Formatting](features/formatting.md): bold, italic, highlight, code and the inline HTML tags, drawn as formatting.
-- [Tables](features/tables.md): reading and editing a Markdown table as a grid.
-- [Datatables and views](features/datatables.md): naming a CSV block and showing it filtered and sorted with a view block.
-- [Find and replace](features/find-and-replace.md): finding text anywhere in the document and replacing one match or all of them.
-- [Blocks](features/blocks.md): moving, duplicating, deleting and converting whole blocks, with the grip or the keyboard.
-- [Images](features/images.md): pictures drawn in place, pasted or dropped in, and resized, aligned or captioned.
-- [Callouts](features/callouts.md): quotes that open with a bracketed type, drawn as notes, tips, warnings and cautions.
-- [Comments](features/comments.md): notes written into a document as HTML comments, drawn as boxes you can collapse or put away.
-- [Slash menu](features/slash-menu.md): inserting a block by typing a slash.
-- [Files and saving](features/files-and-saving.md): how Sheaf writes your file, outside changes, and both views at once.
-- [Table of contents](features/table-of-contents.md): an optional panel of the document's headings.
-- [Maths](features/maths.md): equations written with dollar signs, typeset in place.
-- [Menus](features/menus.md): the right-click menu and the toolbar over a selection.
-- [In a browser](features/in-a-browser.md): serving a folder from your own machine and editing it in a browser tab.
-- [Sharing a reference](features/sharing.md): handing the lines you are looking at to an agent.
-- [Links](features/links.md): writing a link by pasting an address over the words that should carry it.
+## Keep a table current
+
+- [Tables](features/tables.md): read and edit a Markdown table as a grid.
+- [Table rows and columns](features/table-commands.md): add, delete, move, sort, align and resize rows and columns.
+- [Selecting and pasting cells](features/table-selection.md): select cells, then copy and paste them, to and from a spreadsheet.
+
+## Work with data in a document
+
+- [Datatables and views](features/datatables.md): name a CSV block and show it filtered and sorted with a view.
+- [Working in a view](features/views.md): sort, filter, hide columns and edit cells from a view.
+- [Boards](features/boards.md): show a table's rows as cards, grouped by one value.
+- [Data files](features/data-files.md): open a CSV or TSV file as a grid, and move rows between blocks and files.
+
+## Write with an agent
+
+- [Files and saving](features/files-and-saving.md): keep writing while something else edits the file, and see what it changed.
+- [Sharing a reference](features/sharing.md): hand the lines you are looking at to an agent.
+- [In a browser](features/in-a-browser.md): open a folder's documents in a browser tab, for apps that cannot load an editor.
+
+## Read and find your way
+
+- [Table of contents](features/table-of-contents.md): jump around a long document from a panel of its headings.
+- [Find and replace](features/find-and-replace.md): find text anywhere, tables included, and replace it.
+- [Front matter](features/front-matter.md): show a document's YAML block in full, as one line, or not at all.
+- [Comments](features/comments.md): read notes left in a document, and collapse or hide them.
+
+## Make it read the way GitHub reads it
+
+- [Diagrams](features/diagrams.md): Mermaid diagrams drawn in place.
+- [Maths](features/maths.md): equations between dollar signs, typeset in place.
+- [Footnotes](features/footnotes.md): numbered notes, with the note a hover away.
+- [Callouts](features/callouts.md): notes, tips, warnings and cautions.
 
 ## About these pages
 
-Each page describes behaviour Sheaf is committed to, rather than behaviour it happens to have. Every statement here is backed by the scenarios that test it, so a page and the product go out of step only if a test is failing.
+Each page describes behaviour Sheaf is committed to, and every statement is backed by the scenarios that test it, so a page and the product go out of step only if a test is failing.

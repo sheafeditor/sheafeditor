@@ -169,6 +169,40 @@ export const scenarios: Scenario[] = [
     },
   },
   {
+    name: 'with no host to keep them, a collapse lasts as long as the page and a new page has none',
+    run: () => {
+      /*
+       * The browser. There is no editor behind the page to remember anything, so the
+       * request for what is collapsed goes out and nothing answers it, and a collapse
+       * has to hold on its own for as long as the page lives.
+       *
+       * The page still hands over every collapse, so a host that does keep them needs
+       * no cooperation from this side. And a new page has none of them, which is what
+       * "as long as the page" means: `mount` clears the module's own state, which is
+       * the only place a browser's collapses live.
+       */
+      const heard: any[] = [];
+      const p = mount(ONE);
+      setCommentFoldsHost((m) => heard.push(m));
+      p.select(2);
+      chevron(p);
+      const shut = collapsedFlags(p)[0] === true;
+      // A keystroke in the paragraph above, which rebuilds every decoration there is.
+      p.view.dispatch({ changes: { from: 5, insert: ' more' }, userEvent: 'input.type' });
+      p.select(2);
+      const held = collapsedFlags(p)[0] === true;
+      const asked = heard.some((m) => m.type === 'commentFoldsRead');
+      const offered = heard.some((m) => m.type === 'commentFoldsWrite');
+      p.destroy();
+      const q = mount(ONE);
+      setCommentFoldsHost((m) => heard.push(m));
+      q.select(2);
+      const openAgain = collapsedFlags(q)[0] === false && q.doc() === ONE;
+      q.destroy();
+      return shut && held && asked && offered && openAgain;
+    },
+  },
+  {
     name: 'with comments hidden every box becomes a marker, and clicking one brings its box back',
     run: () => {
       const doc = 'Intro.\n\n<!-- First note. -->\n\nMiddle.\n\n<!-- Second note. -->\n\nAfter.';

@@ -24,16 +24,122 @@
     'Apple Color Emoji', 'Segoe UI Emoji', sans-serif;
   /* Notion code/inline-code stack. */
   --md-mono: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, Courier, monospace;
+  /*
+   * The chrome's type: the toolbar, the menus, the slash menu, the table and view headers,
+   * the heading rail, the link popover, the find bar and the shortcut card. Four steps, and
+   * nothing outside them. It had 55 declarations holding 15 values, with `.sheaf-toc` and
+   * `.sheaf-linkpop-url` at 12.5px against the 12px fifteen other rules used, for a reason
+   * nobody could recover.
+   *
+   * Scaled from the host editor's own UI size rather than fixed. A person who has changed
+   * their editor font size, or is on a platform whose default differs, got a Sheaf toolbar
+   * that ignored the change while every other panel in the window followed it, which is what
+   * makes an embedded webview read as a web page bolted into an editor. The fallback is
+   * VS Code's own 13px default, which is what a browser tab gets, so the browser build is
+   * unchanged to the pixel.
+   *
+   * The multipliers reproduce today's values exactly at 13px: row 13, secondary 12, label 11,
+   * title 15. They are ratios rather than a scale anybody derived, because the three sizes
+   * already in use are the thing being kept.
+   *
+   * Which step a thing takes is what it is, not how big it looked: **row** for anything a
+   * person clicks or types in, **secondary** for text supporting one, **label** for a keycap,
+   * a group title or a badge, **title** for the heading of a panel. Document content keeps the
+   * document's own typography, which is why a table's cells and a board's cards are not here.
+   */
+  --sheaf-ui-font: var(--vscode-font-family, var(--md-font));
+  --sheaf-ui-step: var(--vscode-font-size, 13px);
+  --sheaf-ui-row: var(--sheaf-ui-step);
+  --sheaf-ui-secondary: calc(var(--sheaf-ui-step) * 0.92);
+  --sheaf-ui-label: calc(var(--sheaf-ui-step) * 0.85);
+  --sheaf-ui-title: calc(var(--sheaf-ui-step) * 1.15);
   --md-text: var(--vscode-editor-foreground);
   --md-muted: var(--vscode-descriptionForeground, #8a8f98);
   --md-faint: color-mix(in srgb, var(--md-text) 45%, transparent);
   --md-rule: var(--vscode-widget-border, color-mix(in srgb, var(--md-text) 15%, transparent));
+  /*
+   * The horizontal rhythm: every indent in the editor is one of these three lengths, and
+   * nothing else decides a horizontal position.
+   *
+   * They are GitHub's, from the stylesheet it publishes for its own rendered Markdown:
+   * `padding-left: 2em` on a list, `padding: 0 1em` behind a `.25em` border on a quote, at a
+   * 16px body. A Sheaf document is read on GitHub as often as it is written here, so these
+   * are the numbers that make the editor and the rendered page agree. They were arrived at
+   * once and are referred to everywhere; a fourth hard-coded length is the bug this replaced.
+   *
+   * The gap between a marker and its words is deliberately unquantified in the CSS spec and
+   * differs per browser. 8px, half an em, is what Chrome does.
+   */
+  --md-indent-step: 32px;
+  --md-marker-gap: 8px;
+  --md-quote-step: 20px;
+  --md-quote-rule: 4px;
+  /* One size for every monospaced thing: inline code, a fenced block, a fence line and front
+     matter. Four had accumulated, 13.6 inline against 14.08 in a fence, so the same snippet
+     rendered at two sizes depending on where it was written. GitHub uses 12px for all of them
+     and this is 14: the one number in the type pass that deliberately does not follow GitHub,
+     because code here is typed into rather than only read. What matters as much as the number
+     is that there is one of it. */
+  --md-code-size: 0.875em;
+  /* The space a heading adds above itself, on top of the blank line that already separates it
+     from the block above. Flat at every level, in px rather than em, so air above a heading
+     does not shrink as the heading does. It is read in src/webview/theme.ts, where a padding on
+     a line class is stated so that it wins; declaring it here would have no effect. */
+  --md-heading-space: 12px;
+  /* The air between one list item and the next. GitHub's `li + li { margin-top: .25em }` at a
+     16px body, as padding, because a margin is space CodeMirror's height map cannot see. A tight
+     list has no blank lines in its source, so this is the only thing that can separate its items:
+     without it six task items read as a paragraph with boxes in it. Read in src/webview/theme.ts,
+     where a padding on a line class is stated so that it wins. */
+  --md-item-gap: 4px;
+  /* How far a fenced block's panel reaches past the code on each side. Outward, so the code
+     keeps the column the paragraph above it starts on: see `.tok-code-block::before`. */
+  --md-code-inset: 12px;
+  /* The room between a floated picture and the words running up its side. */
+  --md-img-float-gap: 16px;
+  /* The small padding CodeMirror gives every line, which every stop is measured from so that
+     an indented line and a paragraph share one left edge. */
+  --md-line-base: 6px;
+  /* The quote rule's colour, so that an alert can recolour it without redeclaring the
+     gradient that draws it. */
+  --md-quote-rule-color: var(--md-rule);
   --md-code-bg: var(--vscode-textCodeBlock-background,
     color-mix(in srgb, var(--md-text) 6%, transparent));
   /* Inline code takes the colors VS Code gives code spans in rendered Markdown,
      so each theme sets a pair it has already checked for contrast. The fallbacks
      are Sheaf's own chip, for a theme that defines neither. */
   --md-code-text: var(--vscode-textPreformat-foreground, #eb5757);
+  /*
+   * The colours of code inside a fenced block, which are Sheaf's own and borrow no variable
+   * from anything else.
+   *
+   * They used to be written `var(--vscode-symbolIcon-keywordForeground, #c586c0)` and four
+   * others like it, and none of those fallbacks was ever reached. VS Code defines
+   * `symbolIcon.*` in every theme, as one shade of grey, for the little type icons beside
+   * entries in the suggest widget. A fallback applies only when a variable is undefined, so
+   * naming a variable that exists for a different purpose silently takes its value: `const`,
+   * `log`, `length` and every class name were drawn in `#bfbfbf`, four units from body prose
+   * across a channel, inside a block whose whole purpose is to look like code. A comment took
+   * `descriptionForeground`, which is grey by design in both hosts.
+   *
+   * Strings and numbers looked right, and only by coincidence: `debugTokenExpression-string`
+   * and `-number` happen to carry the same value as the fallbacks written beside them. That is
+   * not a thing to keep relying on, so they are here too.
+   *
+   * Nothing about the old shape failed loudly, and that is the reason to own these outright: a
+   * defined variable is indistinguishable from an intended one.
+   *
+   * The values are the ones the code already asked for, which are VS Code's own defaults for
+   * its Dark+ and Light+ themes, so a block looks the way a reader expects code to look.
+   */
+  --md-tok-keyword: #c586c0;
+  --md-tok-property: #9cdcfe;
+  --md-tok-function: #dcdcaa;
+  --md-tok-class: #4ec9b0;
+  --md-tok-string: #ce9178;
+  --md-tok-number: #b5cea8;
+  --md-tok-comment: #6a9955;
+  --md-tok-invalid: #f14c4c;
   --md-code-chip: var(--vscode-textPreformat-background, var(--md-code-bg));
   --md-link: var(--vscode-textLink-foreground, #2f81f7);
   --md-selection: var(--vscode-editor-selectionBackground);
@@ -126,8 +232,8 @@ body {
   border-radius: 5px;
   background: transparent;
   color: var(--md-text);
-  font-family: var(--md-font);
-  font-size: 13px;
+  font-family: var(--sheaf-ui-font);
+  font-size: var(--sheaf-ui-row);
   line-height: 1;
   cursor: pointer;
   white-space: nowrap;
@@ -149,6 +255,18 @@ body {
 }
 .sheaf-tb-btn.is-active:hover {
   background: color-mix(in srgb, var(--md-link) 26%, transparent);
+}
+
+/*
+ * Drawn but folded away, which is the middle of the table of contents button's three
+ * states. Lighter than pressed and heavier than off, so the three read as an order at a
+ * glance; the accessible name and the tooltip carry which one it is.
+ */
+.sheaf-tb-btn.is-active.is-folded {
+  background: color-mix(in srgb, var(--md-link) 8%, transparent);
+}
+.sheaf-tb-btn.is-active.is-folded:hover {
+  background: color-mix(in srgb, var(--md-link) 16%, transparent);
 }
 
 /* Inline SVG icons inherit the button's themed text color via currentColor. */
@@ -193,13 +311,18 @@ body {
  * horizontal space here would move the text the moment the panel opened. Out of flow,
  * the text is where it was and the rail simply covers margin.
  *
- * `--sheaf-toc-top` is the scroller's own top padding (theme.ts), so the first entry
- * sits level with the first line of text. `--sheaf-toc-width` is the width
- * tableOfContents.ts measures the margin against; the two have to be the same number.
+ * `--sheaf-toc-top` is the scroller's own top padding, so the first entry sits level
+ * with the first line of text. `--sheaf-toc-width` is the width tableOfContents.ts
+ * measures the margin against; the two have to be the same number.
+ *
+ * `--sheaf-page-top` is that padding: the space above the first line of the
+ * document. theme.ts pads the scroller with it, and a table's sticky header row
+ * reads it to find the top of the pane (see `thead tr` below).
  */
 :root {
+  --sheaf-page-top: 56px;
   --sheaf-toc-width: 220px;
-  --sheaf-toc-top: 56px;
+  --sheaf-toc-top: var(--sheaf-page-top);
 }
 
 .sheaf-toc {
@@ -211,8 +334,8 @@ body {
   padding: var(--sheaf-toc-top) 14px 32px 8px;
   overflow-y: auto;
   overscroll-behavior: contain;
-  font-family: var(--md-font);
-  font-size: 12.5px;
+  font-family: var(--sheaf-ui-font);
+  font-size: var(--sheaf-ui-secondary);
   line-height: 1.45;
   /* Above the text it sits beside, and below the toolbar's menus (z-index 2). */
   z-index: 1;
@@ -220,6 +343,16 @@ body {
 
 .sheaf-toc[hidden] {
   display: none;
+}
+
+/*
+ * Folded there is only the header to draw, so the rail stops under it. Left the full
+ * height of the pane it would be an empty column, and as an overlay panel, which has a
+ * background and a border, an empty column standing over the text for nothing.
+ */
+.sheaf-toc.is-folded {
+  bottom: auto;
+  padding-bottom: 10px;
 }
 
 .sheaf-toc-entry {
@@ -329,8 +462,8 @@ body {
   border-radius: 5px;
   background: transparent;
   color: var(--md-text);
-  font-family: var(--md-font);
-  font-size: 13px;
+  font-family: var(--sheaf-ui-font);
+  font-size: var(--sheaf-ui-row);
   text-align: left;
   cursor: pointer;
 }
@@ -346,8 +479,8 @@ body {
 }
 .sheaf-tb-menu-key {
   flex: 0 0 auto;
-  font-family: var(--md-mono);
-  font-size: 11px;
+  font-family: var(--sheaf-ui-font);
+  font-size: var(--sheaf-ui-label);
   color: var(--md-muted);
 }
 
@@ -368,8 +501,58 @@ body {
 /* A table inside a blockquote: the grid replaces the quoted lines, so it carries
    the quote's bar, the same rule and indent as the lines around it. */
 .sheaf-table.is-quoted {
-  border-left: 3px solid var(--md-rule);
-  padding-left: 0.9em;
+  border-left: var(--md-quote-rule) solid var(--md-rule);
+  /* The rule and this together come to one quote step, so a quoted table's cells begin
+     exactly where the quoted prose above and below it does. Read from the same property as
+     the quote itself: this was a hand-copied 0.9em, one of three, and they could drift. */
+  padding-left: calc(var(--md-quote-step) - var(--md-quote-rule));
+}
+/*
+ * A table uses the pane, not the writing column.
+ *
+ * Prose wants a measure and a table wants room. Held to the column, a wide table stopped at
+ * its right edge with two or three hundred pixels of empty gutter beside it, which reads as
+ * the editor giving up rather than as something to scroll.
+ *
+ * The frame spans the pane and the scroller is inset from the left by exactly the room the
+ * frame gained on that side, so at rest the first column sits on the text's left edge, in
+ * line with the paragraph above it, and the right gutter is table. Padding inside the
+ * scroller rather than a margin outside it, which is what lets that inset scroll away: drag
+ * the table sideways and its content crosses the full width of the pane.
+ *
+ * `--md-pane-overhang` is measured and published by `src/webview/paneWidth.ts`, because the
+ * room outside `.cm-content` comes from its `margin: 0 auto` and nothing inside it can name
+ * that. It is 0 on a pane no wider than the column, where this comes out at one gutter each
+ * side and a narrow window is unchanged.
+ *
+ * **Horizontal margins only.** A vertical margin on a block widget is space CodeMirror's
+ * height map cannot see, since it measures with `offsetHeight`, and clicks below the widget
+ * land on the wrong line. `scripts/check-indent.mjs` sweeps for that on every run.
+ */
+.sheaf-table.can-use-pane {
+  --md-table-inset: calc(var(--md-gutter) + var(--md-pane-overhang, 0px));
+  margin-left: calc(-1 * var(--md-table-inset));
+  margin-right: calc(-1 * var(--md-table-inset));
+}
+/*
+ * The inset on both sides, and the two do different jobs.
+ *
+ * Left: at rest the first column lines up with the paragraph above it, and because this is
+ * padding inside the scroller rather than margin outside it, the column slides past that line
+ * as the table is scrolled. That is the whole of what makes the pane usable.
+ *
+ * Right: at rest it is invisible, sitting beyond the table's right edge in the scroll extent.
+ * Scrolled fully right it is the gap after the last column, which is what says the table has
+ * ended rather than continuing past the pane. Without it the last column ran flush into the
+ * edge and the only way to know you were at the end was that the table stopped moving.
+ *
+ * Neither touches the laid-out widths: `roomFor` reads `clientWidth`, which is the padding box
+ * and does not grow when padding is added. Measured on a twelve-column table before and after,
+ * every column identical.
+ */
+.sheaf-table.can-use-pane > .sheaf-table-grid {
+  padding-left: var(--md-table-inset);
+  padding-right: var(--md-table-inset);
 }
 .sheaf-table-grid {
   overflow-x: auto;
@@ -388,12 +571,32 @@ body {
 .sheaf-table.has-widths:not(.is-scroll-x) > .sheaf-table-grid {
   overflow-x: visible;
 }
-/* Opaque, and above the rows, so the rows it passes over do not show through it. */
+/*
+ * Opaque, and above the rows, so the rows it passes over do not show through it.
+ *
+ * `top` is negative because a sticky element's `top: 0` is measured inside its
+ * scroller's padding, not from the scroller's edge. The editor's scroller is padded
+ * at the top for the space above the first line, so `top: 0` held the row that far
+ * down the pane, with the rows above it still showing and the row itself landing in
+ * the middle of whatever row it was crossing.
+ *
+ * The extra pixel is the row's top border. In a collapsed table Chromium leaves that
+ * one line of a held row unpainted, and the text of the row passing under it shows
+ * through at the top of the pane. Held a pixel higher, the line sits above the pane's
+ * edge, where nothing is drawn, and the pane's edge takes its place.
+ */
 .sheaf-table thead tr {
   position: sticky;
-  top: 0;
+  top: calc(-1 * var(--sheaf-page-top) - 1px);
   z-index: 3;
   background: var(--vscode-editor-background);
+}
+/* Except when it holds nothing. A pipe table must be written with a header row, so a
+   two-column summary has an empty one, and keeping an empty band in view is all cost:
+   it crosses the rows it rides over and hides whatever is under it. */
+.sheaf-table thead tr.is-blank {
+  position: static;
+  background: transparent;
 }
 .sheaf-table thead tr.is-stuck > th {
   box-shadow: 0 1px 0 var(--md-rule);
@@ -406,10 +609,14 @@ body {
  * Until then, and in a webview that has never been shown, the table is drawn the
  * way it always was.
  */
+/* Body size, as GitHub gives a table cell. It was 0.92em, 14.72px, which was one of four sizes
+   below body that had accumulated with no system behind them; the other three were monospaced
+   and are now `--md-code-size`. A table is not code, so it has no reason to be small: the cells
+   hold the same prose the paragraphs do and are read the same way. */
 .sheaf-table table {
   border-collapse: collapse;
   width: 100%;
-  font-size: 0.92em;
+  font-size: 1em;
   line-height: 1.5;
 }
 
@@ -450,24 +657,16 @@ body {
 }
 
 /*
- * A table too wide for its frame fades out at whichever edge has more table
- * beyond it, so a column cut off mid-word reads as "there is more this way"
- * rather than as a rendering fault. Only ever set on a table that really does
- * scroll, so an ordinary table pays nothing for it.
+ * A table too wide for its frame used to fade out at whichever edge had more table beyond
+ * it, with a mask on the scroller. It went with the geometry above: a fade is a way of
+ * saying "there is more this way" to somebody looking at a table that stops mid-column with
+ * an empty gutter beside it, and a table that runs to the edge of the pane, with a
+ * scrollbar under it, says the same thing without hiding a column behind a gradient.
  *
- * A mask reads nothing but the alpha channel of the gradient it is given, so
- * the colour in these is there to be opaque and is never drawn. `currentColor`
- * keeps the rule from carrying a colour value that does not mean anything.
+ * `is-scroll-start` and `is-scroll-end` are still set, by `edges()` in columnLayout.ts.
+ * They say which way there is more table, which is a fact worth having on the element even
+ * with nothing drawing from it today.
  */
-.sheaf-table.is-scroll-end .sheaf-table-grid {
-  mask-image: linear-gradient(to right, currentColor calc(100% - 28px), transparent);
-}
-.sheaf-table.is-scroll-start .sheaf-table-grid {
-  mask-image: linear-gradient(to left, currentColor calc(100% - 28px), transparent);
-}
-.sheaf-table.is-scroll-start.is-scroll-end .sheaf-table-grid {
-  mask-image: linear-gradient(to right, transparent, currentColor 28px, currentColor calc(100% - 28px), transparent);
-}
 .sheaf-table th,
 .sheaf-table td {
   border: 1px solid var(--md-rule);
@@ -528,9 +727,12 @@ body {
   font-weight: 600;
   background: color-mix(in srgb, var(--md-text) 5%, transparent);
 }
-.sheaf-table th:hover,
 .sheaf-table td:hover {
   background: color-mix(in srgb, var(--md-link) 8%, transparent);
+}
+/* A header under the pointer darkens in its own colour, as a row number does. */
+.sheaf-table th:hover {
+  background: color-mix(in srgb, var(--md-text) 9%, transparent);
 }
 
 /* A CSV field is drawn as its exact text: its line breaks and its spaces show as written. */
@@ -600,6 +802,27 @@ body {
 .sheaf-table th.is-sel-whole {
   cursor: grab;
 }
+/*
+ * The digits appear only when the document's own line numbers do, which the root
+ * carries as `.line-numbers`. A table's row numbers and a document's are the same
+ * answer to the same question, so a reader who does not want one does not want the
+ * other, and by default neither is drawn.
+ *
+ * The column itself stays, narrowed to the strip its padding makes. It is not
+ * decoration: it is where a row is selected, where a run of rows is dragged out,
+ * and where rows are picked up and moved, and the corner beside it selects the
+ * whole table. Taking the element away would take all of that with it, so what
+ * goes is the number and the width the number needed.
+ *
+ * `columnLayout.ts` measures a stand-in carrying this class inside the table it is
+ * laying out, so the width it reserves for the gutter narrows here too, and the
+ * space the digits were using goes back to the columns.
+ */
+.sheaf-root:not(.line-numbers) .sheaf-table .sheaf-table-gutter {
+  padding-left: 3px;
+  padding-right: 3px;
+  font-size: 0;
+}
 .sheaf-table tr.is-row-dragging td {
   opacity: 0.45;
 }
@@ -619,27 +842,25 @@ body {
 .sheaf-table tr.is-drop-after td {
   box-shadow: inset 0 -2px 0 var(--md-link);
 }
+/* Under the pointer a row number darkens a little, in the table's own colours.
+   The link colour here read as a link. */
 .sheaf-table .sheaf-table-gutter:hover,
 .sheaf-table .sheaf-table-corner:hover {
-  background: color-mix(in srgb, var(--md-link) 20%, transparent);
-  color: var(--md-link);
+  background: color-mix(in srgb, var(--md-text) 9%, transparent);
+  color: var(--md-text);
 }
 
-/* The row numbers and column headers the selection spans, so a block of cells
-   shows in the gutter and the header row which rows and columns it covers. This
-   is the weaker mark of the two, and it is text colour alone: a fill on the
-   header and the row number read as two more things selected, louder than the
-   one cell that was. A header that is itself selected is drawn by the rule below,
-   with its fill. Both selectors carry more than the hover above, so a marked row
-   or column keeps its colour under the pointer. */
-.sheaf-table td.sheaf-table-gutter.is-sel-axis,
-.sheaf-table th.is-sel-axis {
-  color: var(--md-link);
-}
-
-/* Cell selection: rectangle tint + focused-cell ring. */
-.sheaf-table td.is-sel,
-.sheaf-table th.is-sel {
+/*
+ * Cell selection: rectangle tint + focused-cell ring.
+ *
+ * Only body cells take the tint. The row numbers and column headers a selection
+ * spans are drawn as they always are, and a header is never tinted, even when its
+ * whole column is selected: in the selection colour they read as links, and as
+ * more things selected beside the cells that were. The tinted cells already show
+ * which rows and columns the block covers. A header being edited still has the
+ * focus ring, which is how an open cell is found anywhere in the grid.
+ */
+.sheaf-table td.is-sel {
   background: color-mix(in srgb, var(--md-link) 22%, transparent);
 }
 .sheaf-table td.is-focus,
@@ -728,22 +949,69 @@ body {
   padding: 0;
 }
 
-/* Controls appear on hover / while editing; reserve height to avoid jump. */
+/*
+ * The table's commands, shown while the pointer is over it or focus is in it.
+ *
+ * The bar floats, so a table starts at its frame whether the bar is showing or not;
+ * held in the flow, it put an empty band above every table, and on a touch screen,
+ * where nothing hovers, that band was never used. Its top is left to where it would
+ * have sat in the flow (under the caption, when there is one), and it is lifted by
+ * its own height so its bottom meets the grid's top: it covers the frame's padding
+ * and the right end of the line above, never a header cell.
+ *
+ * It spans the table's width so the narrow-pane check below has the table's room to
+ * measure, with the buttons pushed to the right by the empty first item. That item's
+ * auto margin falls to nothing when the buttons overflow, so they overflow to the
+ * right, where scrollWidth can see them. The strip itself never takes the pointer,
+ * so an invisible bar cannot swallow a click meant for the line above.
+ *
+ * The buttons take the pointer whether or not the bar is showing, and that is the
+ * one thing here that is not obvious. Taking it only while shown made the bar
+ * unusable from every direction but one: `translateY(-100%)` lifts it clear of the
+ * table's box, so a button's middle is over the line above rather than over the
+ * table, and the bar shows only while the table is hovered. Measured, a button sat
+ * at 109 to 131 with the table starting at 125, so six pixels of it were over the
+ * table. A pointer coming down the document reached the button before it reached
+ * anything that would raise the bar, found `pointer-events: none`, and the click
+ * went through to the blank line and moved the caret. Coming from inside the table
+ * worked, because the hover was already alive and the button, being a descendant,
+ * kept it so.
+ *
+ * A button is a descendant of `.sheaf-table`, so hovering one raises the bar by
+ * itself and the chicken and egg goes away. What that costs is a button that is
+ * hit-testable while invisible, and for a pointer it costs nothing, because
+ * arriving there is what makes it visible: there is no order of events in which a
+ * click lands on a button a person cannot see. Where there is no hover to rescue
+ * it, under `pointer: coarse` below, the buttons go back to taking the pointer only
+ * while shown, because a tap has no arrival.
+ */
 .sheaf-table-controls {
+  position: absolute;
+  left: 0;
+  right: 0;
+  z-index: 4;
+  transform: translateY(-100%);
   display: flex;
   align-items: center;
   gap: 4px;
   height: 26px;
-  margin-bottom: 3px;
   /* What the bar cannot fit is clipped rather than shown half-drawn, and clipping
      is also what makes scrollWidth say how much room the whole bar wanted. */
   overflow: hidden;
   opacity: 0;
+  pointer-events: none;
   transition: opacity 0.1s ease;
+}
+.sheaf-table-controls::before {
+  content: '';
+  margin-left: auto;
 }
 .sheaf-table:hover .sheaf-table-controls,
 .sheaf-table:focus-within .sheaf-table-controls {
   opacity: 1;
+}
+.sheaf-table-controls > * {
+  pointer-events: auto;
 }
 /* Nothing on the bar may wrap or squash: too little room collapses the middle of
    it into the overflow instead, which is what `is-collapsed` below does. */
@@ -779,8 +1047,8 @@ body {
   border-radius: 5px;
   background: var(--vscode-editorWidget-background, transparent);
   color: var(--md-muted);
-  font-family: var(--md-font);
-  font-size: 11px;
+  font-family: var(--sheaf-ui-font);
+  font-size: var(--sheaf-ui-label);
   line-height: 1;
   cursor: pointer;
 }
@@ -813,23 +1081,49 @@ body {
  *
  * The width is what keeps it out of the way of the header's own click. A click
  * aimed at a cell lands in the middle of it, so the rule is that this button
- * never reaches the middle: `50% - 4px` holds its left edge clear of the centre
+ * never reaches the middle: the width holds its left edge clear of the centre
  * whatever the column measures, and 13px is as wide as it grows after that. A
  * fixed width would swallow the centre of a narrow column, which is how the row
  * numbers lost their own chevron.
+ *
+ * The inset and the width are one number read twice, so they have to move
+ * together. Left edge is `100% - inset - width`, so for that to stay 3px clear of
+ * the centre the width has to be `50% - inset - 3px`. Insetting the button
+ * without that put its left edge 2px *past* the centre of a narrow column, which
+ * is the failure above, arrived at from the other direction.
  */
 .sheaf-table th {
   position: relative;
 }
+/*
+ * Room for the chevron beside the label rather than over it.
+ *
+ * The chevron sits in the cell's right padding, which is empty on a left-aligned header and
+ * is where a right-aligned label ends. Numeric columns are right-aligned by default, so in
+ * exactly the tables people keep it landed against the last character and read as a glyph in
+ * the column's name: "Flares⌄", "CME days⌄".
+ *
+ * Held for good rather than only while the chevron shows, which would move every right-
+ * aligned label sideways the moment a pointer crossed the header. And on every header, not
+ * only the right-aligned ones, because which alignment a column has is a fact the stylesheet
+ * cannot see and because a chevron with its own space reads as a control either way.
+ *
+ * The number is the chevron's own geometry: 6px of inset, 13px of button, and 6px of gap.
+ */
+.sheaf-table thead th {
+  padding-right: 25px;
+}
 .sheaf-table-chevron {
   position: absolute;
   top: 50%;
-  right: 1px;
+  /* Half the header cell's own 12px horizontal padding, so it reads as part of the
+     cell rather than as something stuck to the column border. */
+  right: 6px;
   transform: translateY(-50%);
   display: flex;
   align-items: center;
   justify-content: center;
-  width: min(13px, calc(50% - 4px));
+  width: min(13px, calc(50% - 9px));
   height: 14px;
   padding: 0;
   overflow: hidden;
@@ -950,8 +1244,8 @@ body {
   border-radius: 5px;
   background: transparent;
   color: var(--md-text);
-  font-family: var(--md-font);
-  font-size: 13px;
+  font-family: var(--sheaf-ui-font);
+  font-size: var(--sheaf-ui-row);
   text-align: left;
   cursor: pointer;
 }
@@ -972,8 +1266,8 @@ body {
 .sheaf-table-menu-title {
   padding: 4px 8px 2px;
   color: var(--md-muted);
-  font-family: var(--md-font);
-  font-size: 11px;
+  font-family: var(--sheaf-ui-font);
+  font-size: var(--sheaf-ui-label);
   font-weight: 600;
 }
 @media (pointer: coarse) {
@@ -987,11 +1281,24 @@ body {
   .sheaf-table-controls {
     height: 44px;
   }
+  /*
+   * A tap has no arrival, so nothing raises the bar before the finger lands. Here the
+   * buttons go back to taking the pointer only while the bar is showing, or a tap in the
+   * strip would press a button that is not on the screen. The reasoning for the
+   * unconditional rule above depends entirely on a pointer moving there first.
+   */
+  .sheaf-table-controls > * {
+    pointer-events: none;
+  }
+  .sheaf-table:hover .sheaf-table-controls > *,
+  .sheaf-table:focus-within .sheaf-table-controls > * {
+    pointer-events: auto;
+  }
   .sheaf-table-ctrl {
     height: 40px;
     min-width: 44px;
     padding: 0 12px;
-    font-size: 13px;
+    font-size: var(--sheaf-ui-row);
   }
   .sheaf-ctx-item {
     min-height: 40px;
@@ -1006,7 +1313,7 @@ body {
   background: color-mix(in srgb, var(--md-link) 18%, transparent);
   color: var(--md-link);
   font-family: var(--md-mono);
-  font-size: 10px;
+  font-size: var(--sheaf-ui-label);
   letter-spacing: 0.04em;
 }
 
@@ -1020,7 +1327,7 @@ body {
   align-items: baseline;
   gap: 8px;
   margin-bottom: 2px;
-  font-size: 12px;
+  font-size: var(--sheaf-ui-secondary);
 }
 .sheaf-table-caption[hidden] {
   display: none;
@@ -1041,6 +1348,29 @@ body {
   outline: 1px solid var(--vscode-focusBorder, var(--md-link));
   outline-offset: 1px;
 }
+/* The offer to name a block that has none. Quieter than a name: it is an invitation
+   rather than a fact about the table, so it shows only when the table is pointed at
+   or something in it has focus, the way the controls bar does. */
+.sheaf-table-name-it {
+  border-radius: 3px;
+  color: var(--md-faint);
+  cursor: text;
+  opacity: 0;
+  transition: opacity 0.1s ease;
+}
+.sheaf-table:hover .sheaf-table-name-it,
+.sheaf-table:focus-within .sheaf-table-name-it {
+  opacity: 1;
+}
+.sheaf-table-name-it:hover {
+  color: var(--md-text);
+}
+.sheaf-table-name-it:focus-visible {
+  opacity: 1;
+  outline: 1px solid var(--vscode-focusBorder, var(--md-link));
+  outline-offset: 1px;
+}
+
 .sheaf-table-rename {
   min-width: 12ch;
   padding: 0 4px;
@@ -1049,7 +1379,7 @@ body {
   background: var(--vscode-input-background, transparent);
   color: var(--vscode-input-foreground, var(--md-text));
   font-family: var(--md-mono);
-  font-size: 12px;
+  font-size: var(--sheaf-ui-secondary);
 }
 .sheaf-table-rename[aria-invalid='true'] {
   border-color: var(--vscode-inputValidation-errorBorder, var(--vscode-errorForeground, var(--md-code-text)));
@@ -1067,8 +1397,8 @@ body {
 }
 /* A view inside a blockquote carries the quote's bar, as a table there does. */
 .sheaf-view.is-quoted {
-  border-left: 3px solid var(--md-rule);
-  padding-left: 0.9em;
+  border-left: var(--md-quote-rule) solid var(--md-rule);
+  padding-left: calc(var(--md-quote-step) - var(--md-quote-rule));
 }
 .sheaf-view-head {
   display: flex;
@@ -1076,7 +1406,7 @@ body {
   gap: 8px;
   min-height: 26px;
   margin-bottom: 3px;
-  font-size: 12px;
+  font-size: var(--sheaf-ui-secondary);
   color: var(--md-muted);
 }
 .sheaf-view-from {
@@ -1086,6 +1416,7 @@ body {
   margin-right: auto;
 }
 .sheaf-view-edit,
+.sheaf-view-layout,
 .sheaf-view-inline {
   padding: 2px 8px;
   border: 1px solid var(--md-rule);
@@ -1099,13 +1430,17 @@ body {
 }
 .sheaf-view:hover .sheaf-view-edit,
 .sheaf-view-edit:focus-visible,
+.sheaf-view:hover .sheaf-view-layout,
+.sheaf-view-layout:focus-visible,
 .sheaf-view:hover .sheaf-view-inline,
 .sheaf-view-inline:focus-visible {
   opacity: 1;
 }
+.sheaf-view-layout[hidden],
 .sheaf-view-inline[hidden] {
   display: none;
 }
+.sheaf-view-layout.is-disabled,
 .sheaf-view-inline.is-disabled {
   cursor: default;
   color: var(--md-faint, var(--md-muted));
@@ -1115,7 +1450,7 @@ body {
 }
 .sheaf-view-notes p {
   margin: 0 0 4px;
-  font-size: 12px;
+  font-size: var(--sheaf-ui-secondary);
 }
 .sheaf-view-error {
   color: var(--vscode-errorForeground, var(--vscode-editorError-foreground, var(--md-code-text)));
@@ -1126,7 +1461,7 @@ body {
 }
 .sheaf-view-empty {
   margin: 6px 0 0;
-  font-size: 12px;
+  font-size: var(--sheaf-ui-secondary);
 }
 
 /*
@@ -1150,7 +1485,7 @@ body {
   background: var(--vscode-notifications-background, var(--vscode-editorWidget-background, var(--vscode-editor-background, #fff)));
   color: var(--vscode-notifications-foreground, var(--md-text));
   box-shadow: 0 2px 8px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.2));
-  font-size: 12px;
+  font-size: var(--sheaf-ui-secondary);
   line-height: 1.5;
 }
 .sheaf-page-note.is-error span {
@@ -1215,7 +1550,7 @@ body {
 }
 .sheaf-view-sort-mark {
   color: var(--md-link);
-  font-size: 0.85em;
+  font-size: var(--sheaf-ui-label);
 }
 .sheaf-view-filter {
   float: right;
@@ -1228,7 +1563,7 @@ body {
   background: transparent;
   color: var(--md-muted);
   font: inherit;
-  font-size: 11px;
+  font-size: var(--sheaf-ui-label);
   cursor: pointer;
   opacity: 0;
   transition: opacity 0.1s ease;
@@ -1267,7 +1602,7 @@ body {
   border-radius: 8px;
   background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
   box-shadow: 0 8px 28px var(--vscode-widget-shadow, transparent);
-  font-size: 12px;
+  font-size: var(--sheaf-ui-secondary);
   color: var(--md-text);
 }
 .sheaf-view-menu-title {
@@ -1313,8 +1648,25 @@ body {
   opacity: 0.5;
   cursor: default;
 }
+/*
+ * What the pointer says over a view's cell.
+ *
+ * It was `cell`, the thick plus a spreadsheet draws for dragging out a range, which reads as
+ * a tool about to do that and is not what a click there does. A view is a block in a
+ * document, and its cells behave as a table's, which have always been `text`.
+ *
+ * And the arrow where nothing can be edited: a view whose source does not resolve, or one in
+ * a read-only editor, drew the same promise as one that could be typed into. `is-editable` on
+ * the frame is `viewBlock.ts` answering that per draw.
+ *
+ * Not `pointer`. A hand says "this navigates or acts", and a cell neither navigates nor runs
+ * anything — the reason the plus felt wrong is the reason the hand would.
+ */
 .sheaf-view td {
-  cursor: cell;
+  cursor: default;
+}
+.sheaf-view.is-editable td {
+  cursor: text;
 }
 .sheaf-view td.is-focus {
   outline: 2px solid var(--vscode-focusBorder, var(--md-link));
@@ -1360,7 +1712,7 @@ body {
   background: transparent;
   color: var(--md-muted);
   font: inherit;
-  font-size: 12px;
+  font-size: var(--sheaf-ui-secondary);
   cursor: pointer;
 }
 /* Offered beside the error that says the file is missing, so it reads as the way out of it. */
@@ -1394,16 +1746,18 @@ body {
   border-radius: 6px;
   background: color-mix(in srgb, var(--md-text) 4%, transparent);
 }
+/* Which column, quietly: the gap inside it is what says where the card lands, and a column
+   coloured as strongly as the gap competes with it for the same answer. */
 .sheaf-board-col.is-drop-target {
   box-shadow: inset 0 0 0 2px var(--md-link);
-  background: color-mix(in srgb, var(--md-link) 10%, transparent);
+  background: color-mix(in srgb, var(--md-link) 4%, transparent);
 }
 .sheaf-board-col-head {
   display: flex;
   align-items: baseline;
   gap: 6px;
   padding: 6px 10px 4px;
-  font-size: 12px;
+  font-size: var(--sheaf-ui-secondary);
   font-weight: 600;
 }
 .sheaf-board-col-name.is-empty-value {
@@ -1441,8 +1795,35 @@ body {
   outline: 2px solid var(--vscode-focusBorder, var(--md-link));
   outline-offset: -1px;
 }
+/*
+ * A card being carried. It is out of the flow and positioned under the pointer from script,
+ * which sets `left`, `top`, `width` and the `transform`; everything that is the same for
+ * every drag is here.
+ *
+ * `pointer-events: none` is a guard rather than a fix for anything observed. The card is under
+ * the pointer by definition and stays a DOM descendant of the column it started in, so a hit
+ * test landing on it would name the home column and the drop would go nowhere. Measured, it
+ * does not win that hit test even without this rule, because it sits inside a stacking context
+ * of the editor's own and `z-index` does not reach out of one. That is a fact about somebody
+ * else's layout, so it is settled here rather than relied on.
+ */
 .sheaf-board-card.is-dragging {
-  opacity: 0.45;
+  position: fixed;
+  z-index: 30;
+  margin: 0;
+  pointer-events: none;
+  cursor: grabbing;
+  box-shadow: 0 6px 18px rgb(0 0 0 / 28%);
+}
+/* The gap the carried card left, moved to wherever it would land if it were dropped now. */
+.sheaf-board-slot {
+  list-style: none;
+  border: 1px dashed var(--md-link);
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--md-link) 8%, transparent);
+}
+/* The pointer keeps the carrying shape between the cards, where there is no card under it. */
+.sheaf-board.is-dragging {
   cursor: grabbing;
 }
 .sheaf-board-card.is-unmatched {
@@ -1457,7 +1838,7 @@ body {
 .sheaf-board-field {
   display: flex;
   gap: 6px;
-  font-size: 12px;
+  font-size: var(--sheaf-ui-secondary);
 }
 .sheaf-board-label {
   flex: none;
@@ -1489,7 +1870,7 @@ body {
 .sheaf-table-board-note {
   margin: 4px 0;
   color: var(--md-muted);
-  font-size: 12px;
+  font-size: var(--sheaf-ui-secondary);
 }
 .sheaf-table-board-note-dismiss {
   padding: 0;
@@ -1520,18 +1901,26 @@ body {
 .sheaf-ctx-menu[hidden] {
   display: none;
 }
+/*
+ * A row of the right-click menu: its glyph, its label, then its key hint pushed to the right.
+ *
+ * `flex-start` with an 8px gap rather than `space-between`, which is what the grid's own menu
+ * does and what keeps a glyph next to the words it belongs to instead of at the far edge. The
+ * key hint takes the right on its own, below. The numbers are `.sheaf-table-menu-item`'s: the
+ * two menus offer the same commands and should read as one thing.
+ */
 .sheaf-ctx-item {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 24px;
+  justify-content: flex-start;
+  gap: 8px;
   padding: 6px 8px;
   border: none;
   border-radius: 5px;
   background: transparent;
   color: var(--md-text);
-  font-family: var(--md-font);
-  font-size: 13px;
+  font-family: var(--sheaf-ui-font);
+  font-size: var(--sheaf-ui-row);
   text-align: left;
   cursor: pointer;
 }
@@ -1542,16 +1931,48 @@ body {
   color: var(--md-muted);
   cursor: default;
 }
+/* The label takes the room between the glyph and the key hint, so the hints line up. */
+.sheaf-ctx-label {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+/*
+ * A row with no glyph indents to where the glyphs are, so the labels line up in one column
+ * whether or not every row in the menu has one. Without it a menu holding both kinds reads as
+ * two lists.
+ */
+.sheaf-ctx-item:not(:has(> .sheaf-table-icon)) > .sheaf-ctx-label {
+  margin-left: 24px;
+}
 .sheaf-ctx-key {
   flex: 0 0 auto;
-  font-family: var(--md-mono);
-  font-size: 11px;
+  margin-left: 24px;
+  font-family: var(--sheaf-ui-font);
+  font-size: var(--sheaf-ui-label);
   color: var(--md-muted);
 }
 .sheaf-ctx-sep {
   height: 1px;
   margin: 4px 6px;
   background: var(--md-rule);
+}
+
+/*
+ * A keyboard shortcut in a menu, one element per key.
+ *
+ * `⌘`, `⌥` and `⇧` are missing from the monospace stack these hints used to be
+ * drawn in, so a browser fell back for those glyphs alone and set them on the
+ * fallback font's metrics: they sat high against the letter beside them, and
+ * `⌘⌥C` read as three characters at three heights. The UI font has all of them,
+ * and the keys are laid out as boxes aligned along their bottoms, so a fallback
+ * that still happens lands level rather than floating.
+ */
+.sheaf-keys {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 1px;
+  line-height: 1;
+  font-variant-ligatures: none;
 }
 
 /* ---- Keyboard-shortcuts overlay ----------------------------------------- */
@@ -1579,7 +2000,7 @@ body {
   border-radius: 10px;
   background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
   color: var(--md-text);
-  font-family: var(--md-font);
+  font-family: var(--sheaf-ui-font);
   box-shadow: 0 12px 40px color-mix(in srgb, #000 40%, transparent);
 }
 
@@ -1591,14 +2012,14 @@ body {
 }
 .sheaf-sc-title {
   margin: 0;
-  font-size: 15px;
+  font-size: var(--sheaf-ui-title);
   font-weight: 600;
 }
 .sheaf-sc-close {
   border: none;
   background: transparent;
   color: var(--md-muted);
-  font-size: 14px;
+  font-size: var(--sheaf-ui-title);
   line-height: 1;
   cursor: pointer;
   padding: 4px 6px;
@@ -1616,7 +2037,7 @@ body {
 }
 .sheaf-sc-group-title {
   margin: 8px 0 6px;
-  font-size: 11px;
+  font-size: var(--sheaf-ui-label);
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.06em;
@@ -1628,15 +2049,15 @@ body {
   justify-content: space-between;
   gap: 16px;
   padding: 4px 0;
-  font-size: 13px;
+  font-size: var(--sheaf-ui-row);
 }
 .sheaf-sc-label {
   color: var(--md-text);
 }
 .sheaf-sc-keys {
   flex: 0 0 auto;
-  font-family: var(--md-mono);
-  font-size: 12px;
+  font-family: var(--sheaf-ui-font);
+  font-size: var(--sheaf-ui-secondary);
   color: var(--md-muted);
   background: var(--md-code-bg);
   border: 1px solid var(--md-rule);
@@ -1671,22 +2092,24 @@ body {
    weight. */
 
 /*
- * A blank line that only separates two blocks. Markdown needs it there and
- * nobody reads it, so it draws as a gap rather than as an empty line of body
- * text. src/webview/blankLines.ts decides which lines get the class, and takes it
- * off again while the caret is on one or a selection touches it, so a person
- * always types, clicks and arrows against a full-sized line.
+ * A blank line is a line. There is deliberately no rule here shrinking one.
  *
- * Height, not margin, for the reason spelled out on the .tok-h* rules below:
- * CodeMirror's height map reads each line's offsetHeight, which counts padding
- * and height but not margin, and space it cannot see drifts posAtCoords so clicks
- * land on the wrong line.
+ * There was: a blank line separating two blocks drew 8px tall, grew to full height when the
+ * caret reached it and shrank again when it left, with carve-outs keeping full height inside a
+ * fenced block, inside front matter, inside a data block and at either end of the document. It
+ * was a considered design and its reason was real, that Markdown needs a blank line between
+ * blocks so a document is half empty lines, and drawing each at full height put a heading and
+ * the table under it about three lines apart.
+ *
+ * What it cost is that the document moved while a person worked in it. Pressing Return,
+ * arrowing down, clicking in a gap: each changed a line's height and shifted everything below
+ * it. Two blank lines in a row looked different depending on which one held the caret, and
+ * there was no way to look at a gap and know how much of it was the file.
+ *
+ * So every line is one line height, in every position, wherever the caret is, and the spacing
+ * comes from the blank lines the file actually holds. Two blank lines are twice one. A document
+ * is taller, which is what the file says.
  */
-.cm-line.sheaf-blank-line {
-  height: 8px;
-  line-height: 8px;
-  padding: 0;
-}
 
 .cm-cursor {
   border-left-color: var(--md-text);
@@ -1703,31 +2126,39 @@ body {
    not here, since CM's baseTheme overrides equal-specificity .cm-gutters rules
    in this stylesheet. */
 
-/* ---- Block typography (Notion-ish scale) --------------------------------- */
+/* ---- Block typography ---------------------------------------------------- */
 
 /*
- * Notion headings: semibold (600, not 700), line-height 1.3, and the signature
- * asymmetric rhythm — a large top pad, a tiny bottom pad. Airiness comes
- * from the gap ABOVE a heading, not from paragraph spacing. Top padding is
- * self-relative (em of the heading's own size), tuned so every level lands
- * ~32–40px above regardless of size, matching the live editor. Padding, not
- * margin — see the note on the .tok-h* rules below.
+ * The type scale is GitHub's, from `github-markdown-css`, because a Sheaf document is read on
+ * GitHub once it is pushed and a reader should not meet a different structure there. Four sizes
+ * moved to take it: h1 30 to 32, h4 17.6 to 16, h5 16 to 14, h6 14.4 to 13.6.
+ *
+ * Two things that look like defects and are the convention. h6 is smaller than body text and
+ * muted, which GitHub does on purpose. And h3 to h6 sit in a narrow band, 20px down to 13.6px,
+ * with rank below h3 carried by weight and colour rather than by size. An earlier pass at this
+ * proposed flooring every heading at body size, which would have given a document six visible
+ * levels here and four on GitHub: worse than what it fixed.
+ *
+ * Size, weight, line-height and colour here; the space above a heading in src/webview/theme.ts,
+ * flat at every level, for the reason that file gives. A padding written here against a line
+ * class never reaches the screen.
  */
 .tok-heading {
   font-weight: 600;
-  line-height: 1.3;
+  line-height: 1.25;
   color: var(--md-text);
 }
-/* NOTE: spacing here is `padding`, never `margin`. These classes decorate the
-   `.cm-line` element, and CodeMirror's height map reads each line's offsetHeight
-   — which includes padding but NOT margin. Vertical margins add space CM can't
-   see, drifting posAtCoords so clicks land on the wrong line/element. */
-.tok-h1 { font-size: 1.875em; }
+/* NOTE: spacing for these classes is `padding`, never `margin`, and it is not written here.
+   They decorate the `.cm-line` element, and CodeMirror's height map reads each line's
+   offsetHeight — which includes padding but NOT margin. Vertical margins add space CM can't
+   see, drifting posAtCoords so clicks land on the wrong line/element.
+   scripts/check-css-line-padding.mjs holds both halves of that to the file. */
+.tok-h1 { font-size: 2em; }
 .tok-h2 { font-size: 1.5em; }
 .tok-h3 { font-size: 1.25em; }
-.tok-h4 { font-size: 1.1em; }
-.tok-h5 { font-size: 1em; }
-.tok-h6 { font-size: 0.9em; color: var(--md-muted); }
+.tok-h4 { font-size: 1em; }
+.tok-h5 { font-size: 0.875em; }
+.tok-h6 { font-size: 0.85em; color: var(--md-muted); }
 
 .tok-strong { font-weight: 700; }
 .tok-em { font-style: italic; }
@@ -1758,10 +2189,10 @@ body {
 .tok-html-u { text-decoration: underline; }
 .tok-html-del { text-decoration: line-through; opacity: 0.75; }
 
-/* Notion inline code: tinted chip, contrasting text, 85% size, 3px radius. */
+/* A tinted chip with contrasting text and a 3px radius, at the one code size. */
 .tok-inline-code {
   font-family: var(--md-mono);
-  font-size: 0.85em;
+  font-size: var(--md-code-size);
   background: var(--md-code-chip);
   border-radius: 3px;
   padding: 0.2em 0.4em;
@@ -1778,10 +2209,29 @@ body {
   border-bottom-color: var(--md-link);
 }
 
-/* Blockquote — left rule like Notion callout/quote. */
+/*
+ * Blockquote — one left rule per level of nesting.
+ *
+ * A repeating gradient rather than a border, because a border draws once however deep the
+ * quote is, and a quote's depth is the thing that was invisible: `> > >` was drawn exactly
+ * like `>`. One band per level, each a rule followed by the space the next level begins
+ * after, clipped by `background-size` to the depth this line actually has.
+ *
+ * The indent itself is not here. It is `padding-left` on a `.cm-line`, which CodeMirror's own
+ * StyleModule wins at equal specificity, so it lives in theme.ts with the heading padding
+ * that was silently lost the same way. The `padding-left: 0.9em` that used to sit here never
+ * reached the screen: a quote's words started 6px in, which is CodeMirror's own padding, not
+ * the 14.4px this asked for.
+ */
 .tok-quote {
-  border-left: 3px solid var(--md-rule);
-  padding-left: 0.9em;
+  background-image: repeating-linear-gradient(
+    to right,
+    var(--md-quote-rule-color) 0 var(--md-quote-rule),
+    transparent var(--md-quote-rule) var(--md-quote-step)
+  );
+  background-size: calc(var(--md-quote-depth, 1) * var(--md-quote-step)) 100%;
+  background-position-x: var(--md-line-base);
+  background-repeat: no-repeat;
   color: var(--md-text);
 }
 
@@ -1799,8 +2249,10 @@ body {
  * expects. The last name in each chain is the link colour, for a theme that
  * defines none of the others.
  */
+/* The rule is a gradient now, so an alert recolours the gradient's colour rather than a
+   border's. Alerts are top-level only, so an alert's depth is always 1. */
 .tok-alert {
-  border-left-color: var(--md-alert);
+  --md-quote-rule-color: var(--md-alert);
 }
 
 .tok-alert-note {
@@ -1855,13 +2307,30 @@ body {
  * The box is a block widget standing in for the comment's lines, so it draws its
  * own frame rather than borrowing the quote's line decoration.
  */
+/*
+ * Padding, never margin, because this is a block widget.
+ *
+ * CodeMirror measures a block widget with `offsetHeight`, which counts padding and not margin,
+ * so a vertical margin here is space the height map does not know exists, and every position
+ * below it is off by that much. Measured before and after: a click aimed at the middle of the
+ * line under a comment landed on the blank line after it.
+ *
+ * The same defect was found and fixed on the table widget first. It is stated on each widget
+ * that had it rather than once elsewhere, because what makes it wrong is what this element *is*,
+ * and a reader changing this rule is looking here.
+ *
+ * The cost of the spelling, which is the reason to write it down: the border and background are
+ * drawn around the padding, so the tinted box is 0.5em taller top and bottom than it was as
+ * margin. Keeping the old box would mean wrapping the widget in another element, which is a
+ * change to `comments.ts` for a difference nobody would name. The spacing between a comment and
+ * its neighbours is unchanged; only the tint reaches further.
+ */
 .md-comment {
   --md-alert: var(--vscode-descriptionForeground, var(--md-muted));
   border-left: 3px solid var(--md-alert);
   background: color-mix(in srgb, var(--md-alert) 7%, transparent);
   border-radius: 2px;
-  padding: 0.45em 0.7em 0.5em 0.9em;
-  margin: 0.5em 0;
+  padding: 0.95em 0.7em 1em 0.9em;
   cursor: text;
 }
 
@@ -1991,12 +2460,46 @@ body {
 .tok-code-block {
   position: relative;
   font-family: var(--md-mono);
-  font-size: 0.88em;
+  font-size: var(--md-code-size);
 }
+/*
+ * The panel reaches past the code rather than hugging it, and it grows *outward* so the code
+ * keeps its column.
+ *
+ * With `inset: 0` the box was exactly the line, which leaves CodeMirror's own 6px on the left
+ * and 2px on the right: the first character all but touched the edge and a long line touched
+ * the other, so a block read as text with a background rather than as code in a frame.
+ *
+ * Negative insets rather than padding on the line, and that is the whole of the trick. Padding
+ * would push the code inward, and a code block and the paragraph above it would no longer start
+ * on the same column — which is the thing a reader notices first and the reason this is a
+ * `::before` at all.
+ *
+ * It grows to `--md-code-inset` either side. That stops well short of the left margin, where the
+ * block's `+` and grip live about 41px out from the text, and the box takes no pointer events, so
+ * it could not take their clicks even if it reached them.
+ *
+ * **The left edge is measured from the code's own indent, not from the line box**, which is what
+ * puts a quoted or nested block's panel inside the block it sits in. A line's indent is padding,
+ * so the line box is the full column whatever the depth, and a panel drawn on it reached out past
+ * a quote's rule and into the page. That was true before this change and it is what made the
+ * arithmetic worth writing out rather than picking a negative number: the offset is the line's own
+ * indent less the inset, so the room beside the code is exactly the inset at every depth.
+ *
+ * The depths are the same custom properties `.tok-rhythm` computes its padding from, read off the
+ * line this pseudo-element belongs to, so the two cannot disagree about how deep the block is.
+ * A block at the top level carries neither and takes the fallbacks.
+ */
 .tok-code-block::before {
   content: '';
   position: absolute;
-  inset: 0;
+  top: 0;
+  bottom: 0;
+  left: calc(
+    var(--md-line-base, 6px) + var(--md-list-depth, 0) * var(--md-indent-step, 32px) +
+      var(--md-quote-depth, 0) * var(--md-quote-step, 20px) - var(--md-code-inset)
+  );
+  right: calc(-1 * var(--md-code-inset));
   z-index: -2;
   background: var(--md-code-bg);
   pointer-events: none;
@@ -2004,7 +2507,7 @@ body {
 .tok-code-fence {
   color: var(--md-faint);
   font-family: var(--md-mono);
-  font-size: 0.85em;
+  font-size: var(--md-code-size);
 }
 
 /* The line a fence was on, with the fence taken off it: the block's top or bottom
@@ -2015,27 +2518,149 @@ body {
   height: 10px;
   line-height: 10px;
   padding: 0;
-  overflow: hidden;
+  /*
+   * Clipped down the page but not across it.
+   *
+   * This was `overflow: hidden`, which clips both ways, and the panel behind a code block is a
+   * `::before` on each line that reaches 6px to the left and 12px to the right of the line box.
+   * So the body lines painted their strip wide and the two fence lines painted theirs cut back
+   * to the line box: a notch at each of the four corners, measured as rgb(243,243,243) where a
+   * body line paints against rgb(255,255,255) at the same offsets on a fence line.
+   *
+   * `clip` rather than `hidden` because the pair matters: `overflow-x: visible` beside
+   * `overflow-y: hidden` is not a combination CSS keeps, and `visible` would compute to `auto`,
+   * making the line a scroll container. Beside `clip` it stays `visible`.
+   */
+  overflow-x: visible;
+  overflow-y: clip;
 }
-/* The language, drawn where the fence was. Quiet, small and at the right edge, so it
-   names the code without competing with it. */
-.md-code-lang {
-  float: right;
-  padding: 0 0.5em;
-  color: var(--md-faint);
-  font-family: var(--md-mono);
-  font-size: 9px;
-  line-height: 10px;
-  letter-spacing: 0.04em;
-  text-transform: lowercase;
-  user-select: none;
-}
-
 /* YAML front matter: metadata for other tools, drawn as quiet monospaced text. */
 .tok-frontmatter {
   font-family: var(--md-mono);
+  font-size: var(--md-code-size);
+  color: var(--md-muted);
+}
+
+/*
+ * The heading list's own header, which is also the control that folds it away. Quiet
+ * and small, because the headings under it are the thing worth reading.
+ */
+.sheaf-toc-header {
+  display: flex;
+  align-items: center;
+  gap: 0.4em;
+  width: 100%;
+  padding: 0 0 0.4em 0;
+  border: none;
+  background: none;
+  font: inherit;
+  font-size: var(--sheaf-ui-label);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--md-muted);
+  cursor: pointer;
+  text-align: left;
+}
+
+.sheaf-toc-header::before {
+  content: '';
+  flex: none;
+  width: 0;
+  height: 0;
+  border-left: 0.3em solid transparent;
+  border-right: 0.3em solid transparent;
+  border-top: 0.42em solid currentColor;
+}
+
+.sheaf-toc.is-folded .sheaf-toc-header::before {
+  border-top: 0.3em solid transparent;
+  border-bottom: 0.3em solid transparent;
+  border-left: 0.42em solid currentColor;
+  border-right: none;
+}
+
+.sheaf-toc-header:hover {
+  color: var(--md-fg);
+}
+
+.sheaf-toc-header:focus-visible {
+  outline: 1px solid var(--md-accent);
+  outline-offset: 2px;
+}
+
+/*
+ * The one line a collapsed front matter block is drawn as. Quiet, because it is there
+ * to say the metadata exists rather than to be read, and the same monospace as the
+ * block it stands for so the two read as the same thing.
+ */
+.sheaf-frontmatter-strip {
+  display: flex;
+  align-items: center;
+}
+
+.sheaf-frontmatter-fold {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4em;
+  max-width: 100%;
+  padding: 0.1em 0;
+  border: none;
+  background: none;
+  font-family: var(--md-mono);
   font-size: 0.85em;
   color: var(--md-muted);
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sheaf-frontmatter-fold::before {
+  content: '';
+  flex: none;
+  width: 0;
+  height: 0;
+  border-top: 0.3em solid transparent;
+  border-bottom: 0.3em solid transparent;
+  border-left: 0.42em solid currentColor;
+}
+
+/*
+ * The same control on an open block, turned a quarter to point down.
+ *
+ * A right-pointing triangle folded away, a down-pointing one open: the same shape saying which
+ * way pressing it goes, which is what every disclosure control in the editor does. The borders
+ * rotate rather than the box, because a `transform` on the `::before` of an inline-flex button
+ * moved the triangle off the text's baseline.
+ */
+.sheaf-frontmatter-fold.is-open::before {
+  border-top: 0.42em solid currentColor;
+  border-bottom: 0;
+  border-left: 0.3em solid transparent;
+  border-right: 0.3em solid transparent;
+}
+/*
+ * No label beside it on an open block: the metadata is right there to read.
+ *
+ * Pulled left by the line's own left padding, so the two states put the chevron in the same
+ * place. Collapsed, it sits on a block widget at the content box's edge; open, it is inline on
+ * the `---` line, and every `.cm-line` is indented by that padding. Measured before the pull:
+ * 198px against the strip's 192px, six pixels of jump between one state and the other.
+ */
+.sheaf-frontmatter-fold.is-open {
+  gap: 0;
+  margin-left: calc(-1 * var(--md-line-base, 6px));
+  padding-right: 0.3em;
+  vertical-align: baseline;
+}
+
+.sheaf-frontmatter-fold:hover {
+  color: var(--md-fg);
+}
+
+.sheaf-frontmatter-fold:focus-visible {
+  outline: 1px solid var(--md-accent);
+  outline-offset: 2px;
 }
 
 /* Horizontal rule widget. */
@@ -2064,8 +2689,17 @@ body {
   white-space: nowrap;
 }
 
+/*
+ * Padding, never margin: this is a block widget, and CodeMirror measures one with
+ * `offsetHeight`, which counts padding and not margin. A vertical margin here is space the
+ * height map cannot see, so every position below the equation is off by that much. Measured: a
+ * click aimed at the middle of the line under a block equation landed on the blank line after
+ * it. The table widget had the same defect and was fixed the same way.
+ *
+ * Nothing is drawn on this box, so the two spellings look identical.
+ */
 .md-math-block {
-  margin: 0.7em 0;
+  padding: 0.7em 0;
 }
 
 /* The spacing around a block equation is this file's, not KaTeX's. */
@@ -2101,6 +2735,97 @@ body {
   text-underline-offset: 0.2em;
 }
 
+/* ---- Footnotes ------------------------------------------------------------ */
+
+/*
+ * A reference is a small raised number in the link colour, because Cmd-click
+ * follows it to its note; the note's own number is the same mark, and follows it
+ * back. `line-height: 0` keeps a raised number from pushing its line apart.
+ */
+.md-footnote-ref,
+.md-footnote-num {
+  font-size: 0.75em;
+  line-height: 0;
+  vertical-align: super;
+  font-variant-numeric: tabular-nums;
+  color: var(--md-link);
+  cursor: pointer;
+  padding: 0 0.1em;
+}
+.md-footnote-num {
+  margin-right: 0.15em;
+}
+/* The note itself reads as an aside: smaller and quieter than the text it annotates. */
+.cm-line.md-footnote-def {
+  font-size: 0.88em;
+  color: var(--md-muted);
+}
+
+/* ---- Mermaid diagrams ----------------------------------------------------- */
+
+/*
+ * A diagram sits in the column as a figure, centred, at its own size when the
+ * column has room for it. In a narrower pane it scales down with the pane, to a
+ * floor mermaid.ts sets on the drawing, and below that it scrolls inside its own
+ * box, as a wide equation does, rather than shrinking into illegible text.
+ */
+/*
+ * Padding, never margin: this is a block widget, and CodeMirror measures one with
+ * `offsetHeight`, which counts padding and not margin. A vertical margin here is space the
+ * height map cannot see, so every position below the diagram is off by that much. Measured: a
+ * click aimed at the middle of the line under a diagram landed on the blank line after it. The
+ * table widget had the same defect and was fixed the same way.
+ *
+ * Nothing is drawn on this box, so the two spellings look identical.
+ */
+.md-mermaid {
+  padding: 0.7em 0;
+}
+.md-mermaid-scroll {
+  overflow-x: auto;
+  overflow-y: hidden;
+  text-align: center;
+}
+.md-mermaid-scroll:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder, var(--md-link));
+  outline-offset: 2px;
+}
+.md-mermaid-scroll > svg {
+  display: inline-block;
+  height: auto;
+}
+
+/* While it draws: a quiet box the size the diagram last was, or a line of it. */
+.md-mermaid.is-drawing .md-mermaid-scroll {
+  min-height: 3em;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--md-text) 3%, transparent);
+}
+
+/*
+ * A diagram that does not parse keeps its source, drawn as the code it is, with
+ * Mermaid's message under it. Every diagram looks like this for a moment while
+ * someone is writing one, so the message is quiet and the source is the point.
+ */
+.md-mermaid-error .md-mermaid-scroll {
+  text-align: left;
+}
+.md-mermaid-source {
+  margin: 0;
+  padding: 8px 12px;
+  border-radius: 4px;
+  background: var(--md-code-bg, color-mix(in srgb, var(--md-text) 5%, transparent));
+  font-family: var(--vscode-editor-font-family, ui-monospace, monospace);
+  font-size: 0.9em;
+  white-space: pre;
+}
+.md-mermaid-message {
+  margin: 0.4em 0 0;
+  color: var(--vscode-editorError-foreground, #e5534b);
+  font-size: 0.85em;
+  white-space: pre-wrap;
+}
+
 /* ---- Rendered image widget ---------------------------------------------- */
 
 /* Block wrapper; width shrinks to the image so alignment margins take effect. */
@@ -2111,9 +2836,47 @@ body {
   max-width: 100%;
   margin: 0.3em 0;
 }
+/*
+ * Centre holds its own band; left and right float and the text runs up the side.
+ *
+ * `align="left"` and `align="right"` mean "float me" in every renderer that reads them, which is
+ * why `serializeImage` writes a bare `<img align>` in the first place: that is the form GitHub
+ * floats. Sheaf drew all three with automatic margins, which moves a block to an edge without
+ * taking it out of the flow, so nothing wrapped and each picture took a band across the page with
+ * a large empty area beside it. **Sheaf writes this markup itself** from its own alignment
+ * buttons, so a document laid out here rendered one way here and another way where it was
+ * published.
+ *
+ * Centre is right as a margin and stays one: a centred picture is meant to hold its own band, and
+ * `text-align: center` on a float is not a thing HTML offers anyway.
+ *
+ * ## What was measured before doing this, because a float inside an editor is not obviously safe
+ *
+ * The issue warned that a float changes the line boxes around it, so caret positions, click
+ * targets and measurement all needed checking, and that a float can escape its block and run past
+ * the end of the paragraph. Measured in Chromium, on a 180px picture 488px tall:
+ *
+ *   - the paragraph beside it starts at the picture's right edge rather than under it, so the
+ *     text genuinely wraps;
+ *   - a click on a line below the picture puts the caret on that line;
+ *   - with almost nothing beside it — the worst case, one short line against a tall picture —
+ *     the float does not escape: the content box grows to contain it, ending 5px past the
+ *     picture, and a click on the last line still lands.
+ *
+ * The height map is not disturbed, and the reason is worth keeping: a float shortens the line
+ * boxes it overlaps horizontally and does not change their heights. CodeMirror measures heights,
+ * so what it knows stays true. That is why this is safe where a vertical margin on a block widget
+ * is not.
+ */
 .md-img-align-center { margin-left: auto; margin-right: auto; }
-.md-img-align-right { margin-left: auto; margin-right: 0; }
-.md-img-align-left { margin-left: 0; margin-right: auto; }
+.md-img-align-left {
+  float: left;
+  margin: 0 var(--md-img-float-gap) var(--md-img-float-gap) 0;
+}
+.md-img-align-right {
+  float: right;
+  margin: 0 0 var(--md-img-float-gap) var(--md-img-float-gap);
+}
 
 /* An icon or badge written inside a sentence sits in the line, instead of
    breaking the words before and after it onto their own lines. */
@@ -2245,8 +3008,8 @@ body {
   border-radius: 5px;
   background: transparent;
   color: var(--md-text);
-  font-family: var(--md-font);
-  font-size: 12px;
+  font-family: var(--sheaf-ui-font);
+  font-size: var(--sheaf-ui-secondary);
   line-height: 1;
   cursor: pointer;
 }
@@ -2270,8 +3033,8 @@ body {
   border: 1px solid var(--md-link);
   background: var(--vscode-input-background, var(--vscode-editor-background));
   color: var(--vscode-input-foreground, var(--md-text));
-  font-family: var(--md-font);
-  font-size: 13px;
+  font-family: var(--sheaf-ui-font);
+  font-size: var(--sheaf-ui-row);
 }
 .md-img-input:focus { outline: none; }
 
@@ -2311,8 +3074,8 @@ body {
   max-width: calc(var(--md-content-width) + 2 * var(--md-gutter));
   margin: 0 auto;
   padding: 6px 12px;
-  font-family: var(--md-font);
-  font-size: 13px;
+  font-family: var(--sheaf-ui-font);
+  font-size: var(--sheaf-ui-row);
 }
 .sheaf-find-rows {
   flex: 1 1 auto;
@@ -2404,7 +3167,7 @@ body {
   min-width: 20px;
   padding: 0 3px;
   font-family: var(--md-mono);
-  font-size: 11px;
+  font-size: var(--sheaf-ui-label);
   color: var(--md-muted);
 }
 .sheaf-find-toggle[name='word'] {
@@ -2434,7 +3197,7 @@ body {
   min-width: 64px;
   padding: 0 6px;
   color: var(--md-muted);
-  font-size: 12px;
+  font-size: var(--sheaf-ui-secondary);
   white-space: nowrap;
 }
 .sheaf-find.is-empty-result .sheaf-find-count,
@@ -2488,7 +3251,7 @@ body {
   display: inline-block;
   min-width: 30px;
   padding: 0 2px;
-  font-size: 12px;
+  font-size: var(--sheaf-ui-secondary);
   font-weight: 600;
   text-align: left;
 }
@@ -2627,8 +3390,8 @@ body {
   background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
   color: var(--md-text);
   box-shadow: 0 6px 20px color-mix(in srgb, #000 30%, transparent);
-  font-family: var(--md-font);
-  font-size: 13px;
+  font-family: var(--sheaf-ui-font);
+  font-size: var(--sheaf-ui-row);
   line-height: 1;
   user-select: none;
 }
@@ -2663,23 +3426,45 @@ body {
   color: var(--md-link);
 }
 
-.sheaf-linkpop-url {
+/*
+ * The two fields stack in a column of their own.
+ *
+ * The popover grew a second field when editing a link's words moved here from the document. Side
+ * by side the two would each be half as wide as the one field was, and an address is the longer
+ * of them and the one that most needs the room.
+ *
+ * The column takes the row, so the popover's own `flex-wrap` drops the buttons onto a second row
+ * under it. That is the layout, rather than an accident to be corrected: the fields are what a
+ * person came to the popover to use, and the buttons read as a row of actions beneath them.
+ */
+.sheaf-linkpop-fields {
   flex: 1 1 240px;
   min-width: 0;
-  height: 26px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
   margin: 0 2px;
+}
+
+.sheaf-linkpop-text,
+.sheaf-linkpop-url {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 26px;
   padding: 0 8px;
   border: 1px solid var(--vscode-input-border, var(--md-rule));
   border-radius: 5px;
   background: var(--vscode-input-background, transparent);
   color: var(--vscode-input-foreground, var(--md-text));
-  font-family: var(--md-font);
-  font-size: 12.5px;
+  font-family: var(--sheaf-ui-font);
+  font-size: var(--sheaf-ui-secondary);
   user-select: text;
 }
+.sheaf-linkpop-text::placeholder,
 .sheaf-linkpop-url::placeholder {
   color: var(--vscode-input-placeholderForeground, var(--md-muted));
 }
+.sheaf-linkpop-text:focus,
 .sheaf-linkpop-url:focus {
   outline: 1px solid var(--vscode-focusBorder, var(--md-link));
   outline-offset: -1px;
@@ -2780,8 +3565,8 @@ body {
   border-radius: 5px;
   background: transparent;
   color: var(--md-text);
-  font-family: var(--md-font);
-  font-size: 13px;
+  font-family: var(--sheaf-ui-font);
+  font-size: var(--sheaf-ui-row);
   text-align: left;
   cursor: pointer;
 }
@@ -2799,8 +3584,8 @@ body {
 }
 .sheaf-block-menu-key {
   flex: 0 0 auto;
-  font-family: var(--md-mono);
-  font-size: 11px;
+  font-family: var(--sheaf-ui-font);
+  font-size: var(--sheaf-ui-label);
   color: var(--md-muted);
 }
 .sheaf-block-menu-sep {
@@ -2821,8 +3606,8 @@ body {
   padding: 6px 8px;
   border-radius: 5px;
   color: var(--md-text);
-  font-family: var(--md-font);
-  font-size: 13px;
+  font-family: var(--sheaf-ui-font);
+  font-size: var(--sheaf-ui-row);
   cursor: pointer;
 }
 /* A column the width of one toolbar icon, held open whether or not a row fills it,
@@ -2844,7 +3629,7 @@ body {
   flex: 0 0 auto;
   margin-left: 24px;
   font-family: var(--md-mono);
-  font-size: 11px;
+  font-size: var(--sheaf-ui-label);
   line-height: 1;
   color: var(--md-muted);
   white-space: pre;
@@ -2864,8 +3649,8 @@ body {
 .sheaf-slash-empty {
   padding: 6px 8px;
   color: var(--md-muted);
-  font-family: var(--md-font);
-  font-size: 13px;
+  font-family: var(--sheaf-ui-font);
+  font-size: var(--sheaf-ui-row);
   cursor: default;
 }
 
@@ -2979,4 +3764,103 @@ body.vscode-high-contrast-light {
 .sheaf-table tr.sheaf-arrived-deleted-below:not(.sheaf-arrived) > :first-child::after {
   top: auto;
   bottom: 0;
+}
+
+/* ---- Marker box ----------------------------------------------------------- */
+
+/*
+ * A list marker sits outside the text, right-aligned against the content edge, with the
+ * gap after it. That is what `list-style-position: outside` does on the web, and it is the
+ * reason every list has its marker beside its words and its `9.` and `10.` on the same
+ * period.
+ *
+ * Right-aligned, not left. Left-aligned in the box, a 5px bullet floats 26px from its own
+ * words, which is what a mock of this looked like before the property was looked up.
+ *
+ * The box plus its gap come to exactly one indent step, which is the negative `text-indent`
+ * the line hangs by, so whatever is in the box the words resume on the stop.
+ *
+ * `overflow: visible` matters: a marker wider than the box spills rather than pushing the
+ * words along, so the stop holds even for a number with four digits.
+ */
+/*
+ * The gap after a marker is padding inside the box, not a margin outside it, and the difference
+ * is where the caret goes on an item with no text yet.
+ *
+ * A caret placed after an inline-block sits at its border box, which a margin is outside of. So
+ * on a new empty item the caret landed at the box's edge, 8px left of the column the item above
+ * starts its words on, and the first letter typed jumped right as it arrived. Measured: 29.4px
+ * against the 38px stop.
+ *
+ * Ordered items did not have it, which is what pointed here. A bullet's whole `- ` is replaced
+ * by one widget inside the box, so there is nothing after it for the caret to sit on; an
+ * ordered item keeps `2.` as text in the box and hides its space separately, and that hidden
+ * space is an element after the box, past the margin. Two spellings of one marker, and the
+ * caret could tell them apart.
+ *
+ * As padding the gap is inside the border box, so a caret after the box is already on the stop
+ * and both spellings agree. Where the marker itself is drawn does not move, because
+ * `text-align: right` aligns within the content box and the content box is the same 24px.
+ *
+ * The width is the whole step rather than the step less the gap, because everything here is
+ * `box-sizing: border-box`. Written as the step less the gap it was a 24px *border* box with
+ * the padding eating its content, so the advance fell to 24px and every list item's words moved
+ * 8px left — and the indent check went on passing, because it asks whether every marker puts
+ * its words on one stop rather than which stop that is.
+ */
+.tok-marker-box {
+  display: inline-block;
+  width: var(--md-indent-step);
+  padding-right: var(--md-marker-gap);
+  text-align: right;
+  /* A marker is drawn, never wrapped or collapsed. */
+  white-space: pre;
+}
+
+/* The checkbox inside the box carries no margin of its own: the box supplies the gap. */
+.tok-marker-box > .md-task {
+  margin: 0;
+  vertical-align: baseline;
+}
+
+/* ---- Code colours on a light theme ---------------------------------------- */
+
+/*
+ * The light counterparts of the `--md-tok-*` palette, which is dark by default because both
+ * hosts open dark more often than not.
+ *
+ * Switched twice on purpose, because the two hosts say which kind of theme they are in
+ * different ways and neither answer is available in the other.
+ *
+ * VS Code puts a class on the body naming the theme kind, which is the only reliable signal
+ * there: a reader can run a light VS Code theme on a dark operating system and the other way
+ * round, so the theme kind and the system preference genuinely disagree.
+ *
+ * The browser host has no such class, so it follows the reader's own setting. That rule is
+ * scoped away from VS Code rather than left to apply everywhere, so a light OS cannot put
+ * light-theme code colours on a dark editor's background.
+ */
+body.vscode-light,
+body.vscode-high-contrast-light {
+  --md-tok-keyword: #0000ff;
+  --md-tok-property: #001080;
+  --md-tok-function: #795e26;
+  --md-tok-class: #267f99;
+  --md-tok-string: #a31515;
+  --md-tok-number: #098658;
+  --md-tok-comment: #008000;
+  --md-tok-invalid: #cd3131;
+}
+
+@media (prefers-color-scheme: light) {
+  body:not([class*='vscode-']) {
+    --md-tok-keyword: #0000ff;
+    --md-tok-property: #001080;
+    --md-tok-function: #795e26;
+    --md-tok-class: #267f99;
+    --md-tok-string: #a31515;
+    --md-tok-number: #098658;
+    --md-tok-comment: #008000;
+    --md-tok-invalid: #cd3131;
+  }
 }

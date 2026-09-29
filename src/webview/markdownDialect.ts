@@ -7,7 +7,9 @@
  */
 
 import { markdown, commonmarkLanguage } from '@codemirror/lang-markdown';
-import { Autolink, Emoji, InlineContext, MarkdownConfig, MarkdownExtension, Table, TaskList } from '@lezer/markdown';
+import { Autolink, InlineContext, MarkdownConfig, MarkdownExtension, Table, TaskList } from '@lezer/markdown';
+import { Emoji } from './emoji';
+import { Footnotes } from './footnotes';
 import { Highlight } from './highlight';
 import { Maths } from './maths';
 import { Strikethrough } from './strikethrough';
@@ -52,17 +54,19 @@ const BracketsInLinkText: MarkdownConfig = {
 };
 
 /**
- * The Markdown dialect Sheaf reads: CommonMark, GFM, emoji shortcodes, `$…$`
- * maths, and Sheaf's own `==highlight==` and strikethrough.
+ * The Markdown dialect Sheaf reads: CommonMark, GFM with its footnotes, emoji
+ * shortcodes, `$…$` maths, and Sheaf's own `==highlight==` and strikethrough.
  *
  * It is assembled from CommonMark rather than taken from `markdownLanguage`,
  * which throws in Pandoc's `~subscript~` and `^superscript^` as well. Those two
  * disagree with github.com, the renderer Sheaf is judged against: there `2^10^`
  * is a literal pair of carets, and `~text~` is strikethrough. GFM's own
  * strikethrough reads two tildes and not one, so Sheaf's replaces it and reads
- * both. Everything else here is GFM as `@lezer/markdown` ships it.
+ * both, and its emoji rule stops at `[a-zA-Z_0-9]`, which would leave `:+1:` out,
+ * so Sheaf's replaces that one too. Everything else here is GFM as
+ * `@lezer/markdown` ships it.
  */
-export const markdownDialect: MarkdownExtension = [Table, TaskList, Strikethrough, Autolink, Emoji, Highlight, Maths, BracketsInLinkText];
+export const markdownDialect: MarkdownExtension = [Table, TaskList, Strikethrough, Autolink, Emoji, Highlight, Maths, Footnotes, BracketsInLinkText];
 
 /**
  * That dialect as a language, for the places that need a parser or a small

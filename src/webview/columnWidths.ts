@@ -180,6 +180,39 @@ export function allocateColumnWidths(
   const base = free.map((i) => Math.min(MAX[i], Math.max(MIN[i], floor)));
   const sum = (xs: readonly number[]): number => xs.reduce((a, b) => a + b, 0);
 
+  const max = free.map((i) => MAX[i]);
+  // Each column's widest form, held back by the ceiling but never pushed under its own
+  // minimum. Rules 2, 3 and 4 all measure against this.
+  const soft = max.map((m, k) => Math.max(base[k], Math.min(m, cap)));
+  const sumBase = sum(base);
+  const sumSoft = sum(soft);
+
+  /*
+   * What a column gets once the pane cannot hold even the minimums.
+   *
+   * Squeezing to the minimum is right while the table is nearly fitting, because it may
+   * yet fit. It is wrong once it cannot: at 200 columns the minimums are many times the
+   * pane, the frame scrolls whatever happens, and squeezing buys nothing but two hundred
+   * six-character columns wrapped over four lines each, unreadable at every scroll
+   * position. The reason to squeeze is to avoid scrolling; once scrolling is certain the
+   * reason is gone.
+   *
+   * So this moves from the minimum toward the ceiling as the pane falls further short,
+   * rather than switching at a threshold. At the boundary with rule 3 the pane holds the
+   * minimums exactly, `u` is 0, and every column is where rule 3 leaves it, so dragging
+   * the editor's edge through the boundary moves nothing. A 12-column table that nearly
+   * fits is untouched for the same reason. As the pane falls away `u` approaches 1 and
+   * each column reaches its content width, which is what makes 200 columns readable.
+   *
+   * Handing out the ceiling at the boundary instead, which is the obvious reading, puts a
+   * jump there: every column would leap from its minimum to its content width the moment
+   * the pane lost one more pixel.
+   */
+  const scrolled = (room: number): number[] => {
+    const u = sumBase > EPS ? Math.min(1, Math.max(0, 1 - Math.max(0, room) / sumBase)) : 1;
+    return base.map((b, k) => b + u * (soft[k] - b));
+  };
+
   const used = new Array<number>(n);
   for (const [i, w] of held) used[i] = w;
   let rule: 1 | 2 | 3 | 4;
@@ -187,12 +220,12 @@ export function allocateColumnWidths(
   if (!free.length) {
     rule = 1;
   } else if (room <= 0) {
-    // The pinned columns have taken the pane on their own. The rest go to their
-    // minimum and the frame scrolls.
+    // The pinned columns have taken the pane on their own, so the frame scrolls whatever
+    // the rest are given and they are given what rule 4 gives.
     rule = 4;
-    free.forEach((i, k) => (used[i] = base[k]));
+    const w = scrolled(room);
+    free.forEach((i, k) => (used[i] = w[k]));
   } else {
-    const max = free.map((i) => MAX[i]);
     const sumMax = sum(max);
     if (sumMax <= room) {
       // Rule 1. Nothing has to wrap, so nothing has to be decided: hand each
@@ -205,8 +238,6 @@ export function allocateColumnWidths(
       // minimum. Without the lift, a column whose longest word is wider than
       // the ceiling would be handed a width that word cannot fit in, and the
       // table would report that it fits the pane while breaking words to do it.
-      const soft = max.map((m, k) => Math.max(base[k], Math.min(m, cap)));
-      const sumSoft = sum(soft);
       if (sumSoft <= room) {
         // Rule 2. Only the columns above the ceiling give anything up, and what
         // the pane has left over goes straight back to them. A column already
@@ -217,7 +248,6 @@ export function allocateColumnWidths(
         const back = share(room - sumSoft, sum(capped) > 0 ? capped : max, headroom);
         free.forEach((i, k) => (used[i] = soft[k] + back[k]));
       } else {
-        const sumBase = sum(base);
         if (sumBase <= room) {
           // Rule 3. Every column is past its ceiling's help, so they all move the
           // same fraction of the way from their minimum toward their widest form.
@@ -237,10 +267,11 @@ export function allocateColumnWidths(
           const t = span > EPS ? Math.min(1, (room - sumBase) / span) : 0;
           free.forEach((i, k) => (used[i] = base[k] + t * (soft[k] - base[k])));
         } else {
-          // Rule 4. Even the minimums do not fit. Nothing is squeezed below them:
-          // the table keeps its shape and the frame scrolls sideways.
+          // Rule 4. Even the minimums do not fit, so the frame scrolls sideways whatever
+          // this hands out, and `scrolled` spends that freedom on being readable.
           rule = 4;
-          free.forEach((i, k) => (used[i] = base[k]));
+          const w = scrolled(room);
+          free.forEach((i, k) => (used[i] = w[k]));
         }
       }
     }

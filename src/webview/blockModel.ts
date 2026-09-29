@@ -16,6 +16,7 @@ import { ensureSyntaxTree, language, syntaxTree } from '@codemirror/language';
 import { markdown } from '@codemirror/lang-markdown';
 import { sheafMarkdownLanguage } from './markdownDialect';
 import { frontMatterEnd } from './frontMatter';
+import { alertMarkerOnText } from './alerts';
 import { isolateHistory } from '@codemirror/commands';
 import type { SyntaxNode, Tree } from '@lezer/common';
 import {
@@ -501,6 +502,34 @@ export function nearestDropIndex(targets: { index: number; y: number }[], y: num
   return best ? best.index : null;
 }
 
+/**
+ * Where in the document the gap at `index` sits, so an aim can outlive a change.
+ *
+ * A drop index is a place in a list of siblings, and a write from outside can add or
+ * remove siblings, which makes the same number mean a different gap. A position can be
+ * mapped through the change; an index cannot.
+ */
+export function dropAnchor(targets: { siblings: BlockRange[] }, index: number): number | null {
+  const s = targets.siblings;
+  if (!s.length) return null;
+  return index >= s.length ? s[s.length - 1].to : s[index].from;
+}
+
+/** The drop index whose gap is nearest `pos` in the document, for an aim taken before a change. */
+export function dropIndexNearPos(
+  targets: { siblings: BlockRange[]; indices: number[] },
+  pos: number
+): number | null {
+  let best: { index: number; distance: number } | null = null;
+  for (const index of targets.indices) {
+    const at = dropAnchor(targets, index);
+    if (at === null) continue;
+    const distance = Math.abs(at - pos);
+    if (!best || distance < best.distance) best = { index, distance };
+  }
+  return best ? best.index : null;
+}
+
 // ---- Duplicate and delete ---------------------------------------------------
 
 function duplicateSpec(state: EditorState, g: Group): TransactionSpec | null {
@@ -741,7 +770,25 @@ function stripToText(text: string, kind: BlockKind | null): string {
     return lines.join('\n');
   }
   if (kind === 'heading' && lines.length === 2 && /^\s{0,3}(=+|-+)\s*$/.test(lines[1])) return lines[0];
-  if (lines.every((l) => /^\s{0,3}>/.test(l) || l.trim() === '')) lines = lines.map((l) => l.replace(/^\s{0,3}>[ \t]?/, ''));
+  if (lines.every((l) => /^\s{0,3}>/.test(l) || l.trim() === '')) {
+    lines = lines.map((l) => l.replace(/^\s{0,3}>[ \t]?/, ''));
+    /*
+     * An alert's marker line is chrome, so it goes with the quote rather than surviving it as
+     * text. Stripping the `>` alone left `[!NOTE]` on the page: a person turning a callout into
+     * plain text was handed their words plus the callout's type as literal characters, which is
+     * not what any of the block commands mean.
+     *
+     * A title is the exception, because a title is the only part of that line that was ever
+     * theirs: the label drawn in its place is the title when there is one and the type's name
+     * when there is not. So a titled callout keeps its title as the line's text and an untitled
+     * one loses the line.
+     */
+    const alert = lines.length ? alertMarkerOnText(lines[0]) : null;
+    if (alert) {
+      if (alert.title) lines[0] = alert.title;
+      else lines.shift();
+    }
+  }
   lines[0] = lines[0].replace(/^\s{0,3}#{1,6}(?:[ \t]+|$)/, '').replace(LIST_MARK_RE, '$1');
   return lines.join('\n');
 }

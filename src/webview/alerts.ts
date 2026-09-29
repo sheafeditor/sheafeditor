@@ -77,7 +77,38 @@ const ALERTS: Record<AlertKind, { label: string; icon: string }> = {
  * after whitespace. Case does not matter, and neither do the spaces either side
  * of the marker.
  */
-const MARKER = /^>[ \t]*\[!([a-z0-9][a-z0-9-]*)\]([+-]?)(?:[ \t]+(.*?))?[ \t]*$/i;
+const MARKER = new RegExp(`^>[ \\t]*${markerBody()}`, 'i');
+
+/**
+ * The marker itself, without the `>` in front of it, as a source string so that the two
+ * places that need it cannot drift apart.
+ *
+ * The second place is a line whose `>` has already been taken off, which is what a block
+ * conversion works on: see `alertMarkerOnText` below.
+ */
+function markerBody(): string {
+  return '\\[!([a-z0-9][a-z0-9-]*)\\]([+-]?)(?:[ \\t]+(.*?))?[ \\t]*$';
+}
+
+const MARKER_STRIPPED = new RegExp(`^[ \\t]*${markerBody()}`, 'i');
+
+/**
+ * The alert marker on a line that no longer has its `>`, and the title it carries.
+ *
+ * A block conversion strips the quote markers before it looks at what is left, so it cannot
+ * use `alertMarkerAt`, which reads a document from a quote's own position. What it needs is
+ * this: whether the first line of a stripped quote was the alert's chrome, and whether any
+ * of it was the person's own words.
+ *
+ * The title is the only part that was ever theirs. The label drawn in place of the marker is
+ * the title when there is one and the type's name when there is not, so a callout with no
+ * title has no text of its own on that line at all.
+ */
+export function alertMarkerOnText(line: string): { kind: AlertKind; title: string } | null {
+  const m = MARKER_STRIPPED.exec(line);
+  if (!m) return null;
+  return { kind: ALIASES[m[1].toLowerCase()] ?? 'note', title: m[3] ?? '' };
+}
 
 /**
  * The style each type outside the five takes: the nearest of them in meaning.

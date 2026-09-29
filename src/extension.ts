@@ -2,17 +2,28 @@ import * as vscode from 'vscode';
 import {
   commentsSetting,
   DocumentSelection,
+  FrontMatterSetting,
   MarkdownEditorProvider,
+  OutlineSetting,
   setComments,
+  setFrontMatter,
   setTableOfContents,
   tableOfContentsOn,
 } from './markdownEditorProvider';
 import { registerDefaultEditorSync } from './defaultEditor';
 import { registerBrowserSession } from './browserSession';
+import { registerAbout } from './about';
 
 export function activate(context: vscode.ExtensionContext): void {
+  // Which build this is, and a word when a newer one is installed but not running.
+  registerAbout(context);
+
   // Register the WYSIWYG custom editor for Markdown files.
   context.subscriptions.push(MarkdownEditorProvider.register(context));
+  // The same editor for .txt files, which it never opens by itself: see `textViewType`.
+  context.subscriptions.push(
+    MarkdownEditorProvider.register(context, 'markdown', MarkdownEditorProvider.textViewType)
+  );
   // And the one offered for .csv and .tsv files, which shows the whole file as a grid.
   context.subscriptions.push(MarkdownEditorProvider.register(context, 'grid'));
 
@@ -20,8 +31,8 @@ export function activate(context: vscode.ExtensionContext): void {
   // in step with it.
   context.subscriptions.push(registerDefaultEditorSync());
 
-  // Open Markdown files with the WYSIWYG editor: the Explorer's selection, or the
-  // file the person is looking at.
+  // Open a document with the WYSIWYG editor: the Explorer's selection, or the file the
+  // person is looking at. Markdown, and a .txt through its own view type.
   context.subscriptions.push(
     vscode.commands.registerCommand(
       'sheaf.openWithWysiwyg',
@@ -36,7 +47,7 @@ export function activate(context: vscode.ExtensionContext): void {
             await vscode.commands.executeCommand(
               'vscode.openWith',
               target,
-              MarkdownEditorProvider.viewType,
+              viewTypeFor(target),
               chosen.length > 1 ? { preview: false } : undefined
             );
           }
@@ -53,11 +64,7 @@ export function activate(context: vscode.ExtensionContext): void {
           void vscode.window.showInformationMessage('Sheaf: no Markdown file to open.');
           return;
         }
-        await vscode.commands.executeCommand(
-          'vscode.openWith',
-          active,
-          MarkdownEditorProvider.viewType
-        );
+        await vscode.commands.executeCommand('vscode.openWith', active, viewTypeFor(active));
       }
     )
   );
@@ -95,6 +102,17 @@ export function activate(context: vscode.ExtensionContext): void {
     )
   );
 
+  // The same three states by name, for anyone who wants the header with the list folded
+  // away and cannot get there by toggling. Toggle stays, because on and off is what most
+  // people want from a keyboard shortcut.
+  for (const [command, value] of [
+    ['sheaf.showTableOfContents', 'shown'],
+    ['sheaf.collapseTableOfContents', 'collapsed'],
+    ['sheaf.hideTableOfContents', 'hidden'],
+  ] as [string, OutlineSetting][]) {
+    context.subscriptions.push(vscode.commands.registerCommand(command, () => setTableOfContents(value)));
+  }
+
   // Show the notes written into the document as `<!-- … -->`, or put them away until
   // they are wanted. Like the heading list, this is a setting rather than a property
   // of one editor, so it takes in every open editor at once.
@@ -103,6 +121,17 @@ export function activate(context: vscode.ExtensionContext): void {
       setComments(commentsSetting() === 'hidden' ? 'show' : 'hidden')
     )
   );
+
+  // How much of a document's front matter is drawn. A setting rather than a property of
+  // one editor, like the heading list and the comments, so each of the three takes in
+  // every open editor at once.
+  for (const [command, value] of [
+    ['sheaf.showFrontMatter', 'shown'],
+    ['sheaf.collapseFrontMatter', 'collapsed'],
+    ['sheaf.hideFrontMatter', 'hidden'],
+  ] as [string, FrontMatterSetting][]) {
+    context.subscriptions.push(vscode.commands.registerCommand(command, () => setFrontMatter(value)));
+  }
 
   // Put a reference to the selection on the clipboard, as the right-click menu does.
   context.subscriptions.push(vscode.commands.registerCommand('sheaf.copyRef', copySelectionRef));
@@ -285,11 +314,26 @@ function focusedSheafEditor(): MarkdownEditorProvider | undefined {
 /** The extensions Sheaf's editor is contributed for. */
 export const MARKDOWN_EXTENSIONS = ['.md', '.markdown'];
 
+/** And the one it is offered for without ever opening by itself. */
+export const TEXT_EXTENSIONS = ['.txt'];
+
 /**
  * True when Sheaf's editor is contributed for this file. An Explorer selection can
  * hold anything, and a file carries whatever case it was named with.
  */
 function isMarkdownFile(uri: vscode.Uri): boolean {
   const lowercased = uri.path.toLowerCase();
-  return MARKDOWN_EXTENSIONS.some((extension) => lowercased.endsWith(extension));
+  return [...MARKDOWN_EXTENSIONS, ...TEXT_EXTENSIONS].some((extension) => lowercased.endsWith(extension));
+}
+
+/**
+ * Which of the two view types opens this file. They are the same editor, and a
+ * `.txt` has to be opened through its own, because `openWith` is given a view type
+ * and a view type only opens what it is contributed for.
+ */
+function viewTypeFor(uri: vscode.Uri): string {
+  const lowercased = uri.path.toLowerCase();
+  return TEXT_EXTENSIONS.some((extension) => lowercased.endsWith(extension))
+    ? MarkdownEditorProvider.textViewType
+    : MarkdownEditorProvider.viewType;
 }

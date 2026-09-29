@@ -25,6 +25,11 @@ const SUITES = {
   host: { entry: 'test/hostEntry.ts', out: 'test/host.bundle.cjs', platform: 'node', run: 'test/host.test.mjs', external: ['vscode'] },
   prose: { entry: 'test/prose.entry.ts', out: 'test/prose.bundle.cjs', platform: 'browser', run: 'test/prose.test.mjs' },
   server: { entry: 'test/server.entry.ts', out: 'test/server.bundle.cjs', platform: 'node', run: 'test/server.test.mjs' },
+  // The browser host: the page's own module, driven under jsdom. Bundled for a browser,
+  // because that is what it is built for and what it reaches its globals through.
+  'browser-host': { entry: 'test/browserHost.entry.ts', out: 'test/browserHost.bundle.cjs', platform: 'browser', run: 'test/browserHost.test.mjs' },
+  // The harness rather than the product: plain Node modules under test/, so no bundle.
+  harness: { run: 'test/harness.test.mjs' },
 };
 
 const names = process.argv.slice(2);
@@ -53,7 +58,8 @@ function run(file) {
 let failed = 0;
 for (const name of chosen) {
   const suite = SUITES[name];
-  await build({
+  // A suite with no entry is plain Node already and has nothing to bundle.
+  if (suite.entry) await build({
     entryPoints: [join(REPO, suite.entry)],
     outfile: join(REPO, suite.out),
     bundle: true,
@@ -62,6 +68,19 @@ for (const name of chosen) {
     external: suite.external ?? [],
     logLevel: 'warning',
     absWorkingDir: REPO,
+    /*
+     * The same stamp the real build injects, so a suite drives a bundle that knows
+     * which build it is. A fixed one rather than this checkout's: the checks read
+     * it, and a value that moved with every commit would make them say different
+     * things on different days. `src/buildStamp.ts` falls back when the define is
+     * missing, and the point of setting it here is that the fallback is not what
+     * the host suite should be exercising.
+     */
+    define: {
+      __SHEAF_BUILD__: JSON.stringify(
+        JSON.stringify({ version: '0.2.0', commit: 'abc1234', branch: 'main', dirty: false, builtAt: '2026-01-01T00:00:00.000Z' })
+      ),
+    },
   });
   const code = await run(suite.run);
   if (code !== 0) failed = code;

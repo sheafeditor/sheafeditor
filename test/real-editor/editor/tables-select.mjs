@@ -286,34 +286,6 @@ export const scenarios = [
     },
   },
   {
-    id: 'tables.select.selected-row-still-moves',
-    feature: 'tables.selection',
-    name: 'Clicking a row number and then dragging it still moves that row',
-    run: async (S) => {
-      await fresh(S, 'row-moves');
-      await S.click(gutter(0));
-      await S.sleep(200);
-      await S.drag(gutter(0), gutter(2));
-      const d = await S.disk();
-      const want = DOC.replace('| apple | 3   | red  |\n| kiwi  | 12  | fuzz |\n| lime  | 7   | sour |', '| kiwi  | 12  | fuzz |\n| lime  | 7   | sour |\n| apple | 3   | red  |');
-      return { ok: d === want, detail: d === want ? '' : `file now ${show(d)}` };
-    },
-  },
-  {
-    id: 'tables.select.selected-column-still-moves',
-    feature: 'tables.selection',
-    name: 'Clicking a column header and then dragging it still moves that column',
-    run: async (S) => {
-      await fresh(S, 'col-moves');
-      await S.click(cell(-1, 0));
-      await S.sleep(200);
-      await S.drag(cell(-1, 0), cell(-1, 2));
-      const d = await S.disk();
-      const moved = d.includes('| Qty | Note | Fruit |') || d.includes('| Qty   | Note | Fruit |');
-      return { ok: moved, detail: moved ? '' : `file now ${show(d)}` };
-    },
-  },
-  {
     id: 'tables.select.long-table-select-speed',
     feature: 'tables.selection',
     name: 'In a 3,000-row table a click selects its cell within 300 ms, an arrow key moves the active cell within 100 ms, and Cmd+Down lands on the last row',

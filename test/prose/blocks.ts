@@ -355,7 +355,7 @@ export const scenarios: Scenario[] = [
       p.destroy();
       return (
         all.join('|') ===
-          'Text|Heading 1|Heading 2|Heading 3|Heading 4|Heading 5|Heading 6|Bullet list|Numbered list|Task list|Quote|Code block|Table|CSV data table|Divider' &&
+          'Text|Heading 1|Heading 2|Heading 3|Heading 4|Heading 5|Heading 6|Bullet list|Numbered list|Task list|Quote|Code block|Table|CSV data table|View of a table|Divider' &&
         headings.join('|') === 'Heading 1|Heading 2|Heading 3|Heading 4|Heading 5|Heading 6'
       );
     },
@@ -493,7 +493,7 @@ export const scenarios: Scenario[] = [
       const p = mountProse(doc);
       insertParagraphBelow(p.view, blockRangeAt(p.view.state, 0)!);
       const added = p.doc() === '# A\n\n\n\n# B' && p.view.state.selection.main.head === 5;
-      const open = slashMenuOf(p.view.state)?.items.length === 15;
+      const open = slashMenuOf(p.view.state)?.items.length === 16;
       type(p, 'h1');
       p.press('Enter');
       const converted = p.doc() === '# A\n\n# \n\n# B';

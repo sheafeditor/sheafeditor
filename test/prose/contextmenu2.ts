@@ -46,6 +46,41 @@ async function keyboardPaste(doc: string, at: number, text: string): Promise<str
 
 export const scenarios: Scenario[] = [
   {
+    /*
+     * The menu's keyboard lives on the document, in the capture phase, so it sees a key
+     * before whatever is focused does. Those listeners outlive the element: a menu taken
+     * off the page still has items to count, and it went on claiming ArrowDown from the
+     * table of contents three files away, where the arrows simply stopped working for no
+     * reason anything nearby could explain.
+     */
+    name: 'a menu taken off the page stops claiming keys, so arrows reach whatever is focused',
+    run: () => {
+      const p = mountProse('# One\n\n## Two\n');
+      const menu = openMenu(p);
+      const open = menu.shown();
+      // Somewhere else on the page, focused, listening for the same key.
+      const elsewhere = document.createElement('button');
+      document.body.appendChild(elsewhere);
+      let heard = 0;
+      elsewhere.addEventListener('keydown', () => void heard++);
+      elsewhere.focus();
+      const press = (): boolean => {
+        const e = new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true });
+        elsewhere.dispatchEvent(e);
+        return e.defaultPrevented;
+      };
+      // While it is open the menu owns the arrow, which is the control: without this the
+      // check would pass on a menu whose listeners were never attached at all.
+      const claimedWhileOpen = press() && heard === 0;
+      menu.close();
+      const claimedAfter = press();
+      const reached = heard === 1;
+      elsewhere.remove();
+      p.destroy();
+      return open && claimedWhileOpen && !claimedAfter && reached;
+    },
+  },
+  {
     name: 'Cmd+V turns a copied spreadsheet range into a pipe table, and the menu offers no Paste of its own',
     run: async () => {
       const range = 'fruit\tqty\nkiwi\t2';

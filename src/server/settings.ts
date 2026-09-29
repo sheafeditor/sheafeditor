@@ -19,22 +19,29 @@
 
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { readComments, readFrontMatter, readOutline } from '../settingValues';
+import type { EditorConfig } from '../protocol';
 
-/** What the webview is given at `init`, and again whenever it changes. */
-export interface EditorConfig {
-  contentWidth: string;
-  revealSyntaxOnLine: boolean;
-  doubleClickToEditSource: boolean;
-  tableOfContents: boolean;
-  comments: 'show' | 'hidden';
-}
+/**
+ * What the webview is given at `init`, and again whenever it changes.
+ *
+ * Taken from the protocol rather than restated. This host declared its own copy field for
+ * field, so the shape it sends and the shape the page reads were two statements of one
+ * fact with nothing comparing them: the server types `readConfig`'s answer by its copy,
+ * the browser host receives it as the protocol's, and a field added to one and not the
+ * other compiled. Re-exported because `server.ts` imports the name from here.
+ */
+export type { EditorConfig };
 
+/** The value of every setting in a folder that sets none, as `package.json` declares them. */
 export const DEFAULT_CONFIG: EditorConfig = {
   contentWidth: '708px',
+  lineNumbers: false,
   revealSyntaxOnLine: false,
-  doubleClickToEditSource: true,
-  tableOfContents: false,
+  doubleClickToEditSource: false,
+  tableOfContents: 'hidden',
   comments: 'show',
+  frontMatter: 'collapsed',
 };
 
 /**
@@ -84,11 +91,17 @@ export function stripJsonc(text: string): string {
   return out.replace(/,(\s*[}\]])/g, '$1');
 }
 
-function pick<T>(raw: Record<string, unknown>, key: string, fallback: T, kind: 'string' | 'boolean'): T {
+/** A setting's value as the file has it, in either spelling, or `undefined` for one it does not set. */
+function valueOf(raw: Record<string, unknown>, key: string): unknown {
   const nested = raw['sheaf'];
-  const value =
+  return (
     raw[`sheaf.${key}`] ??
-    (nested && typeof nested === 'object' ? (nested as Record<string, unknown>)[key] : undefined);
+    (nested && typeof nested === 'object' ? (nested as Record<string, unknown>)[key] : undefined)
+  );
+}
+
+function pick<T>(raw: Record<string, unknown>, key: string, fallback: T, kind: 'string' | 'boolean'): T {
+  const value = valueOf(raw, key);
   return typeof value === kind ? (value as T) : fallback;
 }
 
@@ -104,11 +117,18 @@ export function readConfig(root: string): EditorConfig {
   }
   return {
     contentWidth: pick(raw, 'contentWidth', DEFAULT_CONFIG.contentWidth, 'string'),
+    // What the folder starts a tab with. The toolbar's button then changes it for the tab,
+    // the way it changes the table of contents and the front matter: the host keeps the new
+    // value and echoes it back, and nothing is written to a file the project has checked in.
+    // So this is the opening value rather than the only one, and a tab can turn them off.
+    lineNumbers: pick(raw, 'lineNumbers', DEFAULT_CONFIG.lineNumbers, 'boolean'),
     revealSyntaxOnLine: pick(raw, 'revealSyntaxOnLine', DEFAULT_CONFIG.revealSyntaxOnLine, 'boolean'),
     doubleClickToEditSource: pick(raw, 'doubleClickToEditSource', DEFAULT_CONFIG.doubleClickToEditSource, 'boolean'),
-    tableOfContents: pick(raw, 'tableOfContents', DEFAULT_CONFIG.tableOfContents, 'boolean'),
-    // Only the two names the setting offers. Anything else leaves comments showing,
-    // because a comment drawn as nothing is a comment a reader cannot find.
-    comments: pick(raw, 'comments', DEFAULT_CONFIG.comments, 'string') === 'hidden' ? 'hidden' : 'show',
+    // Read through the same functions VS Code's side uses, because these settings name
+    // modes: one that offers three words and a host reading it as a boolean silently
+    // agrees with only one of them.
+    tableOfContents: readOutline(valueOf(raw, 'tableOfContents')),
+    frontMatter: readFrontMatter(valueOf(raw, 'frontMatter')),
+    comments: readComments(valueOf(raw, 'comments')),
   };
 }

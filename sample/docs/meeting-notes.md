@@ -18,6 +18,12 @@
 
 ## 1. RFC 0148 phase 3
 
+<!--
+Not for the shared notes: the cutover date is still soft. Operations have not
+confirmed they can staff the 06:00 window, and if they cannot, phase 3 slips a
+week and the docs freeze below slips with it. Say nothing until they answer.
+-->
+
 Shadow mode has been clean for eleven days. Two divergences last week, both explained by the timetable edit that landed mid-run — not planner bugs.
 
 - Publish cutover proposed for **Thu 2044-05-19, 06:00 UTC**, before the morning peak.
@@ -88,7 +94,7 @@ No objections. **Decision:** try it for two rotations, review 2044-05-28.
 
 ## 5. AOB
 
-- Ingest asked whether anyone still reads the nightly digest email. Nobody in the room does. Parking it — someone outside the room might.
+- Ingest asked whether anyone still reads the nightly digest email. Nobody in the room does. Parking it — someone outside the room might. <!-- Support read it; ask them before anyone switches it off. -->
 - Next sync **2044-05-21, 10:00 UTC**. Billing chairs.
 
 ---

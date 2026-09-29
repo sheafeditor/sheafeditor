@@ -12,9 +12,43 @@ const mountBar = (p: Prose): HTMLElement => {
 /** Click a toolbar button by its command name. */
 const click = (bar: HTMLElement, cmd: string): void => bar.querySelector<HTMLButtonElement>(`[data-command="${cmd}"]`)!.click();
 
+const G: any = globalThis;
+
+/** Set a popover field the way typing does. */
+const set = (input: HTMLInputElement, value: string): void => {
+  input.value = value;
+  input.dispatchEvent(new G.Event('input', { bubbles: true }));
+};
+
+/** Fill the popover the last command opened and press Enter in the address field. */
+const enterAddress = (p: Prose, url: string, text?: string): void => {
+  const pop = p.view.dom.querySelector('.sheaf-linkpop');
+  if (!pop) throw new Error('no link popover is open');
+  const field = (which: string): HTMLInputElement => pop.querySelector<HTMLInputElement>(`.sheaf-linkpop-${which}`)!;
+  if (text !== undefined) set(field('text'), text);
+  set(field('url'), url);
+  field('url').dispatchEvent(new G.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+};
+
+/** Which of the link popover's fields has the caret, and what it holds. */
+const focusedField = (p: Prose): string => {
+  const pop = p.view.dom.querySelector('.sheaf-linkpop');
+  if (!pop) return 'no popover';
+  const active = document.activeElement as HTMLInputElement | null;
+  if (!active || !pop.contains(active)) return 'no field focused';
+  return `${active.classList.contains('sheaf-linkpop-url') ? 'url' : 'text'}=${active.value}`;
+};
+
 export const scenarios: Scenario[] = [
   {
-    name: 'Link and Mod-k with the caret inside a link remove the link instead of nesting a second one',
+    /*
+     * Cmd+K and the Link button open the popover on the link the caret is in.
+     *
+     * They used to remove it, which made the one shortcut people reach for to change a
+     * link the shortcut that destroys it. Nesting a second link is still not on the
+     * table: Markdown has no link inside a link.
+     */
+    name: 'Link and Mod-k with the caret inside a link open the popover on its address, leaving the document alone',
     run: () => {
       const doc = 'Go to [the site](https://x.io) now';
       const caret = doc.indexOf('site') + 2;
@@ -23,21 +57,30 @@ export const scenarios: Scenario[] = [
       const bar = mountBar(a);
       a.select(caret);
       click(bar, 'link');
-      const button = a.doc();
+      const button = `${a.doc()} | ${focusedField(a)}`;
       a.destroy();
       bar.remove();
 
       const b = mountProse(doc);
       b.select(caret);
       const handled = b.press('Mod-k');
-      const key = b.doc();
+      const key = `${b.doc()} | ${focusedField(b)}`;
       b.destroy();
 
-      return button === 'Go to the site now' && handled && key === 'Go to the site now';
+      const want = `${doc} | url=https://x.io`;
+      return {
+        ok: button === want && handled && key === want,
+        detail: `the button gave ${JSON.stringify(button)}, Mod-k gave ${JSON.stringify(key)}, wanted ${JSON.stringify(want)}`,
+      };
     },
   },
   {
-    name: 'Link over a selection spanning two paragraphs links each paragraph on its own',
+    /*
+     * A link cannot cross a block, so a selection over two paragraphs becomes two links, each
+     * keeping its own words, both to the one address the popover was given. The address arrives
+     * once and fills them all, which is what selecting every `url` used to be for.
+     */
+    name: 'Link over a selection spanning two paragraphs writes one link per paragraph, both to the one address',
     run: () => {
       const doc = 'First words\n\nSecond words';
       const end = doc.indexOf('Second words') + 'Second word'.length;
@@ -46,20 +89,70 @@ export const scenarios: Scenario[] = [
       const bar = mountBar(a);
       a.select(0, end);
       click(bar, 'link');
-      const split = a.doc() === '[First words](url)\n\n[Second word](url)s';
-      // Every address is selected, so typing it once fills in both.
-      const ranges = a.view.state.selection.ranges;
-      const urlsSelected = ranges.length === 2 && ranges.every((r) => a.view.state.sliceDoc(r.from, r.to) === 'url');
+      // Nothing is written while the address is being asked for.
+      const pending = a.doc();
+      enterAddress(a, 'https://x.io');
+      const split = a.doc();
       a.destroy();
       bar.remove();
 
       const b = mountProse('- one\n- two');
       b.select(0, b.doc().length);
       b.press('Mod-k');
-      const list = b.doc() === '- [one](url)\n- [two](url)';
+      enterAddress(b, 'u');
+      const list = b.doc();
       b.destroy();
 
-      return split && urlsSelected && list;
+      const wantSplit = '[First words](https://x.io)\n\n[Second word](https://x.io)s';
+      return {
+        ok: pending === doc && split === wantSplit && list === '- [one](u)\n- [two](u)',
+        detail:
+          `before the address the file was ${JSON.stringify(pending)}; two paragraphs gave ${JSON.stringify(split)}` +
+          (split === wantSplit ? '' : ` rather than ${JSON.stringify(wantSplit)}`) +
+          `; the list gave ${JSON.stringify(list)}`,
+      };
+    },
+  },
+  {
+    name: 'Mod-k on words holding a lone bracket escapes it, so the link parses; a matched pair is left as written',
+    run: () => {
+      const cases: [string, string][] = [
+        // A lone closer would end the label early and leave "](url)" showing as text.
+        ['see step 3]', '[see step 3\\]](url)'],
+        ['open [ here', '[open \\[ here](url)'],
+        // A matched pair is a valid label as it stands, so nothing in the words changes.
+        ['note [1] here', '[note [1] here](url)'],
+        // An escaped bracket already stands for itself and needs no second escape.
+        ['a \\] b', '[a \\] b](url)'],
+      ];
+      const bad: string[] = [];
+      for (const [words, want] of cases) {
+        const p = mountProse(words);
+        p.select(0, words.length);
+        p.press('Mod-k');
+        // The words arrive in the text field as they were selected, backslashes included.
+        const field = p.view.dom.querySelector<HTMLInputElement>('.sheaf-linkpop-text')?.value;
+        enterAddress(p, 'url');
+        const got = p.doc();
+        // The caret is past the link, ready to carry on the sentence.
+        const sel = p.view.state.selection.main;
+        if (got !== want || field !== words || !sel.empty || sel.head !== got.length) {
+          bad.push(`${JSON.stringify(words)} -> ${JSON.stringify(got)} (field ${JSON.stringify(field)}, caret ${sel.head} of ${got.length})`);
+        }
+        p.destroy();
+      }
+      // Across two paragraphs, each span is escaped on its own.
+      const two = mountProse('a ] b\n\nc d');
+      two.select(0, two.doc().length);
+      two.press('Mod-k');
+      enterAddress(two, 'url');
+      const both = two.doc();
+      two.destroy();
+      const wantBoth = '[a \\] b](url)\n\n[c d](url)';
+      return {
+        ok: bad.length === 0 && both === wantBoth,
+        detail: `cases that do not match: ${JSON.stringify(bad)}; two paragraphs gave ${JSON.stringify(both)}`,
+      };
     },
   },
   {

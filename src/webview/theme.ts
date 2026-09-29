@@ -33,7 +33,9 @@ const baseTheme = EditorView.theme({
   '.cm-scroller': {
     fontFamily: 'var(--sheaf-font, var(--md-font))',
     lineHeight: 'var(--sheaf-line-height, 1.5)',
-    padding: '56px 0 40vh',
+    // The space above the first line, shared with webview.css, where the sticky
+    // header of a table has to undo it.
+    padding: 'var(--sheaf-page-top, 56px) 0 40vh',
   },
   // Notion's centered writing column: 708px text measure inside side gutters.
   '.cm-content': {
@@ -42,6 +44,18 @@ const baseTheme = EditorView.theme({
     margin: '0 auto',
     padding: '0 var(--md-gutter)',
     caretColor: 'var(--md-text)',
+    /*
+     * A space at a soft wrap hangs at the end of the line it belongs to rather
+     * than starting the next one. CodeMirror asks for `break-spaces`, which
+     * never hangs a preserved space, so a break falling just after a hidden
+     * inline marker (the closing `~~` of a strikethrough, the `_` of an italic)
+     * pushed that space onto the next line and indented it by a character.
+     * `pre-wrap` hangs it, and is in CodeMirror's own list of wrapping modes, so
+     * line wrapping is still measured the way it expects. Checked in Chromium
+     * against a document holding a ten-space run and a two-space hard break:
+     * neither overflows the column.
+     */
+    whiteSpace: 'pre-wrap',
     // A flex item's default minimum is its widest child's min-content width, so
     // one wide thing inside the document widens the whole column past the pane
     // and the page scrolls sideways. On a phone that was a table's touch-sized
@@ -131,60 +145,141 @@ const baseTheme = EditorView.theme({
    * editor class, so it matches the base theme's weight and is injected after
    * it. Font size, weight and colour stay in webview.css, where they work.
    *
-   * Asymmetric on purpose: a large pad above, almost none below, so a heading
-   * belongs to what follows it rather than floating between two blocks. The
-   * numbers are smaller than the ones the stylesheet asked for, because the
-   * blank line above a heading is no longer a full line of text: it draws as an
-   * 8px gap (blankLines.ts), and that 8px is part of what a reader sees. Each
-   * level is tuned to land about 24 to 32px below the block above it.
+   * Asymmetric on purpose: a pad above, none below, so a heading belongs to what
+   * follows it rather than floating between two blocks.
+   *
+   * Flat at every level, and this is the second thing the rule gets right. It
+   * used to be an em of the heading's own size, which put 32px above an h1 and
+   * 21px above an h6: air that shrinks as the heading gets smaller, when a deeper
+   * heading is the harder one to spot. GitHub's own stylesheet for rendered
+   * Markdown uses one figure at all six levels, and so does this.
+   *
+   * The figure is 12px rather than GitHub's 24, because the blank line above the
+   * heading is already a full line of text and carries most of the separation.
+   * A heading under one blank line sits 36px below the block above it, half again
+   * the 24px between two paragraphs, which is GitHub's ratio reached by different
+   * arithmetic. Under two blank lines it is 60px, because two blank lines in the
+   * file mean twice the gap on the screen.
    *
    * Padding, never margin. CodeMirror's height map reads each line's
    * offsetHeight, which counts padding and not margin, and a height map that
    * disagrees with the page sends clicks to the wrong line.
+   *
+   * Top and bottom only, never the `padding` shorthand. A heading is a
+   * `.cm-line` like any other, and the shorthand also set the left and right to
+   * zero, dropping the 6px CodeMirror indents every line by. Every heading in
+   * every document therefore started 6px left of the paragraphs under it, which
+   * is visible the moment a heading sits above body text.
    */
-  '.tok-h1': { padding: '0.8em 0 0.1em' },
-  '.tok-h2': { padding: '0.7em 0 0.1em' },
-  '.tok-h3': { padding: '0.8em 0 0.1em' },
-  '.tok-h4': { padding: '0.9em 0 0.1em' },
-  '.tok-h5': { padding: '0.9em 0 0.1em' },
-  '.tok-h6': { padding: '0.9em 0 0.1em' },
+  /*
+   * The horizontal indent, for every line that sits inside a list or a quote.
+   *
+   * Here for exactly the reason the heading padding above is here, and it was proved the
+   * same way. `.tok-quote { padding-left: 0.9em }` sat in webview.css and never reached the
+   * screen: CodeMirror's own `.ͼ1 .cm-line` carries two classes to that one and is injected
+   * after the stylesheet, so it won, and a quote's words started at CodeMirror's 6px instead
+   * of the 14.4px asked for. Measured at 13.19px from the line's left edge, which is that 6px
+   * plus one stray space, with the requested padding nowhere in it.
+   *
+   * One declaration reading both depths, rather than one rule per axis. Two rules each
+   * setting `padding-left` cannot add up, so a list inside a quote would take one indent and
+   * silently lose the other. A line outside both carries neither class and keeps the editor's
+   * own base, which is what makes a plain paragraph the control for all of this.
+   *
+   * Padding, never margin, for the same reason as the headings: CodeMirror's height map reads
+   * each line's offsetHeight, and a height map that disagrees with the page sends clicks to
+   * the wrong line.
+   */
+  '.tok-rhythm': {
+    paddingLeft:
+      'calc(var(--md-line-base, 6px)' +
+      ' + var(--md-list-depth, 0) * var(--md-indent-step, 32px)' +
+      ' + var(--md-quote-depth, 0) * var(--md-quote-step, 20px))',
+  },
+  /*
+   * The hang, on the one line a list item opens with.
+   *
+   * A negative text-indent pulls that line's first box, the marker, back out of the padding
+   * by exactly one step, which is the box's own width plus its gap. Every wrapped row of the
+   * same line is unaffected by text-indent and so begins at the padding, which is the content
+   * edge: the wrap hangs, and the marker stops reading as part of the sentence.
+   */
+  '.tok-hang': { textIndent: 'calc(-1 * var(--md-indent-step, 32px))' },
+  /*
+   * The air above a list item, so a list reads as a list rather than as a paragraph with
+   * markers in it.
+   *
+   * On the line an item opens on, which is the whole trick: a wrapped item is one `.cm-line`
+   * however many rows it draws on, so the gap lands once per item and never inside one. A
+   * three-line item takes 4px at its top and nothing between its rows. `livePreview.ts` decides
+   * which items carry the class; everything here is the length.
+   *
+   * Top only. An item's own gap belongs above it, so the last item of a list adds nothing below
+   * and a list does not stand off from what follows it.
+   *
+   * Here rather than in the stylesheet, and padding rather than margin, for the two reasons the
+   * heading space above is here: CodeMirror's own `.ͼ1 .cm-line` beats a single class in the
+   * stylesheet, and its height map counts padding and not margin. GitHub's own figure for this
+   * is a margin, which is why it has to be translated rather than copied.
+   */
+  '.tok-item-gap': { paddingTop: 'var(--md-item-gap, 4px)' },
+  /*
+   * One rule for all six levels, because `.tok-heading` goes on the line beside
+   * `.tok-h1`..`.tok-h6`. Six identical rules would say the same thing and leave
+   * six places for one of them to drift.
+   */
+  '.tok-heading': { paddingTop: 'var(--md-heading-space, 12px)', paddingBottom: '0' },
 });
 
 /**
  * Highlight style for code inside fenced blocks (parsed via nested languages)
- * and any tokens not otherwise handled. Colors reference VS Code token theme
- * variables so they blend with the active color theme.
+ * and any tokens not otherwise handled.
+ *
+ * Every colour is one of Sheaf's own `--md-tok-*` properties, defined in `media/webview.css`
+ * for a dark theme and again for a light one. They used to name VS Code variables with a
+ * fallback beside each, and that is the shape this replaced: VS Code publishes no editor token
+ * colours to a webview at all, so the variables named were ones that exist for other purposes,
+ * and a fallback is reached only when a variable is undefined. Five token types were therefore
+ * drawn in the grey VS Code uses for the suggest widget's type icons, four units from body
+ * prose. The two that looked right did so because their borrowed variable happened to carry the
+ * same value as the fallback written beside it.
  */
 const codeHighlight = HighlightStyle.define([
-  { tag: t.keyword, color: 'var(--vscode-symbolIcon-keywordForeground, #c586c0)' },
+  { tag: t.keyword, color: 'var(--md-tok-keyword)' },
   { tag: [t.name, t.deleted, t.character, t.macroName], color: 'inherit' },
   {
     tag: [t.propertyName],
-    color: 'var(--vscode-symbolIcon-propertyForeground, #9cdcfe)',
+    color: 'var(--md-tok-property)',
   },
   {
-    tag: [t.function(t.variableName), t.labelName],
-    color: 'var(--vscode-symbolIcon-functionForeground, #dcdcaa)',
+    /*
+     * A called method is a function too. Without `function(propertyName)` the `log` of
+     * `console.log` falls through to the property colour, which is not what VS Code does with
+     * it and not what a reader of the line means by it. Measured: it came out identical to
+     * `length` in the same statement, which the colour check reports as a collision.
+     */
+    tag: [t.function(t.variableName), t.function(t.propertyName), t.labelName],
+    color: 'var(--md-tok-function)',
   },
   {
     tag: [t.string, t.inserted],
-    color: 'var(--vscode-debugTokenExpression-string, #ce9178)',
+    color: 'var(--md-tok-string)',
   },
   {
     tag: [t.number, t.bool, t.null],
-    color: 'var(--vscode-debugTokenExpression-number, #b5cea8)',
+    color: 'var(--md-tok-number)',
   },
   {
     tag: [t.comment, t.lineComment, t.blockComment],
-    color: 'var(--vscode-descriptionForeground, #6a9955)',
+    color: 'var(--md-tok-comment)',
     fontStyle: 'italic',
   },
   {
     tag: [t.typeName, t.className, t.tagName],
-    color: 'var(--vscode-symbolIcon-classForeground, #4ec9b0)',
+    color: 'var(--md-tok-class)',
   },
   { tag: [t.operator, t.punctuation], color: 'inherit' },
-  { tag: t.invalid, color: 'var(--vscode-errorForeground, #f14c4c)' },
+  { tag: t.invalid, color: 'var(--md-tok-invalid)' },
 ]);
 
 export const notionTheme: Extension = [baseTheme, syntaxHighlighting(codeHighlight)];

@@ -59,11 +59,12 @@ export const scenarios: Scenario[] = [
       // `[!NOTES]` after other text, because at the very start of a quote it
       // opens an alert and is drawn as a callout label; prose/alerts.ts covers that.
       const p = mountProse(P0 + 'A claim.[^1] See [1] and [draft].\n\n> See [!NOTES]\n\n- [~] not valid');
-      // The leading spaces are the ones after `>` and `-`, which quote and list rendering keep.
+      // A marker takes the space after it with it, so neither line carries one: `>` and its
+      // space both come off, and the bullet's gap is drawn by its box rather than typed.
       const ok =
         line(p, 2) === 'A claim.[^1] See [1] and [draft].' &&
-        line(p, 4) === ' See [!NOTES]' &&
-        line(p, 6) === '•  [~] not valid' &&
+        line(p, 4) === 'See [!NOTES]' &&
+        line(p, 6) === '•[~] not valid' &&
         texts(p, '.tok-link').length === 0;
       p.destroy();
       return ok;
@@ -157,8 +158,8 @@ export const scenarios: Scenario[] = [
       const ok =
         line(p, 2) === 'Use a`b here.' &&
         same(texts(p, '.tok-inline-code'), ['a`b']) &&
-        // The block's fences come off their lines; the language stays, as a chip.
-        line(p, 4) === 'js' &&
+        // The block's fences come off their lines, the labelled one included.
+        line(p, 4) === '' &&
         line(p, 6) === '';
       p.destroy();
       return ok;
@@ -216,6 +217,50 @@ export const scenarios: Scenario[] = [
       p.select(P0.length + 3);
       const revealed = line(p, 2) === 'Empty text: [](https://example.com) and [](<a b.md>) end.';
       const ok = rendered && revealed && p.doc() === doc;
+      p.destroy();
+      return ok;
+    },
+  },
+  {
+    name: 'emoji shortcodes show as their characters, and the source comes back on the caret line',
+    run: () => {
+      const doc = P0 + 'Build passed :white_check_mark: and the deploy is :rocket: queued.';
+      const p = mountProse(doc);
+      const rendered =
+        line(p, 2) === 'Build passed ✅ and the deploy is 🚀 queued.' && same(texts(p, '.tok-emoji'), ['✅', '🚀']);
+      p.select(P0.length + 3);
+      const revealed = line(p, 2) === 'Build passed :white_check_mark: and the deploy is :rocket: queued.' && texts(p, '.tok-emoji').length === 0;
+      const ok = rendered && revealed && p.doc() === doc;
+      p.destroy();
+      return ok;
+    },
+  },
+  {
+    name: 'a shortcode with a plus or a hyphen in its name draws, which GFM own rule cannot reach',
+    run: () => {
+      // `:+1:`, `:-1:`, `:e-mail:`, `:t-rex:` and `:non-potable_water:` are the whole
+      // of what @lezer/markdown's `[a-zA-Z_0-9]` leaves out, and `:+1:` is among the
+      // most-typed shortcodes there is.
+      const doc = P0 + 'Ship it :+1: not :-1:, mail :e-mail:, and :t-rex: waits by the :non-potable_water: tap.';
+      const p = mountProse(doc);
+      const ok =
+        line(p, 2) === 'Ship it 👍 not 👎, mail 📧, and 🦖 waits by the 🚱 tap.' &&
+        same(texts(p, '.tok-emoji'), ['👍', '👎', '📧', '🦖', '🚱']) &&
+        p.doc() === doc;
+      p.destroy();
+      return ok;
+    },
+  },
+  {
+    name: 'a colon-word that is no shortcode stays as typed, in prose and in code',
+    run: () => {
+      const doc = P0 + 'Docked 10:30:45, :not_a_shortcode: and :30: stay. Also `:rocket:` in code.';
+      const p = mountProse(doc);
+      const ok =
+        line(p, 2) === 'Docked 10:30:45, :not_a_shortcode: and :30: stay. Also :rocket: in code.' &&
+        texts(p, '.tok-emoji').length === 0 &&
+        same(texts(p, '.tok-inline-code'), [':rocket:']) &&
+        p.doc() === doc;
       p.destroy();
       return ok;
     },

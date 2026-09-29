@@ -5,6 +5,7 @@
  * itself is under test.
  */
 
+import { setFrontMatterMode } from '../../src/webview/frontMatterView';
 import { Scenario, mountProse } from '../harness';
 import { setLivePreviewConfig, setReveal } from '../../src/webview/livePreview';
 
@@ -38,9 +39,12 @@ const withRevealOnLine = (on: boolean, fn: () => boolean): boolean => {
 
 export const scenarios: Scenario[] = [
   {
-    name: 'YAML front matter shows as plain metadata with no rule, heading or bullets',
+    name: 'YAML front matter shown draws as plain metadata with no rule, heading or bullets',
     run: () => {
       const doc = '---\n# a YAML comment\ntitle: Hello\ncategories:\n  - reference\n---\n\nBody text.\n\n---\n\n## Real heading';
+      // How the block is drawn when it is drawn. Collapsed is the default now, and the
+      // states themselves are `prose/frontMatterView.ts`.
+      setFrontMatterMode('shown');
       const p = mountProse(doc);
       p.select(doc.indexOf('Body') + 2);
       const front = [0, 1, 2, 3, 4, 5];
@@ -127,7 +131,7 @@ export const scenarios: Scenario[] = [
       }),
   },
   {
-    name: 'a fenced block draws no backticks, and its language is drawn as a chip instead',
+    name: 'a fenced block draws no backticks, and a labelled fence line draws nothing at all',
     run: () =>
       // With Reveal Syntax On Line off, which is how Sheaf ships: what a reader sees.
       withRevealOnLine(false, () => {
@@ -138,11 +142,11 @@ export const scenarios: Scenario[] = [
           // The fence lines are still lines, marked as the block's edges.
           hasClass(p, 2, 'sheaf-code-fence-line') &&
           hasClass(p, 4, 'sheaf-code-fence-line') &&
-          // With no backticks on them: the language, and then nothing.
-          line(p, 2) === 'js' &&
+          // Both fence lines draw nothing, the labelled one included: the language is
+          // in the file and Edit Markdown shows it, and nothing is drawn in its place.
+          line(p, 2) === '' &&
           line(p, 4) === '' &&
-          count(p, '.md-code-lang') === 1 &&
-          (p.view.contentDOM.querySelector('.md-code-lang')?.textContent ?? '') === 'js' &&
+          count(p, '.md-code-lang') === 0 &&
           // The code between them is untouched, and so is the file.
           line(p, 3) === 'const x = 1;' &&
           p.doc() === doc;
@@ -159,7 +163,7 @@ export const scenarios: Scenario[] = [
         // A fence is a marker like any other: the caret on it changes nothing, because
         // Sheaf does not show syntax under the caret unless it is asked to.
         p.select(doc.indexOf('```js') + 2);
-        const stillHidden = line(p, 2) === 'js' && hasClass(p, 2, 'sheaf-code-fence-line');
+        const stillHidden = line(p, 2) === '' && hasClass(p, 2, 'sheaf-code-fence-line');
         // Edit Markdown over the block is what shows it, as it does for every block.
         const from = doc.indexOf('```js');
         p.view.dispatch({ effects: setReveal.of({ from, to: doc.indexOf('```\n\nAfter') + 3 }) });
@@ -176,11 +180,11 @@ export const scenarios: Scenario[] = [
         const doc = 'Before.\n\n```js\nconst x = 1;\n```\n\nAfter.';
         const p = mountProse(doc);
         p.select(0);
-        const hidden = line(p, 2) === 'js';
+        const hidden = line(p, 2) === '';
         p.select(doc.indexOf('```js') + 2);
         const shown = line(p, 2) === '```js' && !hasClass(p, 2, 'sheaf-code-fence-line');
         p.select(0);
-        const away = line(p, 2) === 'js';
+        const away = line(p, 2) === '';
         const ok = hidden && shown && away && p.doc() === doc;
         p.destroy();
         return ok;
@@ -213,8 +217,8 @@ export const scenarios: Scenario[] = [
         const p = mountProse(doc);
         p.select(0);
         const ok =
-          // Only the outer four-backtick pair is a fence.
-          line(p, 2) === 'md' &&
+          // Only the outer four-backtick pair is a fence, and it draws nothing.
+          line(p, 2) === '' &&
           line(p, 6) === '' &&
           // The inner three-backtick lines are part of the example and stay as written.
           line(p, 3) === '```js' &&
@@ -237,11 +241,178 @@ export const scenarios: Scenario[] = [
           hasClass(p, 2, 'tok-quote') &&
           hasClass(p, 4, 'tok-quote') &&
           // Trimmed: the quote hides its `>` and leaves the space after it, as it always has.
-          line(p, 2).trim() === 'js' &&
+          line(p, 2).trim() === '' &&
           line(p, 4).trim() === '' &&
           p.doc() === doc;
         p.destroy();
         return ok;
+      }),
+  },
+  {
+    /*
+     * The depth, not the geometry. This suite is jsdom, which has no layout, so what it can
+     * hold is that each line was told how deep it is; where that puts anything on a screen is
+     * measured in Chromium by scripts/check-indent.mjs.
+     *
+     * A three-level quote used to be drawn exactly like a one-level quote. One shared line
+     * class was applied once per nesting level to the same line, and the same class twice is
+     * no class at all, so `> > >` and `>` were indistinguishable.
+     */
+    name: 'a nested quote reports one depth per level, and a flat quote reports one',
+    run: () =>
+      withRevealOnLine(false, () => {
+        const doc = 'Before.\n\n> One deep.\n\n> > Two deep.\n\n> > > Three deep.\n\n> Flat again.\n\nAfter.';
+        const p = mountProse(doc);
+        p.select(0);
+        const depth = (i: number): string | null => lines(p)[i]?.style.getPropertyValue('--md-list-depth') ?? null;
+        const quote = (i: number): string | null => lines(p)[i]?.style.getPropertyValue('--md-quote-depth') ?? null;
+        const ok =
+          quote(2) === '1' &&
+          quote(4) === '2' &&
+          quote(6) === '3' &&
+          // CONTROL: a flat quote after a deep one reports one level, not the depth of the
+          // quote above it. A counter left un-decremented would read 4 here and every case
+          // above would still pass.
+          quote(8) === '1' &&
+          // Every one of them is a quote and none of them is in a list.
+          [2, 4, 6, 8].every((i) => hasClass(p, i, 'tok-quote') && depth(i) === '0') &&
+          // CONTROL: the lines outside the quotes carry no depth at all, so nothing here
+          // indents the whole document.
+          !hasClass(p, 0, 'tok-quote') &&
+          !hasClass(p, 10, 'tok-quote') &&
+          p.doc() === doc;
+        p.destroy();
+        return ok;
+      }),
+  },
+  {
+    /*
+     * The other axis, measured the same way and for the same reason. Depth comes from the
+     * syntax tree rather than from the leading whitespace in the file: two spaces, four spaces
+     * and a tab are three different widths in a proportional font, and an ordered item's
+     * content starts three columns in rather than two, so counting spaces put a numbered
+     * level three at depth four.
+     */
+    name: 'a nested list reports one depth per level, counted from the tree and not from the spaces',
+    run: () =>
+      withRevealOnLine(false, () => {
+        const doc = 'Before.\n\n- One.\n  - Two.\n    - Three.\n\nAfter.';
+        const p = mountProse(doc);
+        p.select(0);
+        const depth = (i: number): string | null => lines(p)[i]?.style.getPropertyValue('--md-list-depth') ?? null;
+        const ok =
+          depth(2) === '1' &&
+          depth(3) === '2' &&
+          depth(4) === '3' &&
+          // The line a list item opens on is the only one with a marker to hang, so it is the
+          // only one that hangs.
+          [2, 3, 4].every((i) => hasClass(p, i, 'tok-hang')) &&
+          // CONTROL: the paragraphs around it are in no list and neither carries the class.
+          depth(0) === '' &&
+          depth(6) === '' &&
+          !hasClass(p, 0, 'tok-hang') &&
+          p.doc() === doc;
+        p.destroy();
+        return ok;
+      }),
+  },
+  {
+    /*
+     * A numbered item to two digits, and a task item. Both used to put their words somewhere
+     * of their own: the digits of `10.` are wider than those of `1.`, and a task line drew a
+     * bullet and then a checkbox, so it carried two markers.
+     */
+    name: 'every list marker is boxed, and a task item draws a checkbox instead of a bullet as well as one',
+    run: () =>
+      withRevealOnLine(false, () => {
+        // Lines: 0 Before, 2 `9.`, 3 `10.`, 5 task done, 6 task open, 8 plain bullet, 10 After.
+        const doc = 'Before.\n\n9. Nine.\n10. Ten.\n\n- [x] Done.\n- [ ] Open.\n\n- Plain.\n\nAfter.';
+        const p = mountProse(doc);
+        p.select(0);
+        const boxes = (i: number): number => lines(p)[i]?.querySelectorAll('.tok-marker-box').length ?? -1;
+        // Scoped to the marker box on purpose. Every line already holds aria-hidden elements,
+        // the block handle's two icons, so asking whether a line has any would pass whatever
+        // the markers do.
+        const hiddenBox = (i: number): Element | null | undefined =>
+          lines(p)[i]?.querySelector('.tok-marker-box[aria-hidden="true"]');
+        const ok =
+          // One box per marker, and exactly one: two would be the double marker back again.
+          [2, 3, 5, 6, 8].every((i) => boxes(i) === 1) &&
+          // The task item's one box is the checkbox, and no bullet is drawn beside it.
+          lines(p)[5]?.querySelector('.tok-marker-box > input.md-task') !== null &&
+          lines(p)[6]?.querySelector('.tok-marker-box > input.md-task') !== null &&
+          !line(p, 5).includes('•') &&
+          // The number stays the document's own text, boxed rather than replaced.
+          line(p, 2).includes('9.') &&
+          line(p, 3).includes('10.') &&
+          // A bullet is decoration and is hidden from assistive technology, because the
+          // marker takes its space with it and nothing else separates the glyph from the word.
+          hiddenBox(8) !== null &&
+          // CONTROL: the other two boxed markers must not be hidden, for opposite reasons. A
+          // number is the only thing carrying the ordinal, since no list semantics are
+          // exposed; and hiding a task's box would take its real checkbox out of the
+          // accessibility tree along with it, because aria-hidden covers the whole subtree,
+          // focusable content included.
+          hiddenBox(2) === null &&
+          hiddenBox(3) === null &&
+          hiddenBox(5) === null &&
+          hiddenBox(6) === null &&
+          // CONTROL: a paragraph has no marker and so no box.
+          boxes(0) === 0 &&
+          p.doc() === doc;
+        p.destroy();
+        return ok;
+      }),
+  },
+  {
+    /*
+     * An empty task item is a line whose entire drawn content is a widget, and that is the
+     * one shape where "the line draws as nothing" and "the reader sees nothing" come apart.
+     * The editing matrix's `nothing-hidden` class reads drawn text and so reports this line as
+     * drawing as empty, which is true of its text and false of what a person has in front of
+     * them. This is the check that says which.
+     *
+     * What the class is really guarding against is a line a person cannot use: an empty
+     * heading is `# ` drawn as nothing, and the next thing typed lands in front of the hash.
+     * So the assertions below are about exactly that, and the caret column is the one that
+     * matters.
+     */
+    name: 'an empty task item draws its checkbox, and Enter on a task gives another one you can type into',
+    run: () =>
+      withRevealOnLine(false, () => {
+        const doc = 'Before.\n\n- [x] Done.\n- [ ] \n';
+        const p = mountProse(doc);
+        p.select(0);
+        const empty = lines(p)[3];
+        const drawnEmptyButVisible =
+          // The checkbox is there, inside its marker box.
+          empty?.querySelector('.tok-marker-box > input.md-task') != null &&
+          // And the line genuinely carries no drawn text, which is why a text-only judgement
+          // of this line is wrong rather than merely incomplete.
+          empty?.textContent === '';
+        p.destroy();
+
+        // The gesture a person actually makes, driven through the editor's own keymap.
+        const after = 'Before.\n\n- [x] Done task\n';
+        const q = mountProse(after);
+        q.select(after.indexOf('Done task') + 'Done task'.length);
+        const handled = q.press('Enter');
+        const head = q.view.state.selection.main.head;
+        const line4 = q.view.state.doc.lineAt(head);
+        const reachable =
+          handled &&
+          q.doc() === 'Before.\n\n- [x] Done task\n- [ ] \n' &&
+          // The caret sits after the marker, not in front of it. At column 0 the next letter
+          // would land before the `-` and turn the task into a paragraph, which is the failure
+          // the matrix class exists to catch and the reason this asserts a column.
+          head - line4.from === 6;
+        q.view.dispatch({ changes: { from: head, insert: 'Z' }, selection: { anchor: head + 1 }, userEvent: 'input.type' });
+        const typed =
+          q.doc() === 'Before.\n\n- [x] Done task\n- [ ] Z\n' &&
+          lines(q)[3]?.querySelector('input.md-task') != null &&
+          lines(q)[3]?.textContent === 'Z';
+        q.destroy();
+        return drawnEmptyButVisible && reachable && typed;
       }),
   },
   {
@@ -269,17 +440,30 @@ export const scenarios: Scenario[] = [
       const p = mountProse(doc);
       p.select(doc.indexOf('first') + 2);
       const quote =
-        line(p, 2) === '> first **line** here' &&
-        line(p, 3) === '> second **line** here' &&
-        line(p, 5) === '•  item one' &&
+        /*
+         * The asterisks come back and the `>` does not, which is the one marker Sheaf keeps hidden
+         * on the caret's line. Its width is already in the quote's computed indent, so drawing it
+         * moved the words 14px as the caret arrived and back as it left. Everything else on the
+         * line still reveals, which is what these two rows now say: bold shows its markers, and
+         * the quote's own marker stays away.
+         *
+         * An alert's marker line is the exception and shows byte for byte, `>` included, because
+         * the whole line is syntax there and it is what a person edits to change a callout's type.
+         * prose/alerts.ts holds that.
+         */
+        line(p, 2) === 'first **line** here' &&
+        line(p, 3) === 'second **line** here' &&
+        // A marker takes its own space with it now, so a rendered bullet line carries neither
+        // the source space after the `-` nor one written by the widget.
+        line(p, 5) === '•item one' &&
         line(p, 9) === 'Para one.';
       p.select(doc.indexOf('item one') + 2);
       const item =
         line(p, 5) === '- item one' &&
         line(p, 6) === '  continued **here**' &&
-        line(p, 7) === '•  item two x' &&
-        line(p, 2) === ' first line here' &&
-        line(p, 3) === ' second line here';
+        line(p, 7) === '•item two x' &&
+        line(p, 2) === 'first line here' &&
+        line(p, 3) === 'second line here';
       const ok = quote && item && p.doc() === doc;
       p.destroy();
       return ok;
@@ -294,10 +478,10 @@ export const scenarios: Scenario[] = [
         const doc = '.\n\n- **Documents.** Prose here.\n- **Datatables.** Grids here.\n\nAfter.';
         const p = mountProse(doc);
         p.select(doc.indexOf('- **Documents'), doc.indexOf('- **Datatables'));
-        const lineOnly = line(p, 2) === '- **Documents.** Prose here.' && line(p, 3) === '•  Datatables. Grids here.';
+        const lineOnly = line(p, 2) === '- **Documents.** Prose here.' && line(p, 3) === '•Datatables. Grids here.';
         // Dragged the other way, the same span reveals the same lines.
         p.select(doc.indexOf('- **Datatables'), doc.indexOf('- **Documents'));
-        const backwards = line(p, 2) === '- **Documents.** Prose here.' && line(p, 3) === '•  Datatables. Grids here.';
+        const backwards = line(p, 2) === '- **Documents.** Prose here.' && line(p, 3) === '•Datatables. Grids here.';
         // One character into the next item does reach it, so it shows as Markdown.
         p.select(doc.indexOf('- **Documents'), doc.indexOf('- **Datatables') + 1);
         const intoNext = line(p, 3) === '- **Datatables.** Grids here.';
@@ -325,7 +509,8 @@ export const scenarios: Scenario[] = [
         const doc = '.\n\n> first **line** here\n> second **line** here';
         const p = mountProse(doc);
         p.select(doc.indexOf('first') + 2);
-        const ok = line(p, 2) === ' first line here' && line(p, 3) === ' second line here' && p.doc() === doc;
+        // The `>` takes its space with it, so neither rendered line begins with one.
+        const ok = line(p, 2) === 'first line here' && line(p, 3) === 'second line here' && p.doc() === doc;
         p.destroy();
         return ok;
       }),

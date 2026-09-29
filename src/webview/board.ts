@@ -164,6 +164,15 @@ export interface BoardHost {
   move(row: number, value: string): void;
   /** Open `row`'s field `col` for typing. Absent where a card's fields are not typed into. */
   open?(row: number, col: number): void;
+  /**
+   * Follow a link drawn on a card. Absent where nothing can be opened, and then a link on a
+   * card is drawn and does nothing, which is what it did everywhere before.
+   *
+   * Passed in rather than reached for, the way `render` is, because this file draws a board
+   * and knows nothing about what an address means. Where an address opens is one decision
+   * and it is made in `linkTarget.ts`.
+   */
+  openLink?(href: string): void;
 }
 
 /** A board's cards, as its owner reaches them. */
@@ -184,16 +193,45 @@ export interface BoardCards {
  */
 export function wireBoard(frame: HTMLElement, host: BoardHost): BoardCards {
   let pickedCard: number | null = null;
+  /**
+   * A card lifted out of the flow and carried under the pointer.
+   *
+   * The card is taken out of the layout with `position: fixed` and left where it was, then
+   * translated by how far the pointer has moved, so whatever part of it was under the finger
+   * stays under it. It never leaves its own column in the DOM: only `slot`, the gap it left,
+   * moves around, so putting the card back is a matter of clearing the lift and needs no
+   * record of where it came from.
+   *
+   * `slot` is also the answer to where the card will land, which a column-wide highlight
+   * cannot give: it sits between the two cards the pointer is between.
+   *
+   * A lifted card takes no pointer events. It is under the pointer by definition, so leaving
+   * it hit-testable would make `document.elementFromPoint` answer with the card on every move,
+   * and the card is a DOM descendant of the column it started in, so every hit test would say
+   * the home column and no card could ever be dropped anywhere.
+   */
+  interface CardLift {
+    /** The gap in the flow, which is also where the card will land. */
+    slot: HTMLElement;
+    /** The list the card belongs to, and the card it sat before, for a drag back outside. */
+    homeList: HTMLElement | null;
+    homeBefore: Element | null;
+  }
   /** A card on its way to another column under the pointer. */
   let cardDrag: {
     row: number;
     card: HTMLElement;
     home: HTMLElement | null;
     pointerId: number;
+    /** Where the press landed, which every later position is measured against. */
     x: number;
     y: number;
+    /** Where the pointer is now, so a board scrolling under a still finger can re-aim. */
+    px: number;
+    py: number;
     active: boolean;
     over: HTMLElement | null;
+    lift: CardLift | null;
   } | null = null;
 
   const cardEls = (within: ParentNode = frame): HTMLElement[] =>
@@ -268,14 +306,13 @@ export function wireBoard(frame: HTMLElement, host: BoardHost): BoardCards {
   });
 
   // A card is dragged with pointer events, so a pen or a finger moves it as a mouse does.
-  const columnUnder = (e: PointerEvent): HTMLElement | null => {
-    const owned = (el: Element | null | undefined): HTMLElement | null => {
-      const col = el?.closest?.('.sheaf-board-col') as HTMLElement | null;
-      return col && frame.contains(col) ? col : null;
-    };
-    // Hit-tested where the pointer is: once the card holds the pointer, every event's target is the card.
-    return owned(document.elementFromPoint?.(e.clientX, e.clientY)) ?? owned(e.target as Element | null);
+  const owningColumn = (el: Element | null | undefined): HTMLElement | null => {
+    const col = el?.closest?.('.sheaf-board-col') as HTMLElement | null;
+    return col && frame.contains(col) ? col : null;
   };
+  const columnUnder = (e: PointerEvent): HTMLElement | null =>
+    // Hit-tested where the pointer is: once the card holds the pointer, every event's target is the card.
+    owningColumn(document.elementFromPoint?.(e.clientX, e.clientY)) ?? owningColumn(e.target as Element | null);
   const markOver = (over: HTMLElement | null): void => {
     const drag = cardDrag;
     if (!drag) return;
@@ -285,10 +322,120 @@ export function wireBoard(frame: HTMLElement, host: BoardHost): BoardCards {
     target?.classList.add('is-drop-target');
     drag.over = target;
   };
+
+  /* ---- Carrying the card ---------------------------------------------------- */
+
+  /** The element the board scrolls sideways in, or null where the whole board fits. */
+  const boardScroller = (): HTMLElement | null => {
+    for (let el: HTMLElement | null = frame; el; el = el.parentElement) {
+      const overflow = getComputedStyle(el).overflowX;
+      if ((overflow === 'auto' || overflow === 'scroll') && el.scrollWidth > el.clientWidth) return el;
+    }
+    return null;
+  };
+
+  /** The card in `list` that `y` falls above, which is what the gap goes in front of. */
+  const cardAfter = (list: HTMLElement, y: number, moving: HTMLElement): Element | null => {
+    for (const card of cardEls(list)) {
+      if (card === moving) continue;
+      const r = card.getBoundingClientRect();
+      if (y < r.top + r.height / 2) return card;
+    }
+    return null;
+  };
+
+  /**
+   * Put the gap where the card would land: between the two cards the pointer is between, in
+   * the column under it, or back where the card started when the pointer is outside every
+   * column. Dropping there writes nothing, so the gap says so before the release does.
+   */
+  const placeSlot = (drag: NonNullable<typeof cardDrag>, over: HTMLElement | null): void => {
+    const lift = drag.lift;
+    if (!lift) return;
+    const list = (over?.querySelector('.sheaf-board-cards') as HTMLElement | null) ?? lift.homeList;
+    if (!list) return;
+    const before = over ? cardAfter(list, drag.py, drag.card) : lift.homeBefore;
+    if (lift.slot.parentElement === list && lift.slot.nextElementSibling === before) return;
+    list.insertBefore(lift.slot, before && before.parentElement === list ? before : null);
+  };
+
+  /** Where the carried card is drawn: its own place, moved by however far the pointer has. */
+  const carry = (drag: NonNullable<typeof cardDrag>): void => {
+    drag.card.style.transform = `translate(${drag.px - drag.x}px, ${drag.py - drag.y}px)`;
+  };
+
+  /*
+   * A drag towards a column past the edge of a board that scrolls sideways scrolls it, so a
+   * card can reach a column that is not on the screen.
+   *
+   * On a frame timer rather than on the pointer's own events, because a person who has carried
+   * the card to the edge and is waiting for the board to come to them is not moving the pointer,
+   * and a move handler would scroll once and stop. The same timer re-aims the gap, since the
+   * column under a still pointer changes as the board goes past under it.
+   */
+  const EDGE = 48;
+  const STEP = 14;
+  let scrolling: number | null = null;
+  const stopScrolling = (): void => {
+    if (scrolling !== null) cancelAnimationFrame(scrolling);
+    scrolling = null;
+  };
+  const scrollTowards = (): void => {
+    stopScrolling();
+    const drag = cardDrag;
+    const scroller = drag ? boardScroller() : null;
+    if (!drag || !scroller) return;
+    const r = scroller.getBoundingClientRect();
+    const dir = drag.px > r.right - EDGE ? 1 : drag.px < r.left + EDGE ? -1 : 0;
+    if (!dir) return;
+    const step = (): void => {
+      const now = cardDrag;
+      if (!now) return stopScrolling();
+      const was = scroller.scrollLeft;
+      scroller.scrollLeft += dir * STEP;
+      if (scroller.scrollLeft === was) return stopScrolling();
+      const over = owningColumn(document.elementFromPoint?.(now.px, now.py));
+      markOver(over);
+      placeSlot(now, over === now.home ? null : over);
+      scrolling = requestAnimationFrame(step);
+    };
+    scrolling = requestAnimationFrame(step);
+  };
+
+  /** Lift the card out of the flow, leaving a gap the size of it where it was. */
+  const lift = (drag: NonNullable<typeof cardDrag>): void => {
+    const rect = drag.card.getBoundingClientRect();
+    const slot = document.createElement('li');
+    slot.className = 'sheaf-board-slot';
+    slot.style.height = `${rect.height}px`;
+    slot.setAttribute('aria-hidden', 'true');
+    const homeList = drag.card.parentElement as HTMLElement | null;
+    const homeBefore = drag.card.nextElementSibling;
+    drag.card.after(slot);
+    // Fixed, so the numbers are the pointer's own and no scrolling ancestor has to be
+    // measured; the card is already where it was, so the translate starts at nothing.
+    drag.card.style.left = `${rect.left}px`;
+    drag.card.style.top = `${rect.top}px`;
+    drag.card.style.width = `${rect.width}px`;
+    drag.lift = { slot, homeList, homeBefore };
+    carry(drag);
+  };
+
+  /** Put the card back in the flow. It never left its own column, so this is all it takes. */
+  const drop = (drag: NonNullable<typeof cardDrag>): void => {
+    stopScrolling();
+    drag.lift?.slot.remove();
+    drag.lift = null;
+    drag.card.style.left = '';
+    drag.card.style.top = '';
+    drag.card.style.width = '';
+    drag.card.style.transform = '';
+  };
   const endDrag = (): void => {
     const drag = cardDrag;
     if (!drag) return;
     cardDrag = null;
+    drop(drag);
     drag.card.classList.remove('is-dragging');
     drag.over?.classList.remove('is-drop-target');
     frame.querySelector('.sheaf-board')?.classList.remove('is-dragging');
@@ -303,9 +450,20 @@ export function wireBoard(frame: HTMLElement, host: BoardHost): BoardCards {
     if (!drag || (e.pointerId !== undefined && e.pointerId !== drag.pointerId)) return;
     // No button held: it went up somewhere the drag could not hear, so nothing moves.
     if (e.buttons === 0) return endDrag();
+    drag.px = e.clientX;
+    drag.py = e.clientY;
     if (!drag.active) {
       if (Math.hypot(e.clientX - drag.x, e.clientY - drag.y) < 4) return;
       drag.active = true;
+      /*
+       * The press became a drag, so it is no longer a click on whatever it started on.
+       *
+       * Mostly covered already: a drag ends somewhere else, and the release only follows a
+       * link it landed on. What this catches is the drag that ends with the card under the
+       * pointer again, in the column it was dropped into, where the release would land on
+       * the same link. No check has been seen to fail without it.
+       */
+      pressedLink = null;
       drag.card.classList.add('is-dragging');
       frame.querySelector('.sheaf-board')?.classList.add('is-dragging');
       try {
@@ -313,13 +471,23 @@ export function wireBoard(frame: HTMLElement, host: BoardHost): BoardCards {
       } catch {
         // No active pointer with that id; the window listeners still see the drag.
       }
+      // After the class, so the card is already `position: fixed` when it is measured.
+      lift(drag);
     }
-    markOver(columnUnder(e));
+    carry(drag);
+    const over = columnUnder(e);
+    markOver(over);
+    placeSlot(drag, over === drag.home ? null : over);
+    scrollTowards();
   };
   const onCardUp = (e: PointerEvent): void => {
     const drag = cardDrag;
     if (!drag || (e.pointerId !== undefined && e.pointerId !== drag.pointerId)) return;
-    if (drag.active) markOver(columnUnder(e) ?? drag.over);
+    if (drag.active) {
+      drag.px = e.clientX;
+      drag.py = e.clientY;
+      markOver(columnUnder(e) ?? drag.over);
+    }
     const to = drag.active ? drag.over : null;
     endDrag();
     if (to) moveCard(drag.row, to.dataset.value ?? '');
@@ -331,10 +499,33 @@ export function wireBoard(frame: HTMLElement, host: BoardHost): BoardCards {
     e.stopPropagation();
     endDrag();
   };
+  /*
+   * A link on a card opens on a plain click, as one in a grid cell does.
+   *
+   * The release rather than the press, because a press on a card that then moves is somebody
+   * dragging the card to another column. `pressedLink` is cleared by any drag that becomes
+   * active, so the two gestures cannot both happen from one press.
+   */
+  const linkOn = (target: EventTarget | null): HTMLElement | null =>
+    ((target as Element | null)?.closest?.('.sheaf-board-card [data-href]') as HTMLElement | null) ?? null;
+  let pressedLink: HTMLElement | null = null;
+  frame.addEventListener('pointerup', (e) => {
+    const link = pressedLink;
+    pressedLink = null;
+    if (link && linkOn(e.target) === link) host.openLink?.(link.dataset.href ?? '');
+  });
+
   frame.addEventListener('pointerdown', (e) => {
     if (!host.current() || e.button !== 0) return;
     const card = (e.target as HTMLElement).closest?.('.sheaf-board-card') as HTMLElement | null;
     if (!card || !frame.contains(card)) return;
+    // The modifier opens on the press, as it does in prose and in a grid cell.
+    const link = linkOn(e.target);
+    if (link && (e.metaKey || e.ctrlKey)) {
+      host.openLink?.(link.dataset.href ?? '');
+      return;
+    }
+    pressedLink = link;
     const row = Number(card.dataset.row);
     pickCard(row);
     if (!host.editable()) return;
@@ -346,8 +537,11 @@ export function wireBoard(frame: HTMLElement, host: BoardHost): BoardCards {
       pointerId: e.pointerId,
       x: e.clientX,
       y: e.clientY,
+      px: e.clientX,
+      py: e.clientY,
       active: false,
       over: null,
+      lift: null,
     };
     window.addEventListener('pointermove', onCardMove, true);
     window.addEventListener('pointerup', onCardUp, true);

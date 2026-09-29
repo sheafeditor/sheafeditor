@@ -8,9 +8,20 @@
  * leaves, even while someone is typing in the field.
  */
 
-import { ChangeDesc, MapMode } from '@codemirror/state';
+import { ChangeDesc, ChangeSpec, EditorSelection, MapMode, StateEffect } from '@codemirror/state';
 import { EditorView, TooltipView, ViewPlugin } from '@codemirror/view';
-import { floatingField, inlineLinkAt, popoverLink, setDismissed, setHoverLink, InlineLink } from './floatingState';
+import {
+  floatingField,
+  inlineLinkAt,
+  pendingLink,
+  popoverLink,
+  setDismissed,
+  setEditLink,
+  setHoverLink,
+  setNewLink,
+  InlineLink,
+  PendingLink,
+} from './floatingState';
 import { writeClipboardText } from './hostClipboard';
 import { floatingIcon, FloatingIcon } from './floatingIcons';
 import { openLink } from './linkTarget';
@@ -45,14 +56,158 @@ export function setLinkUrl(view: EditorView, link: InlineLink, url: string): boo
   return true;
 }
 
+/**
+ * Replace a link's words with `text`. Nothing else in the line changes.
+ *
+ * The brackets around the words are not touched, so this is the same shape as `setLinkUrl` and
+ * for the same reason: a link is four spans of a line, and editing one of them has no business
+ * rewriting the other three.
+ *
+ * Newlines are dropped rather than escaped. A link's text cannot hold one — the construct ends at
+ * the line — so a pasted paragraph would otherwise break the link into ordinary text. The
+ * closing `]` is the other character that would end it, and it is escaped rather than dropped
+ * because a person typing `[note]` into the text of a link means those characters.
+ */
+export function setLinkText(view: EditorView, link: InlineLink, text: string): boolean {
+  const insert = text.replace(/[\r\n]+/g, ' ').replace(/([[\]])/g, '\\$1');
+  if (insert === view.state.sliceDoc(link.textFrom, link.textTo)) return false;
+  view.dispatch({ changes: { from: link.textFrom, to: link.textTo, insert } });
+  return true;
+}
+
+/**
+ * Set a link's words and its address together, as one change.
+ *
+ * One dispatch rather than two, so the pair is one undo step: a person who changed both and
+ * pressed Cmd+Z once would otherwise be left with a link half edited, which is a state they never
+ * asked for and cannot see the reason for.
+ *
+ * The two spans do not overlap and the text comes first, which is the order CodeMirror wants.
+ */
+export function setLinkParts(view: EditorView, link: InlineLink, text: string, url: string): boolean {
+  const { state } = view;
+  const hasTitle = state.sliceDoc(link.urlTo, link.to - 1).trim() !== '';
+  const nextText = text.replace(/[\r\n]+/g, ' ').replace(/([[\]])/g, '\\$1');
+  const nextUrl = linkDestination(url.replace(/[\r\n]+/g, '').trim(), hasTitle);
+  const changes = [];
+  if (nextText !== state.sliceDoc(link.textFrom, link.textTo)) {
+    changes.push({ from: link.textFrom, to: link.textTo, insert: nextText });
+  }
+  if (nextUrl !== state.sliceDoc(link.urlFrom, link.urlTo)) {
+    changes.push({ from: link.urlFrom, to: link.urlTo, insert: nextUrl });
+  }
+  if (!changes.length) return false;
+  view.dispatch({ changes });
+  return true;
+}
+
 /** Delete a link's syntax and keep its text. */
 export function removeLink(view: EditorView, link: InlineLink): boolean {
+  return removeLinks(view, [link]);
+}
+
+/**
+ * Delete the syntax of several links and keep their text, as one change.
+ *
+ * One dispatch, so unlinking a selection holding three links is one undo step rather
+ * than three. The links arrive in document order, which is the order a changeset wants.
+ */
+export function removeLinks(view: EditorView, links: InlineLink[]): boolean {
+  if (!links.length) return false;
   view.dispatch({
-    changes: [
+    changes: links.flatMap((link) => [
       { from: link.from, to: link.textFrom },
       { from: link.textTo, to: link.to },
-    ],
+    ]),
+    userEvent: 'delete',
   });
+  return true;
+}
+
+/**
+ * The words `text` written as a link's label.
+ *
+ * A pair of square brackets inside the words is a valid label as it stands, and an escaped
+ * bracket already stands for itself, so words like those are written exactly as they were
+ * selected. Brackets that do not pair up would end the label early, or never let it end, and
+ * leave `](url)` showing as text, so those are escaped.
+ */
+export function linkLabel(text: string): string {
+  let depth = 0;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (c === '\\') i++;
+    else if (c === '[') depth++;
+    else if (c === ']' && --depth < 0) break;
+  }
+  if (depth === 0) return text;
+  // Escape the brackets that are not escaped already, leaving `\[` and `\]` as they are.
+  return text.replace(/(\\.)|[[\]]/g, (m, escaped) => escaped ?? `\\${m}`);
+}
+
+/**
+ * Write a link over each pending span, as one change.
+ *
+ * Nothing is written without an address, which is the whole point of the pending state: a
+ * `[text](url)` placeholder left in the file by somebody who changed their mind was the thing
+ * this replaced.
+ *
+ * One span takes its words from the field, because that is the link the person is looking at.
+ * Several spans keep their own words and share the address, so a selection over three
+ * paragraphs becomes three links to one place. A span whose words need no escaping keeps its
+ * bytes: only the markup is added around them, so marks inside the words survive and the diff
+ * is the two ends rather than the whole line.
+ */
+export function writeNewLinks(view: EditorView, spans: PendingLink['spans'], text: string, url: string): boolean {
+  const address = url.replace(/[\r\n]+/g, '').trim();
+  if (!address || !spans.length) return false;
+  const dest = linkDestination(address, false);
+  const changes: ChangeSpec[] = [];
+  for (const span of spans) {
+    const selected = view.state.sliceDoc(span.from, span.to);
+    // With no words to carry it — a bare caret, or a text field left empty — the address is
+    // the words, which is what a link with empty brackets ends up showing anyway.
+    const words = spans.length === 1 ? text.replace(/[\r\n]+/g, ' ') || address : selected;
+    const label = linkLabel(words);
+    if (label === selected) changes.push({ from: span.from, insert: '[' }, { from: span.to, insert: `](${dest})` });
+    else changes.push({ from: span.from, to: span.to, insert: `[${label}](${dest})` });
+  }
+  // The caret lands after the last link written, which is where a paste that makes a link
+  // leaves it and where somebody who just finished a sentence's link carries on typing.
+  const set = view.state.changes(changes);
+  const after = set.mapPos(spans[spans.length - 1].to, 1);
+  view.dispatch({ changes: set, selection: EditorSelection.cursor(after), userEvent: 'input' });
+  return true;
+}
+
+/**
+ * Show the popover on `link` and put the caret in one of its fields.
+ *
+ * This is what Cmd+K and the toolbar's Link button do when the selection is already in
+ * a link. They used to remove it, which made the one shortcut people reach for to
+ * change a link the shortcut that destroys it.
+ *
+ * The tooltip's DOM is built while the transaction is applied, so the field is there to
+ * focus by the time `dispatch` returns.
+ */
+export function editLinkInPopover(view: EditorView, link: InlineLink, field: 'text' | 'url'): boolean {
+  return focusPopover(view, setEditLink.of(link.from), field);
+}
+
+/**
+ * Show the popover over words that are not a link yet, with the caret in one of its fields.
+ * The document is untouched until the address is entered.
+ */
+export function openNewLinkPopover(view: EditorView, spans: PendingLink['spans'], field: 'text' | 'url'): boolean {
+  return focusPopover(view, setNewLink.of({ spans }), field);
+}
+
+function focusPopover(view: EditorView, effect: StateEffect<unknown>, field: 'text' | 'url'): boolean {
+  view.dispatch({ effects: effect });
+  const input = view.dom.querySelector<HTMLInputElement>(field === 'url' ? '.sheaf-linkpop-url' : '.sheaf-linkpop-text');
+  if (!input) return false;
+  input.focus();
+  input.select();
   return true;
 }
 
@@ -69,12 +224,39 @@ function popoverButton(action: string, icon: FloatingIcon, label: string): HTMLB
   return btn;
 }
 
-/** The popover's DOM, created by the tooltip system when a link first needs it. */
+/** The popover's DOM for a link that exists, created by the tooltip system when one first needs it. */
 export function createLinkPopover(view: EditorView): TooltipView {
+  return buildPopover(view, false);
+}
+
+/**
+ * The popover's DOM for a link that is not written yet.
+ *
+ * A separate entry point rather than a flag on the one above, because CodeMirror matches a
+ * tooltip to an existing view by its `create` function: one function for both would hand the
+ * popover built for a pending link to the next link someone edits, with its closure intact.
+ */
+export function createNewLinkPopover(view: EditorView): TooltipView {
+  return buildPopover(view, true);
+}
+
+function buildPopover(view: EditorView, isNew: boolean): TooltipView {
   const dom = document.createElement('div');
   dom.className = 'sheaf-linkpop';
   dom.setAttribute('role', 'dialog');
-  dom.setAttribute('aria-label', 'Link');
+  dom.setAttribute('aria-label', isNew ? 'New link' : 'Link');
+
+  /*
+   * The words first, then the address, which is the order they are read in and the order Tab
+   * moves through them. Changing what a link *says* used to mean editing around brackets that are
+   * not on the screen, in an editor whose whole point is that they are not on the screen.
+   */
+  const textInput = document.createElement('input');
+  textInput.type = 'text';
+  textInput.className = 'sheaf-linkpop-text';
+  textInput.placeholder = 'Link text';
+  textInput.title = 'Link text: Enter saves, Esc closes';
+  textInput.setAttribute('aria-label', 'Link text');
 
   const input = document.createElement('input');
   input.type = 'text';
@@ -87,9 +269,16 @@ export function createLinkPopover(view: EditorView): TooltipView {
   const open = popoverButton('open', 'open', 'Open link');
   const copy = popoverButton('copy', 'copy', 'Copy link address');
   const remove = popoverButton('remove', 'unlink', 'Remove link');
-  dom.append(input, open, copy, remove);
+  // The two fields stack in a column of their own; the popover wraps, so the buttons fall under
+  // them rather than shrinking the address field to share a row with it.
+  const fields = document.createElement('div');
+  fields.className = 'sheaf-linkpop-fields';
+  fields.append(textInput, input);
+  // A link that does not exist yet cannot be opened, copied or removed, and a row of three
+  // buttons that do nothing reads as a bug rather than as a state.
+  dom.append(fields, ...(isNew ? [] : [open, copy, remove]));
 
-  let link = popoverLink(view.state);
+  let link = isNew ? null : popoverLink(view.state);
   let edited = false;
   let copiedTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -105,14 +294,27 @@ export function createLinkPopover(view: EditorView): TooltipView {
     link = from === null || to === null ? null : { ...link, from, to };
   };
 
+  /** The words between a link's brackets, as a person would type them. */
+  const textOf = (l: InlineLink): string => view.state.sliceDoc(l.textFrom, l.textTo).replace(/\\([[\]])/g, '$1');
+
   const sync = (next: InlineLink | null): void => {
     if (!next) return;
     const moved = !link || next.from !== link.from || next.url !== link.url;
     link = next;
     if (moved) edited = false;
-    if (!edited) input.value = next.url;
+    if (!edited) {
+      input.value = next.url;
+      textInput.value = textOf(next);
+    }
   };
-  sync(link);
+  if (isNew) {
+    const spans = pendingLink(view.state)?.spans ?? [];
+    // One span's words go in the field to be edited; several keep their own, so the field would
+    // have nothing true to show and the address is the only thing being asked for.
+    textInput.value = spans.length === 1 ? view.state.sliceDoc(spans[0].from, spans[0].to) : '';
+  } else {
+    sync(link);
+  }
 
   const close = (): void => {
     edited = false;
@@ -120,17 +322,37 @@ export function createLinkPopover(view: EditorView): TooltipView {
     view.focus();
   };
 
-  input.addEventListener('input', () => {
-    edited = true;
-  });
-  input.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      const current = popoverLink(view.state);
-      if (current) setLinkUrl(view, current, input.value);
+  /*
+   * Enter in either field saves both, because a person who changed both and pressed Enter in one
+   * of them has said what they want twice over. Saving only the field they were in would drop the
+   * other edit silently, which is the worst of the three possible answers.
+   *
+   * A new link with no address yet is not saved and not closed either: Enter on an empty address
+   * has asked for nothing, and closing on it would throw away the words in the field along with
+   * the state that says where they go.
+   */
+  const save = (): void => {
+    if (isNew) {
+      const spans = pendingLink(view.state)?.spans;
+      if (!spans || !writeNewLinks(view, spans, textInput.value, input.value)) return;
       close();
+      return;
     }
-  });
+    const current = popoverLink(view.state);
+    if (current) setLinkParts(view, current, textInput.value, input.value);
+    close();
+  };
+
+  for (const field of [textInput, input]) {
+    field.addEventListener('input', () => {
+      edited = true;
+    });
+    field.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter') return;
+      e.preventDefault();
+      save();
+    });
+  }
   dom.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
       e.preventDefault();
@@ -164,6 +386,9 @@ export function createLinkPopover(view: EditorView): TooltipView {
     dom,
     offset: { x: 0, y: 4 },
     update: (update) => {
+      // A pending link has nothing in the document to follow, and the fields hold what the
+      // person is typing; where its words are lives in the state field, which maps itself.
+      if (isNew) return;
       follow(update.changes);
       sync(popoverLink(update.state));
     },

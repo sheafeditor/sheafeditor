@@ -139,12 +139,76 @@ export const columnWidthChecks: Check[] = [
     },
   },
   {
-    name: 'a pane too narrow for the minimums leaves the table at its minimum and says it scrolls',
+    name: 'a pane too narrow for the minimums stops squeezing, because scrolling is already certain',
     run: () => {
+      /*
+       * Squeezing exists to avoid scrolling. Once the minimums cannot fit, the frame
+       * scrolls whatever is handed out, so squeezing buys nothing and costs readability:
+       * it used to leave every column at the six-character floor with its cells wrapped,
+       * unreadable at every scroll position.
+       *
+       * So rule 4 moves each column from its minimum toward its content width as the pane
+       * falls further short. At the boundary with rule 3 it is still the minimum, which is
+       * what keeps a table that nearly fits unchanged.
+       */
       const a = allocateColumnWidths(200, MIXED, opts(200));
-      if (!a || a.rule !== 4 || !a.scrolls) return false;
+      if (!a || a.rule !== 4 || !a.scrolls || !(a.total > 200)) return false;
       const b = base(MIXED);
-      return MIXED.every((_, i) => near(a.widths[i], b[i])) && a.total > 200;
+      const ceiling = MIXED.map((c, i) => Math.max(b[i], Math.min(c.max, cap(200))));
+      // Never under the minimum, never over the ceiling, and the column of sentences is
+      // past its floor rather than sitting on it.
+      const inRange = MIXED.every((_, i) => a.widths[i] >= b[i] - 1 && a.widths[i] <= ceiling[i] + 1);
+      return inRange && a.widths[4] > b[4] + 1;
+    },
+  },
+  {
+    name: '200 columns are each as wide as their content, not parked on the floor',
+    run: () => {
+      /*
+       * The width Sheaf has to carry. Every pane a person could have is deep inside rule 4
+       * here, because 200 minimums are many times any pane, so this is the regime the table
+       * lives in rather than an edge of it.
+       */
+      const cols: ColumnExtent[] = Array.from({ length: 200 }, (_, i) =>
+        i % 20 === 0 ? col(64, 700) : col(40 + (i % 7), 80 + (i % 5) * 20)
+      );
+      const b = base(cols);
+      for (const w of [708, 1100, 1600, 2400]) {
+        const a = allocateColumnWidths(w, cols, opts(w));
+        if (!a || a.rule !== 4 || !a.scrolls) return false;
+        // No column on the floor unless its own content is that short.
+        const parked = cols.filter((c, i) => a.widths[i] <= b[i] + 1 && c.max > b[i] + 1);
+        if (parked.length) return false;
+        // And none past the ceiling, so one column of prose cannot dominate the grid.
+        if (cols.some((c, i) => a.widths[i] > Math.max(b[i], Math.min(c.max, cap(w))) + 1)) return false;
+      }
+      return true;
+    },
+  },
+  {
+    name: 'nothing jumps where squeezing gives way to scrolling',
+    run: () => {
+      /*
+       * The boundary between rule 3 and rule 4 is where the pane stops holding the
+       * minimums. Rule 3 leaves every column at its minimum there and rule 4 starts from
+       * the same place, so a person dragging the editor's edge across it sees nothing move.
+       * Handing out the ceiling at the boundary instead would jump every column by the
+       * whole distance between its minimum and its content width.
+       */
+      for (const cols of [MIXED, WIDE]) {
+        let lastFour: { w: number; widths: readonly number[] } | null = null;
+        let firstThree: { w: number; widths: readonly number[] } | null = null;
+        for (let w = 120; w <= 2400; w++) {
+          const a = allocateColumnWidths(w, cols, opts(w));
+          if (!a) continue;
+          if (a.rule === 4) lastFour = { w, widths: a.widths };
+          else if (lastFour && !firstThree) firstThree = { w, widths: a.widths };
+        }
+        if (!lastFour || !firstThree) return false;
+        if (firstThree.w !== lastFour.w + 1) return false;
+        if (firstThree.widths.some((x, i) => Math.abs(x - lastFour!.widths[i]) > 3)) return false;
+      }
+      return true;
     },
   },
   {
@@ -180,13 +244,29 @@ export const columnWidthChecks: Check[] = [
       // dropped back by more than a hundred pixels in the same step, which is what a person
       // dragging the editor's edge would read as a fault. A pixel-by-pixel walk is the only
       // honest way to say there is no such width: sampling would have missed the one there was.
+      /*
+       * Held exactly while the table can still fit, and to a measured bound once it cannot.
+       *
+       * Rule 4 hands a column more width as the pane falls further short, which is the only
+       * way to stop 200 columns sitting on the floor, and that direction is the opposite of
+       * this invariant. The two cannot both hold exactly: any width above the minimum in
+       * the scrolling regime has to come back down as the pane widens toward the boundary.
+       *
+       * So the bound is where the cost is. Swept pixel by pixel, the worst narrowing in
+       * rule 4 is 2px, on WIDE at a pane of 444, and 1px on MIXED and on a 200-column
+       * table. The jump this check was written for was over a hundred pixels in rules 1
+       * to 3, where it stays exact.
+       */
       for (const cols of [MIXED, WIDE]) {
         let prev: number[] | null = null;
+        let prevRule = 0;
         for (let w = 240; w <= 2400; w++) {
           const a = allocateColumnWidths(w, cols, opts(w));
           if (!a) return false;
-          if (prev && a.widths.some((x, i) => x < prev![i] - 1)) return false;
+          const slack = a.rule === 4 || prevRule === 4 ? 3 : 1;
+          if (prev && a.widths.some((x, i) => x < prev![i] - slack)) return false;
           prev = a.widths;
+          prevRule = a.rule;
         }
       }
       return true;

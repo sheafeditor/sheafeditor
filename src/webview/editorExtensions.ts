@@ -14,15 +14,21 @@ import { languages } from '@codemirror/language-data';
 import { indentUnit, LanguageDescription } from '@codemirror/language';
 import { livePreview, revealField } from './livePreview';
 import { comments } from './comments';
-import { blankLines } from './blankLines';
+import { frontMatterView } from './frontMatterView';
 import { tables } from './tables';
 import { notionTheme } from './theme';
-import { buildEditingKeymap } from './shortcuts';
+import { buildEditingKeymap, orderedListRenumbering } from './shortcuts';
+import { caretPastMarker, openLineAboveMarker, toLineStart, unwrapAtTextStart } from './lineStart';
+import { deleteAcrossInvisible, deleteWordAcrossInvisible, spaceOutsideInvisible, splitKeepingRuns } from './invisibleEdges';
+import { breakOnAlertMarker, dividerKeepsItsLine, typingBesideARule, typingIntoAFence, typingIntoAnAlert, unwrapAlertAtEdge, unwrapFenceAtEdge } from './typedIntoChrome';
+import { leftAcrossMarker, rightAcrossMarker, verticallyByRow } from './caretMotion';
+import { paging } from './paging';
 import { searchSupport } from './search';
 import { selectionToolbar } from './selectionToolbar';
+import { paneWidth } from './paneWidth';
 import { textSelectionLayer } from './selectionHighlight';
 import { blockEditing } from './blocks';
-import { pendingMarks } from './toolbar';
+import { pendingMarks } from './pendingMarks';
 import { changeMarks } from './changeMarks';
 import { linkComplete } from './linkComplete';
 
@@ -145,15 +151,46 @@ export function editorExtensions(onShowShortcuts: () => void): Extension[] {
     markdown({ base: commonmarkLanguage, codeLanguages: codeLanguageFor, extensions: markdownDialect, addKeymap: false, pasteURLAsLink: false }),
     // Markdown's Enter and Backspace, at the high precedence markdown() would give
     // them, with Sheaf's Enter for an empty list item or quote line ahead of them.
-    Prec.high(keymap.of([{ key: 'Enter', run: endEmptyBlock, stopPropagation: true }, ...markdownKeymap])),
+    // Enter at the start of a block's text goes ahead of Markdown's own Enter, which
+    // would otherwise continue the list before this could be asked. It answers only
+    // at that one position and falls through everywhere else. See lineStart.ts.
+    Prec.high(
+      keymap.of([
+        { key: 'Enter', run: endEmptyBlock, stopPropagation: true },
+        { key: 'Enter', run: openLineAboveMarker, stopPropagation: true },
+        // And inside a formatted run, the run closes before the break and opens again
+        // after it, rather than being cut in half with its delimiters showing.
+        // And on a callout's marker line, which is chrome, the break opens a line in the
+        // callout's body rather than cutting `> [!NOTE]` in half. See typedIntoChrome.ts.
+        { key: 'Enter', run: breakOnAlertMarker, stopPropagation: true },
+        { key: 'Enter', run: splitKeepingRuns, stopPropagation: true },
+        /*
+         * And Backspace and Delete on a callout's marker line, which have to be here rather
+         * than in the editing keymap below, because what they are competing with is in this
+         * array. `markdownKeymap`'s own `deleteMarkupBackward` takes the `>` off a quoted
+         * line's first position, and a callout is a quote, so it left `[!NOTE]` standing
+         * outside a blockquote as text. Two keymaps at one precedence resolve in the order
+         * they were registered, so a binding in the block below is asked second and never
+         * reached: measured, the handler was not called at all at that position.
+         *
+         * Every other position on the line is reached from either block, which is what made
+         * this look like it worked: the middle and the end of the marker were right and only
+         * the left edge leaked.
+         */
+        { key: 'Backspace', run: (view) => unwrapAlertAtEdge(view, false) },
+        { key: 'Delete', run: (view) => unwrapAlertAtEdge(view, true) },
+        ...markdownKeymap,
+      ])
+    ),
     // Notion-style generous nesting: Tab/Shift-Tab move one 4-space level,
     // which renders as a clear child indent (and is unambiguous for ordered
     // lists, whose `1. ` content offset is 3).
     indentUnit.of('    '),
     revealField,
     livePreview,
+    paneWidth,
     comments,
-    blankLines,
+    frontMatterView,
     tables,
     searchSupport,
     selectionToolbar,
@@ -165,6 +202,81 @@ export function editorExtensions(onShowShortcuts: () => void): Extension[] {
     // Our editing shortcuts win first (Tab indent, headings, marks), then
     // Markdown's Enter/Backspace list continuation, then CM defaults.
     keymap.of([...buildEditingKeymap(onShowShortcuts), ...markdownKeymap, ...defaultKeymap, ...historyKeymap]),
+    // An indent change moves an item between numbered lists, so the numbers follow it. A
+    // filter rather than part of either command, so it covers Tab, Shift-Tab and anything
+    // else that indents, and so the renumbering shares the indent's transaction: one undo
+    // has to take both, or the first undo leaves the item nested with its old number.
+    orderedListRenumbering,
+    // Home ahead of the defaults, so the start of a line is the start of its text rather
+    // than however much of the marker happens to be drawn. See lineStart.ts.
+    //
+    // Backspace with it, and ahead of Markdown's own: at the left edge of a heading,
+    // a quote or an item, the key takes the block's formatting rather than the last
+    // character of a marker the person cannot see.
+    Prec.high(
+      keymap.of([
+        { key: 'Home', run: (view) => toLineStart(view, false), preventDefault: true },
+        { key: 'Shift-Home', run: (view) => toLineStart(view, true), preventDefault: true },
+        // And Left at the start of a line's words, for the same reason: the position in
+        // front of a hidden marker is drawn in the same place and typing there rewrites
+        // the block. See caretMotion.ts.
+        //
+        // These give the arrow keys a destination a person means. The filter below is
+        // the safety net under them: it closes the routes no binding covers, and on its
+        // own it would make Left at the left edge of a heading appear to do nothing.
+        { key: 'ArrowLeft', run: (view) => leftAcrossMarker(view, false) },
+        { key: 'Shift-ArrowLeft', run: (view) => leftAcrossMarker(view, true) },
+        { key: 'ArrowRight', run: (view) => rightAcrossMarker(view, false) },
+        { key: 'Shift-ArrowRight', run: (view) => rightAcrossMarker(view, true) },
+        // Up and Down only where CodeMirror stepped over a line too short for it to see.
+        { key: 'ArrowUp', run: (view) => verticallyByRow(view, false, false) },
+        { key: 'ArrowDown', run: (view) => verticallyByRow(view, true, false) },
+        { key: 'Shift-ArrowUp', run: (view) => verticallyByRow(view, false, true) },
+        { key: 'Shift-ArrowDown', run: (view) => verticallyByRow(view, true, true) },
+        // Backspace at the left edge of a heading, a quote or an item takes the block's
+        // formatting rather than the last character of a marker nobody can see.
+        { key: 'Backspace', run: unwrapAtTextStart },
+        // Then the inline case, behind it: a delimiter drawn as nothing is stepped
+        // over rather than deleted, so Backspace takes the character a person can
+        // see and the formatting stays. See invisibleEdges.ts.
+        { key: 'Backspace', run: (view) => deleteAcrossInvisible(view, false) },
+        { key: 'Delete', run: (view) => deleteAcrossInvisible(view, true) },
+        // And on a code fence, where taking one backtick leaves a block that fences
+        // nothing, both keys take the block's formatting. See typedIntoChrome.ts.
+        { key: 'Backspace', run: (view) => unwrapFenceAtEdge(view, false) },
+        { key: 'Delete', run: (view) => unwrapFenceAtEdge(view, true) },
+        // The word-sized deletions reach further and so break more of the same
+        // things. Both spellings of delete-word-back are bound, because macOS
+        // sends Alt and the rest of the world sends Ctrl.
+        // A callout's marker line first, because every position on it is inside one piece
+        // of chrome and reaching further along it reaches nothing different.
+        { key: 'Mod-Backspace', run: (view) => unwrapAlertAtEdge(view, false) },
+        { key: 'Alt-Backspace', run: (view) => unwrapAlertAtEdge(view, false) },
+        { key: 'Mod-Delete', run: (view) => unwrapAlertAtEdge(view, true) },
+        { key: 'Alt-Delete', run: (view) => unwrapAlertAtEdge(view, true) },
+        { key: 'Mod-Backspace', run: (view) => deleteWordAcrossInvisible(view, false) },
+        { key: 'Alt-Backspace', run: (view) => deleteWordAcrossInvisible(view, false) },
+        { key: 'Mod-Delete', run: (view) => deleteWordAcrossInvisible(view, true) },
+        { key: 'Alt-Delete', run: (view) => deleteWordAcrossInvisible(view, true) },
+      ])
+    ),
+    // And the caret never rests in front of a hidden marker, which is the position
+    // that made every one of those keys ambiguous. See lineStart.ts.
+    caretPastMarker,
+    // And a space typed against one lands on its outside, where Markdown can hold it,
+    // rather than inside the run where it ends the formatting. See invisibleEdges.ts.
+    spaceOutsideInvisible,
+    // And typing on the line above a divider keeps the blank line between them, so
+    // the divider is not read as the heading underline it can also be. See setextGuard.ts.
+    dividerKeepsItsLine,
+    typingBesideARule,
+    typingIntoAFence,
+    // And a callout's marker line is chrome like a fence is, so typing on it writes in
+    // the callout rather than inside `[!NOTE]`. Same file, same reason.
+    typingIntoAnAlert,
+    // And paging ahead of them too, so a page is a screenful of scroll rather than a
+    // caret move that rounds to a line. See paging.ts.
+    paging,
     EditorView.lineWrapping,
   ];
 }

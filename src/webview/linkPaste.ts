@@ -51,6 +51,33 @@ export function pastedUrl(text: string): string | null {
   return SCHEMES.test(parsed.protocol) ? url : null;
 }
 
+/** A path that names a Markdown document. */
+const MARKDOWN_PATH = /\.(md|markdown)$/i;
+
+/**
+ * The path to another document the clipboard holds, or null when it holds something else.
+ *
+ * Copying a file in a file manager or an editor's own file tree puts its path on the
+ * clipboard, and pasting that into a document is how a person links to it. What arrives is
+ * a path rather than an address, so it has to be told apart from prose that happens to end
+ * the same way, and the rule is the file extension plus one of three shapes.
+ *
+ * A `file:` URL is what a desktop hands over. A drive letter is a path and not a scheme,
+ * whatever it looks like. Any other scheme is a web address, and `https://x.io/a.md` is not
+ * a file in this workspace. A path holding a space is ordinary on a desktop, but so is a
+ * sentence ending in `.md`, so a spaced one has to say it is a path by starting at the root
+ * or with a `./`.
+ */
+export function pastedDocPath(text: string): string | null {
+  const raw = text.trim();
+  if (!raw || /[\r\n]/.test(raw) || !MARKDOWN_PATH.test(raw)) return null;
+  if (/^file:/i.test(raw)) return raw;
+  if (/^[A-Za-z]:[\\/]/.test(raw)) return raw;
+  if (/^[a-z][a-z0-9+.-]*:/i.test(raw)) return null;
+  if (/\s/.test(raw)) return /^(\/|\.\.?\/)/.test(raw) ? raw : null;
+  return raw;
+}
+
 /**
  * A run of selected text as a link label. A bracket in the words would close the
  * label early and leave the address showing as text, so brackets are escaped, and
@@ -154,6 +181,81 @@ export function handleLinkPaste(view: EditorView, text: string): boolean {
 }
 
 /**
+ * Whether a caret at `pos` is somewhere a link written from a paste means something.
+ *
+ * The same question `linkableRange` asks for a selection, with nothing selected: the caret
+ * has to sit in ordinary prose. `NOT_INLINE` covers code, an HTML block, a table's source
+ * and a link already there, and front matter is asked separately because this dialect has no
+ * node for it.
+ */
+function plainProseAt(state: EditorState, pos: number): boolean {
+  if (posInFrontMatter(state.doc, pos)) return false;
+  let inline = true;
+  syntaxTree(state).iterate({
+    from: pos,
+    to: pos,
+    enter: (node) => {
+      if (NOT_INLINE.test(node.name)) inline = false;
+      return inline;
+    },
+  });
+  return inline;
+}
+
+/** What the host says a pasted path names, or null when it names nothing to link. */
+type AskTitle = (path: string) => Promise<{ address: string; title: string } | null>;
+
+let askTitle: AskTitle | null = null;
+
+/**
+ * How to ask the host what a pasted path names. Without one — on the site's demo, and in
+ * every test that does not set it — a pasted path stays a plain paste, which is what it was
+ * before this existed.
+ */
+export function setDocTitleHost(ask: AskTitle | null): void {
+  askTitle = ask;
+}
+
+/**
+ * Write a link to another document at the caret, the way pasting its path means.
+ *
+ * Only the host can answer this: the webview has no way to read another file, and no way to
+ * work out what a path is relative to. So nothing is written when the paste happens, and the
+ * link goes in when the answer arrives. The caret's position is taken now and used then,
+ * which is how a pasted image is handled and for the same reason: the answer comes back in
+ * milliseconds with nobody typing, and carrying the position through a state field to cover
+ * the case where somebody did would be a lot of machinery for it.
+ *
+ * A path the host will not answer for pastes as text, at the same place, so a paste never
+ * silently does nothing.
+ */
+export function handleDocPathPaste(view: EditorView, text: string): boolean {
+  const ask = askTitle;
+  if (!ask) return false;
+  const path = pastedDocPath(text);
+  if (!path) return false;
+  const { state } = view;
+  const sel = state.selection.main;
+  if (state.selection.ranges.length !== 1 || !sel.empty) return false;
+  if (!plainProseAt(state, sel.head)) return false;
+  const at = sel.head;
+  const write = (insert: string): void => {
+    const pos = Math.min(at, view.state.doc.length);
+    view.dispatch({
+      changes: { from: pos, to: pos, insert },
+      selection: { anchor: pos + insert.length },
+      userEvent: 'input.paste',
+      scrollIntoView: true,
+    });
+  };
+  void ask(path).then(
+    (answer) => write(answer ? markdownLink(answer.title, answer.address) : text),
+    () => write(text)
+  );
+  return true;
+}
+
+/**
  * Whether a paste passing through this editor's element is this editor's to
  * answer. A table cell opens an editor of its own inside the document's content,
  * and a paste into it travels through here on its way down. The cell's text is not
@@ -188,7 +290,9 @@ export function installLinkPaste(view: EditorView): void {
       const event = e as ClipboardEvent;
       const text = event.clipboardData?.getData('text/plain') ?? '';
       if (!text || !ownPaste(view, event.target)) return;
-      if (!handleLinkPaste(view, text)) return;
+      // Over a selection, the address links the words. With nothing selected, a path to
+      // another document brings that document's title with it as the words.
+      if (!handleLinkPaste(view, text) && !handleDocPathPaste(view, text)) return;
       event.preventDefault();
       event.stopPropagation();
     },

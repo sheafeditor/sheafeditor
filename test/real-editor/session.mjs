@@ -99,7 +99,28 @@ function resolveInFrame(spec) {
     }
     const y = rect.top + rect.height / 2;
     const top = document.elementFromPoint(x, y);
-    return { x, y, covered: !(top && root.contains(top)), by: describe(top), what: `text ${JSON.stringify(spec.text)}+${spec.offset ?? 0}` };
+    /*
+     * `covered` asks only whether the point is inside `.cm-content`, so a point that has drifted to
+     * a neighbouring line reads as perfectly clickable and the click lands in the wrong line without
+     * a word. `harness.pointing.e02` found that happening once the document has scrolled: the node,
+     * the line and the line's top were all resolved correctly and the letter still went one line
+     * down. So the line the point actually hits is reported as well, and `pointAt` refuses a click
+     * that has drifted.
+     */
+    const wanted = (hit ?? nodes.find(({ n, start }) => at - 1 >= start && at - 1 < start + n.data.length))?.n?.parentElement?.closest?.('.cm-line') ?? null;
+    const landedOn = top?.closest?.('.cm-line') ?? null;
+    return {
+      x,
+      y,
+      covered: !(top && root.contains(top)),
+      by: describe(top),
+      // null when either line cannot be identified, which is not the same as a drift and must not
+      // be treated as one: a target that is not inside a `.cm-line` at all says nothing here.
+      onTarget: wanted && landedOn ? wanted === landedOn : null,
+      wantedLine: wanted ? wanted.textContent.slice(0, 40) : null,
+      landedLine: landedOn ? landedOn.textContent.slice(0, 40) : null,
+      what: `text ${JSON.stringify(spec.text)}+${spec.offset ?? 0}`,
+    };
   }
   let els = [...document.querySelectorAll(spec.sel)].filter(visible);
   if (spec.hasText != null) els = els.filter((el) => el.textContent.trim().startsWith(spec.hasText) || (el.getAttribute('title') || '').startsWith(spec.hasText) || (el.getAttribute('aria-label') || '').startsWith(spec.hasText));
@@ -318,9 +339,43 @@ export async function session(area, { settings = {} } = {}) {
     return { ...r, x: box.x + r.x, y: box.y + r.y };
   }
 
+  /*
+   * Where to click, and two ways of refusing rather than one.
+   *
+   * "Covered by nothing" was one message doing two jobs. `elementFromPoint` returns nothing both
+   * when something opaque is over the target and when the point is outside the viewport, and the
+   * wording pointed at the first: a scenario whose target was simply below the fold was filed
+   * against the product twice as something drawing over it. Measured: the tenth level of
+   * `stress/deep-nesting.md` sits at y=860, reachable in a 900px-tall viewport and unreachable at
+   * 800 and below. A real editor area is shorter than the window it is in, by the tabs and the
+   * status bar, which is why the window suite saw it and a browser at the same width did not.
+   *
+   * Scrolling the target into view and clicking it anyway is deliberately **not** done here. It
+   * makes the click succeed, and `harness.pointing.e02` measured what that buys: after a 600px
+   * scroll the click is accepted and the letter lands in the line below the target, silently, so
+   * the scenario reads a neighbouring line's state as its own. A refusal a person can read beats a
+   * click that goes somewhere else. The scenario that needs a target on screen scrolls to it
+   * itself, where the scroll is part of what is being tested rather than hidden inside the locator.
+   */
   async function pointAt(target, force) {
     const p = await locate(target);
-    if (p.covered && !force) throw new Error(`${p.what} is covered by ${p.by}, so a click there misses it`);
+    if (p.covered && !force) {
+      throw new Error(
+        p.by === 'nothing'
+          ? `${p.what} has nothing painted at its point, which usually means it is outside the viewport rather than covered`
+          : `${p.what} is covered by ${p.by}, so a click there misses it`
+      );
+    }
+    // A point that is on screen and inside the editor can still be on the wrong line, which is
+    // worse than being refused, because the scenario then reads another line's state as the
+    // target's. Only ever refuse on a definite `false`: `null` means the lines could not be
+    // identified, which is most targets, and must not read as a drift.
+    if (p.onTarget === false && !force) {
+      throw new Error(
+        `${p.what} resolves to the line ${JSON.stringify(p.wantedLine)} but the point lands on ` +
+          `${JSON.stringify(p.landedLine)}, so a click there would type into the wrong line`
+      );
+    }
     return p;
   }
 

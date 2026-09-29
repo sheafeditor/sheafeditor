@@ -7,7 +7,7 @@ import { join } from 'node:path';
 
 const j = (x) => JSON.stringify(x);
 
-const TOC_BUTTON = { sel: '#toolbar [aria-label="Table of contents"]' };
+const TOC_BUTTON = { sel: '#toolbar .sheaf-tb-toc' };
 
 /** Set the setting through the profile, so a scenario does not depend on what the last one left behind. */
 async function setToc(S, on) {
@@ -65,9 +65,18 @@ const layout = (S) =>
     const content = document.querySelector('.cm-content');
     const nav = document.querySelector('.sheaf-toc');
     const scroller = document.querySelector('.cm-scroller');
+    const list = nav ? nav.querySelector('.sheaf-toc-list') : null;
+    const header = nav ? nav.querySelector('.sheaf-toc-header') : null;
     return {
       column: round(content.getBoundingClientRect()),
       rail: nav ? round(nav.getBoundingClientRect()) : null,
+      // Folding is a height question, and an entry hidden with its list is still in the
+      // DOM, so counting entries cannot see it. These four are what folding changes.
+      railH: nav ? Math.round(nav.getBoundingClientRect().height) : null,
+      railBottom: nav ? Math.round(nav.getBoundingClientRect().bottom) : null,
+      listH: list ? Math.round(list.getBoundingClientRect().height) : null,
+      headerBottom: header ? Math.round(header.getBoundingClientRect().bottom) : null,
+      expanded: header ? header.getAttribute('aria-expanded') : null,
       overlay: nav ? nav.classList.contains('is-overlay') : null,
       open: nav ? nav.classList.contains('is-open') : null,
       pane: round(scroller.getBoundingClientRect()),
@@ -91,6 +100,156 @@ const toolbarRows = (S) =>
 const near = (a, b, slack = 1) => Math.abs(a - b) <= slack;
 
 export const scenarios = [
+  {
+    id: 'render.toc.e10',
+    feature: 'render.toc',
+    name: 'Folded, the rail keeps its header and the text column stays where it is; the header opens the list again',
+    run: async (S) => {
+      // The reading jsdom cannot give: folding the list has to leave the column alone,
+      // and the rail has to actually lose the height. A rail that shrank and let the
+      // text spread would move the words a person is reading, which is the opposite of
+      // what folding a panel is for; a rail that kept its height would have folded
+      // nothing. Entries are no use here, because a hidden list still holds them.
+      const file = await S.fresh('toc-folded', DOC);
+      await S.command('Sheaf: Toggle Table of Contents');
+      await S.sleep(700);
+      const open = await layout(S);
+      await S.click({ sel: '.sheaf-toc-header' });
+      await S.sleep(500);
+      const folded = await layout(S);
+      await S.click({ sel: '.sheaf-toc-header' });
+      await S.sleep(500);
+      const again = await layout(S);
+      const disk = await S.disk(file);
+      try {
+        const ok =
+          open.entries.length > 0 &&
+          open.expanded === 'true' &&
+          open.listH > 0 &&
+          // The list is gone and the header is still there, which is a rail no taller
+          // than its own header.
+          folded.rail !== null &&
+          folded.expanded === 'false' &&
+          folded.listH === 0 &&
+          folded.railH > 0 &&
+          folded.railH < open.railH &&
+          // Nothing below the header, so a folded overlay is a strip rather than an
+          // empty panel standing over the text.
+          folded.railBottom - folded.headerBottom <= 16 &&
+          near(folded.column.left, open.column.left, 2) &&
+          near(folded.column.right, open.column.right, 2) &&
+          again.expanded === 'true' &&
+          again.listH > 0 &&
+          again.entries.length === open.entries.length &&
+          disk === DOC;
+        return {
+          ok,
+          detail: `open ${j(open)}; folded ${j(folded)}; opened again ${j(again)}; file unchanged ${disk === DOC}`,
+        };
+      } finally {
+        await S.command('Sheaf: Toggle Table of Contents');
+        await S.sleep(500);
+      }
+    },
+  },
+  {
+    id: 'render.toc.e11',
+    feature: 'render.toc',
+    name: 'The toolbar button cycles showing, folded, gone, and says which one it is in',
+    run: async (S) => {
+      // Three states on one button, so what it is drawn as has to be readable at every
+      // step: the press has to move the rail, and the name has to say where it now is.
+      // A window is what can say the rail actually changed height, not just its classes.
+      await setToc(S, false);
+      await S.fresh('toc-cycle', DOC);
+      await S.sleep(900);
+      const seen = [];
+      for (let i = 0; i < 4; i++) {
+        seen.push(await S.eval(() => {
+          const nav = document.querySelector('.sheaf-toc');
+          const list = nav ? nav.querySelector('.sheaf-toc-list') : null;
+          const btn = document.querySelector('#toolbar .sheaf-tb-toc');
+          return {
+            rail: nav && !nav.hidden ? Math.round(nav.getBoundingClientRect().height) : 0,
+            list: list && !nav.hidden ? Math.round(list.getBoundingClientRect().height) : 0,
+            pressed: btn.getAttribute('aria-pressed'),
+            folded: btn.classList.contains('is-folded'),
+            name: btn.getAttribute('aria-label'),
+          };
+        }));
+        if (i < 3) {
+          await S.click(TOC_BUTTON);
+          await S.sleep(700);
+        }
+      }
+      const [off, shown, folded, gone] = seen;
+      const disk = await S.disk();
+      try {
+        const ok =
+          off.rail === 0 &&
+          shown.rail > 0 &&
+          shown.list > 0 &&
+          shown.pressed === 'true' &&
+          !shown.folded &&
+          // Folded: the rail is still drawn and shorter, and the list has no height.
+          folded.rail > 0 &&
+          folded.rail < shown.rail &&
+          folded.list === 0 &&
+          folded.pressed === 'true' &&
+          folded.folded &&
+          gone.rail === 0 &&
+          gone.pressed === 'false' &&
+          // The name is the only part of this a screen reader gets, so all three differ.
+          new Set([shown.name, folded.name, gone.name]).size === 3 &&
+          disk === DOC;
+        return { ok, detail: `off ${j(off)}; then ${j(shown)}; then ${j(folded)}; then ${j(gone)}; file unchanged ${disk === DOC}` };
+      } finally {
+        await setToc(S, false);
+      }
+    },
+  },
+  {
+    id: 'render.toc.e12',
+    feature: 'render.toc',
+    name: 'Right-clicking the rail sets the state for this document, and another document still follows the setting',
+    run: async (S) => {
+      // The menu on the rail is the per-document control, so the reading that matters is
+      // the second document: it must be untouched by what was chosen in the first.
+      await setToc(S, true);
+      const file = await S.fresh('toc-menu', DOC);
+      await S.sleep(900);
+      await S.rightClick({ sel: '.sheaf-toc-header' });
+      await S.sleep(300);
+      const offered = await S.eval(() =>
+        [...document.querySelectorAll('.sheaf-ctx-menu .sheaf-ctx-item')].map((b) => ({
+          label: b.querySelector('span') ? b.querySelector('span').textContent : '',
+          off: b.disabled,
+        }))
+      );
+      await S.menu('Fold the list away');
+      await S.sleep(600);
+      const here = await layout(S);
+      // A different document, which chose nothing and so follows the setting.
+      await S.fresh('toc-menu-other', DOC);
+      await S.sleep(900);
+      const other = await layout(S);
+      const disk = await S.disk(file);
+      try {
+        const ok =
+          offered.map((i) => i.label).join(', ') ===
+            'Show table of contents, Fold the list away, Hide table of contents, Use this everywhere, Reset to default' &&
+          offered.find((i) => i.label === 'Show table of contents').off === true &&
+          here.listH === 0 &&
+          here.expanded === 'false' &&
+          other.listH > 0 &&
+          other.expanded === 'true' &&
+          disk === DOC;
+        return { ok, detail: `offered ${j(offered)}; this document ${j(here)}; another ${j(other)}; file unchanged ${disk === DOC}` };
+      } finally {
+        await setToc(S, false);
+      }
+    },
+  },
   {
     id: 'render.toc.e01',
     feature: 'render.toc',

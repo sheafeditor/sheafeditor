@@ -14,20 +14,32 @@ on:
   # Dry run: builds and attests, but creates no release and publishes nothing.
   workflow_dispatch:
 
+# One release at a time. Two tags pushed close together, or a dispatch during a tag
+# run, would otherwise publish twice. Queued rather than cancelled: stopping a run
+# midway through publishing to two registries is worse than waiting for it.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 permissions:
   contents: write # create the GitHub Release and upload the .vsix
-  id-token: write # mint the OIDC token the attestation is signed against
+  id-token: write # mint the OIDC token the attestation is signed against, and the one exchanged for a Marketplace sign-in
   attestations: write # record the provenance attestation
 
 jobs:
   release:
     name: Build, attest, publish
     runs-on: ubuntu-latest
+    # The Marketplace identity trusts this repository's `release` environment,
+    # so the OIDC token's subject is `repo:<owner>/<repo>:environment:release`
+    # for a tag and a dry run alike. Without an environment the subject names
+    # the tag, and every version would need its own federated credential.
+    environment: release
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
           cache: npm
@@ -55,12 +67,15 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # Publishing is gated on both of these passing.
-      - name: Type-check
-        run: npm run check-types
-
-      - name: Test
-        run: npm test
+      # Publishing is gated on this passing, and on the whole of it rather than on the
+      # eight offline suites `npm test` runs. The docs check, the scenario-id check, the
+      # 733 jsdom editor scenarios, the rendered corpus and the touch layout were all
+      # outside this step, so a release could go out without any of them, for under two
+      # minutes of runner time. What no workflow can gate is the real-window suite,
+      # because a runner has no screen, so nothing here says whether the commit being
+      # published was ever driven through a window.
+      - name: Gates
+        run: npm run gates
 
       - name: Package extension
         run: npm run package
@@ -71,7 +86,7 @@ jobs:
 
       - name: Attest build provenance
         id: attest
-        uses: actions/attest-build-provenance@v4
+        uses: actions/attest-build-provenance@8beda2b7ed98355c0e97c0a63bec38ae472e66c4 # v4
         with:
           subject-path: ${{ steps.vsix.outputs.path }}
 
@@ -89,28 +104,70 @@ jobs:
             --title "$GITHUB_REF_NAME" \
             --notes-file "$RUNNER_TEMP/release-notes.md"
 
+      # The Marketplace publish signs in with Microsoft Entra ID through this
+      # workflow's OIDC token, so no Marketplace secret is stored anywhere. The
+      # identity's client and tenant IDs are not secrets; they live in the
+      # AZURE_CLIENT_ID and AZURE_TENANT_ID variables, repository or `release`
+      # environment. Inert until both are set, so the workflow can be exercised
+      # end to end before anything reaches the Marketplace.
+      #
+      # This runs on a dry run too, so a workflow_dispatch proves the sign-in
+      # works before a tag depends on it.
+      - name: Sign in to Microsoft Entra ID
+        if: vars.AZURE_CLIENT_ID != '' && vars.AZURE_TENANT_ID != ''
+        uses: azure/login@935127ca5bb3c4b02c9c2c10060028383878f33f # v3
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          # The identity publishes extensions and owns no Azure resources.
+          allow-no-subscriptions: true
+
+      # A dry run prints the identity's Marketplace ID, which is what the
+      # publisher's member list asks for, and says whether the identity can
+      # already publish as `sheafeditor`. Neither outcome fails the dry run.
+      - name: Show the Marketplace identity
+        if: github.ref_type != 'tag' && vars.AZURE_CLIENT_ID != '' && vars.AZURE_TENANT_ID != ''
+        run: |
+          if ! az rest -u https://app.vssps.visualstudio.com/_apis/profile/profiles/me \
+            --resource 499b84ac-1321-427f-aa17-267ca6975798 \
+            --query '{id: id, displayName: displayName}'; then
+            echo 'The Azure DevOps profile lookup failed; see the error above.'
+          fi
+          if npx vsce verify-pat --azure-credential sheafeditor; then
+            echo 'This identity can publish as sheafeditor.'
+          else
+            echo 'This identity cannot publish as sheafeditor yet. Add the id above to the publisher as a Contributor.'
+          fi
+
+      # --packagePath publishes the exact file that was attested above. Letting
+      # vsce repackage here would upload a second, unattested build and undo the
+      # whole point of this workflow.
+      - name: Publish to the Marketplace
+        if: github.ref_type == 'tag' && vars.AZURE_CLIENT_ID != '' && vars.AZURE_TENANT_ID != ''
+        run: npx vsce publish --azure-credential --no-dependencies --packagePath "${{ steps.vsix.outputs.path }}"
+
+      # Fallback for a release cut before the Entra identity is set up. Azure
+      # DevOps retires global personal access tokens, the only kind the
+      # Marketplace accepts, on 2026-12-01, and this path stops working then.
+      # Delete the VSCE_PAT secret and these two steps after that date.
+      #
       # The `secrets` context cannot be read from a step `if:`, so the presence
       # of the token becomes a step output the condition below can see. This
       # keeps the secret scoped to the two steps that need it rather than
       # putting it in the job environment.
-      - name: Check for a Marketplace token
+      - name: Check for a Marketplace token (retires 2026-12-01)
         id: pat
+        if: vars.AZURE_CLIENT_ID == '' || vars.AZURE_TENANT_ID == ''
         env:
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
         run: |
           if [ -n "$VSCE_PAT" ]; then
             echo 'present=true' >> "$GITHUB_OUTPUT"
           else
-            echo 'No VSCE_PAT secret set; skipping the Marketplace publish.'
+            echo 'No Entra identity (AZURE_CLIENT_ID, AZURE_TENANT_ID) and no VSCE_PAT secret; skipping the Marketplace publish.'
           fi
 
-      # --packagePath publishes the exact file that was attested above. Letting
-      # vsce repackage here would upload a second, unattested build and undo the
-      # whole point of this workflow.
-      #
-      # Inert until the VSCE_PAT secret exists, so the workflow can be exercised
-      # end to end before anything reaches the Marketplace.
-      - name: Publish to the Marketplace
+      - name: Publish to the Marketplace with a token (retires 2026-12-01)
         if: github.ref_type == 'tag' && steps.pat.outputs.present == 'true'
         env:
           VSCE_PAT: ${{ secrets.VSCE_PAT }}

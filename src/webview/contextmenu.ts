@@ -1,13 +1,13 @@
 /*
  * Right-click context menu.
  *
- * Renders a small popup at the cursor. On prose it leads with Turn into and
- * Edit Markdown, because converting the block you clicked, or opening its raw
- * Markdown, is the reason to open a menu on that block at all. What follows is
- * what has nowhere else to live: the inline marks with no button on the
- * selection toolbar, and Copy ref, which puts `path:line` (a line range when
- * text spans several lines) on the clipboard, followed by the selected text, so
- * the result pastes cleanly into an AI chat as a code reference. Clipboard
+ * Renders a small popup at the cursor. On prose it leads with Edit Markdown and
+ * Copy ref: opening the raw Markdown of the block you clicked, and taking a
+ * reference to it, are the two things a person comes to this menu for by name.
+ * Copy ref puts `path:line` (a line range when text spans several lines) on the
+ * clipboard, followed by the selected text, so the result pastes cleanly into an
+ * AI chat as a code reference. Turn into follows, and then what has nowhere else
+ * to live: the inline marks with no button on the selection toolbar. Clipboard
  * writes are routed through the host (see markdownEditorProvider) rather than
  * the webview's restricted `navigator.clipboard`, and every item reuses the
  * same editing commands as the toolbar and keyboard shortcuts.
@@ -26,15 +26,24 @@
 import { EditorState, StateEffect, Text } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
 import { syntaxTree } from '@codemirror/language';
-import { toggleWrap, insertLink, clearFormatting, turnInto, blockKindOf, BlockKind } from './toolbar';
-import { COPY_REF_KEY, SEND_REF_KEY, hint } from './shortcuts';
+import { BlockKind, blockKindOf, clearFormatting, insertLink, MARK_NODE, marksAreLiteral, toggleWrap, turnInto } from './toolbar';
+import { COPY_REF_KEY, SEND_REF_KEY, drawKeyHint } from './shortcuts';
 import { tableRowSourceAt, tableRowRefAt, tableActionsAt } from './tables';
+import { TableIcon, tableIcon } from './tableIcons';
 import { formatStateAt } from './formatState';
 import { inFrontMatter } from './floatingState';
+import {
+  frontMatterEverywhere,
+  frontMatterIsOwn,
+  frontMatterMode,
+  resetFrontMatter,
+  setFrontMatterForDocument,
+} from './frontMatterView';
 import { blockRangeAt } from './blockModel';
-import { revealBlockAt } from './revealBlock';
+import { revealBlockAt, toggleWholeReveal } from './revealBlock';
 import { linkAddress, linkAddressAt, openLink } from './linkTarget';
-import { buildRef, tableRowRef } from './refs';
+import { buildRef, cellRefAt, tableRowRef } from './refs';
+import { focusedCellEditor } from './cellEditor';
 
 export interface ContextMenuDeps {
   getView: () => EditorView | undefined;
@@ -46,6 +55,24 @@ export interface ContextMenuDeps {
   openLink?: (url: string) => void;
   /** Ask the host to send the current selection's reference to the terminal; the item is hidden when omitted. */
   sendRefToTerminal?: () => void;
+  /**
+   * The heading list, for the menu on the rail itself. The rail is not in the document,
+   * so nothing about it can be worked out from the editor state; the page that owns it
+   * hands over what it is doing and how to change it. Omitted, a right-click on the rail
+   * falls through to the menu for the text.
+   */
+  outline?: {
+    /** What the rail is drawn as now. */
+    state: () => 'shown' | 'collapsed' | 'hidden';
+    /** Whether this document has a state of its own, rather than following the setting. */
+    isOwn: () => boolean;
+    /** Set it for this document. */
+    setForDocument: (state: 'shown' | 'collapsed' | 'hidden') => void;
+    /** Make what this document is doing the setting for every document. */
+    everywhere: () => void;
+    /** Drop this document's own state, so it follows the setting again. */
+    reset: () => void;
+  };
 }
 
 type MenuItem =
@@ -54,6 +81,14 @@ type MenuItem =
       kind: 'item';
       label: string;
       keyHint?: string;
+      /**
+       * The glyph beside the row, from the table's own set.
+       *
+       * Named rather than drawn here, and the same name the grid's chevron menu uses, because
+       * the two menus offer the same commands and a second icon set would let one command be
+       * drawn two ways depending on how it was reached.
+       */
+      icon?: TableIcon;
       run: () => void;
       disabled?: boolean;
       /** Set for items that show an on or off state. */
@@ -181,8 +216,14 @@ export function mountContextMenu(root: HTMLElement, deps: ContextMenuDeps): void
     });
     view.dispatch({ effects: StateEffect.appendConfig.of(listener) });
   }
-  /** Whether `view` still shows the document `doc` a menu was built from. */
-  const unchanged = (view: EditorView, doc: Text): boolean => deps.getView() === view && view.state.doc === doc;
+  /*
+   * Whether the editor an item was built against is still the one on screen, and still
+   * holding the text the item was built from. An open table cell is an editor of its own
+   * with its own lifetime, so it answers for itself: the grid destroys it when focus
+   * leaves the table, and an item that ran against a destroyed view would write nowhere.
+   */
+  const unchanged = (view: EditorView, doc: Text): boolean =>
+    (deps.getView() === view || focusedCellEditor()?.view === view) && view.state.doc === doc;
   const itemsOf = (list: HTMLElement): HTMLButtonElement[] =>
     Array.from(list.querySelectorAll<HTMLButtonElement>('.sheaf-ctx-item:not(:disabled)'));
 
@@ -275,6 +316,14 @@ export function mountContextMenu(root: HTMLElement, deps: ContextMenuDeps): void
   // focused item, Right opens a submenu and Left or Escape leaves it, and Escape
   // or Tab closes the menu and returns focus.
   const onKeyDown = (e: KeyboardEvent): void => {
+    // A menu taken out of the page is not open, whatever its own flag says. These
+    // listeners are on the document and outlive the element, and a detached menu still
+    // has its items to count, so it would go on claiming arrows and Escape from
+    // whatever is really on screen.
+    if (!menu.isConnected) {
+      close(false);
+      return;
+    }
     const inSub = !sub.hidden && sub.contains(document.activeElement);
     const list = itemsOf(inSub ? sub : menu);
     const i = list.indexOf(document.activeElement as HTMLButtonElement);
@@ -306,7 +355,18 @@ export function mountContextMenu(root: HTMLElement, deps: ContextMenuDeps): void
     }
   };
 
-  function build(view: EditorView, pos: number): MenuItem[] {
+  /**
+   * The menu for a right-click in the text, built from `view` and the position clicked.
+   *
+   * `cell` is the element clicked when `view` is an open table cell's own editor, and null
+   * everywhere else. A cell is the document one scope in: it holds inline Markdown and no
+   * block, so Edit Markdown shows the whole of it, Copy ref asks the grid where the row
+   * lands in the file, and Turn into is gone rather than disabled. Everything else is the
+   * same items doing the same things, which is the point: a person editing a cell is
+   * editing prose, and the menu should not shrink because the prose is in a table.
+   */
+  function build(view: EditorView, pos: number, cell: Element | null): MenuItem[] {
+    const inCell = cell !== null;
     const { state } = view;
     const cmd =
       (fn: (v: EditorView) => void) =>
@@ -325,7 +385,7 @@ export function mountContextMenu(root: HTMLElement, deps: ContextMenuDeps): void
     if (link?.url) {
       const url = link.url;
       context.push(
-        { kind: 'item', label: 'Open link', run: cmd(() => (deps.openLink ?? openLink)(url)) },
+        { kind: 'item', label: 'Open link', keyHint: 'Mod-Enter', run: cmd(() => (deps.openLink ?? openLink)(url)) },
         // The address as written, not the href: a copied address is pasted
         // somewhere else, where Markdown's escapes mean nothing, and where a
         // `mailto:` this document never held would be in the way.
@@ -334,7 +394,12 @@ export function mountContextMenu(root: HTMLElement, deps: ContextMenuDeps): void
     }
     if (link?.cuts) {
       const cuts = link.cuts;
-      context.push({ kind: 'item', label: 'Remove link', run: cmd((v) => v.dispatch({ changes: cuts, userEvent: 'delete' })) });
+      context.push({
+        kind: 'item',
+        label: 'Remove link',
+        keyHint: 'Mod-Shift-k',
+        run: cmd((v) => v.dispatch({ changes: cuts, userEvent: 'delete' })),
+      });
     }
     if (code != null) context.push({ kind: 'item', label: 'Copy code', run: cmd(() => deps.copyToClipboard(code)) });
     if (task) {
@@ -347,8 +412,41 @@ export function mountContextMenu(root: HTMLElement, deps: ContextMenuDeps): void
     }
     // Inside code, Markdown markers would be typed into the code as literal text.
     // Front matter is YAML, and a marker or block prefix written there breaks it.
-    const frontMatter = state.selection.ranges.some((r) => inFrontMatter(state, r.from) || inFrontMatter(state, r.to)) || inFrontMatter(state, pos);
-    const noInline = fs.codeBlock || frontMatter;
+    const frontMatter =
+      !inCell && (state.selection.ranges.some((r) => inFrontMatter(state, r.from) || inFrontMatter(state, r.to)) || inFrontMatter(state, pos));
+    /*
+     * A code *span*, an autolink, a link's address and a footnote reference read
+     * their contents as characters too, so a `**` written into one of them is two
+     * asterisks on the screen. The commands refuse there; the items say so, because
+     * a control that can be pressed and does nothing is worse than one that is
+     * visibly unavailable.
+     */
+    const literalFor = (except?: string): boolean =>
+      state.selection.ranges.some((r) => marksAreLiteral(state, r.from, r.to, except)) ||
+      marksAreLiteral(state, pos, pos, except);
+    const noInline = fs.codeBlock || frontMatter || literalFor();
+    /*
+     * The three states, on the block itself, because that is where somebody looking at
+     * metadata they do not want will right-click. Each one is this document from now on;
+     * the setting is still what every other document opens with.
+     *
+     * Hidden is the exception, and the items are offered anywhere in the document. A
+     * hidden block is not on the page to be right-clicked, and a control that can take
+     * itself away has to leave a way back that does not depend on it.
+     */
+    const mode = frontMatterMode();
+    const hiddenHere = !inCell && mode === 'hidden' && inFrontMatter(state, 0);
+    if (frontMatter || hiddenHere) {
+      context.push(
+        { kind: 'item', label: 'Show front matter', disabled: mode === 'shown', run: cmd((v) => setFrontMatterForDocument(v, 'shown')) },
+        { kind: 'item', label: 'Collapse front matter', disabled: mode === 'collapsed', run: cmd((v) => setFrontMatterForDocument(v, 'collapsed')) },
+        { kind: 'item', label: 'Hide front matter', disabled: mode === 'hidden', run: cmd((v) => setFrontMatterForDocument(v, 'hidden')) },
+        // The two that say how far the choice reaches, which is otherwise invisible: one
+        // makes it every document, the other gives this one back to the setting.
+        { kind: 'item', label: 'Use this everywhere', run: cmd(frontMatterEverywhere) },
+        { kind: 'item', label: 'Reset to default', disabled: !frontMatterIsOwn(), run: cmd(resetFrontMatter) }
+      );
+    }
     // Bold, italic and strikethrough are off the menu but not off the document:
     // Clear formatting still has something to clear when the caret sits in one.
     const anyMark = fs.bold || fs.italic || fs.strike || fs.code || fs.highlight || fs.link;
@@ -357,7 +455,9 @@ export function mountContextMenu(root: HTMLElement, deps: ContextMenuDeps): void
       label,
       keyHint,
       checked: on,
-      disabled: noInline,
+      // Each mark asks about its own construct, so Inline code stays available
+      // inside a code span, which is where it is used to turn one off.
+      disabled: fs.codeBlock || frontMatter || literalFor(MARK_NODE[marker]),
       run: cmd((v) => toggleWrap(v, marker)),
     });
 
@@ -373,10 +473,49 @@ export function mountContextMenu(root: HTMLElement, deps: ContextMenuDeps): void
       run: cmd((v) => turnInto(v, kind)),
     });
 
-    // Converting the block you clicked comes first, and reading its raw Markdown
-    // second. Below them sit the marks the selection toolbar has no button for,
-    // then Copy ref and whatever the click itself turned up.
+    // Reading the raw Markdown of the block you clicked comes first, and taking a
+    // reference to it second: they are the two things a person opens this menu for
+    // by name. Changing the block, and then the marks the selection toolbar has no
+    // button for, sit below them, with whatever the click itself turned up last.
     const items: MenuItem[] = [
+      {
+        kind: 'item',
+        label: 'Edit Markdown',
+        keyHint: 'Mod-Alt-e',
+        // A cell always has something to show, since the whole of its document is the cell.
+        disabled: !inCell && !blockRangeAt(state, pos),
+        run: cmd((v) => void (inCell ? toggleWholeReveal(v) : revealBlockAt(v, pos))),
+      },
+      {
+        kind: 'item',
+        label: 'Copy ref',
+        keyHint: copyRefKey(),
+        // The grid says where a cell's row lands in the file; the cell's own editor counts
+        // from line 1 of that cell and would name the same line for every cell in the table.
+        run: cmd((v) => deps.copyToClipboard((cell && cellRefAt(cell)) || buildRef(v, deps.getFileName()))),
+      },
+      // Beside Copy ref, because it is the same reference going somewhere else: to the terminal's
+      // prompt rather than the clipboard. Absent where the host has not offered it.
+      ...(deps.sendRefToTerminal
+        ? [{ kind: 'item', label: 'Send to terminal', keyHint: SEND_REF_KEY, run: cmd(() => deps.sendRefToTerminal!()) } as MenuItem]
+        : []),
+      { kind: 'sep' },
+      // Turn into is absent in a cell rather than disabled: a cell holds inline content, so
+      // `# ` written into one is two characters of a value, and a control a person cannot
+      // use leaves them working out why when there is no answer that helps.
+      ...(inCell ? [] : turnIntoGroup(frontMatter, into)),
+      mark('Highlight', 'Mod-Shift-h', '==', fs.highlight),
+      mark('Inline code', 'Mod-e', '`', fs.code),
+      ...(link ? [] : [{ kind: 'item', label: 'Link', keyHint: 'Mod-k', disabled: noInline, run: cmd(insertLink) } as MenuItem]),
+      { kind: 'item', label: 'Clear formatting', disabled: noInline || (!selected.length && !anyMark), run: cmd(clearFormatting) },
+    ];
+    if (context.length) items.push({ kind: 'sep' }, ...context);
+    return items;
+  }
+
+  /** The block kinds, with the rule that closes the group off from the marks below it. */
+  function turnIntoGroup(frontMatter: boolean, into: (label: string, kind: BlockKind, keyHint?: string) => MenuItem): MenuItem[] {
+    return [
       {
         kind: 'submenu',
         label: 'Turn into',
@@ -399,28 +538,8 @@ export function mountContextMenu(root: HTMLElement, deps: ContextMenuDeps): void
           into('Code block', 'code', 'Mod-Alt-8'),
         ],
       },
-      {
-        kind: 'item',
-        label: 'Edit Markdown',
-        keyHint: 'Mod-Alt-e',
-        disabled: !blockRangeAt(state, pos),
-        run: cmd((v) => void revealBlockAt(v, pos)),
-      },
       { kind: 'sep' },
-      mark('Highlight', 'Mod-Shift-h', '==', fs.highlight),
-      mark('Inline code', 'Mod-e', '`', fs.code),
-      ...(link ? [] : [{ kind: 'item', label: 'Link', keyHint: 'Mod-k', disabled: noInline, run: cmd(insertLink) } as MenuItem]),
-      { kind: 'item', label: 'Clear formatting', disabled: noInline || (!selected.length && !anyMark), run: cmd(clearFormatting) },
-      { kind: 'sep' },
-      { kind: 'item', label: 'Copy ref', keyHint: copyRefKey(), run: cmd((v) => deps.copyToClipboard(buildRef(v, deps.getFileName()))) },
-      // Beside Copy ref, because it is the same reference going somewhere else: to the terminal's
-      // prompt rather than the clipboard. Absent where the host has not offered it.
-      ...(deps.sendRefToTerminal
-        ? [{ kind: 'item', label: 'Send to terminal', keyHint: SEND_REF_KEY, run: cmd(() => deps.sendRefToTerminal!()) } as MenuItem]
-        : []),
     ];
-    if (context.length) items.push({ kind: 'sep' }, ...context);
-    return items;
   }
 
   /** Submenu triggers in the rendered main menu, with the items each opens. */
@@ -443,7 +562,10 @@ export function mountContextMenu(root: HTMLElement, deps: ContextMenuDeps): void
       btn.className = 'sheaf-ctx-item';
       btn.setAttribute('role', 'menuitem');
       btn.tabIndex = -1;
+      // Before the label, so one column of glyphs runs down the menu.
+      if (item.kind === 'item' && item.icon) btn.insertAdjacentHTML('afterbegin', tableIcon(item.icon));
       const label = document.createElement('span');
+      label.className = 'sheaf-ctx-label';
       label.textContent = item.label;
       btn.appendChild(label);
       // Keep the editor selection intact until the command runs.
@@ -469,7 +591,7 @@ export function mountContextMenu(root: HTMLElement, deps: ContextMenuDeps): void
       if (item.keyHint) {
         const keys = document.createElement('span');
         keys.className = 'sheaf-ctx-key';
-        keys.textContent = hint(item.keyHint);
+        drawKeyHint(keys, item.keyHint);
         btn.appendChild(keys);
       }
       if (item.checked !== undefined) {
@@ -546,6 +668,68 @@ export function mountContextMenu(root: HTMLElement, deps: ContextMenuDeps): void
       y = anchor?.bottom ?? caret?.bottom ?? 0;
     }
 
+    /*
+     * The rail of headings is beside the text rather than in it, so a menu opened on it
+     * is about the rail and nothing about the document. Every item here is this document
+     * from now on, except the last two, which say how far the choice reaches.
+     */
+    const outline = deps.outline;
+    if (outline && (event.target as Element | null)?.closest?.('.sheaf-toc')) {
+      const now = outline.state();
+      const pick = (state: 'shown' | 'collapsed' | 'hidden'): MenuItem => ({
+        kind: 'item',
+        label: state === 'shown' ? 'Show table of contents' : state === 'collapsed' ? 'Fold the list away' : 'Hide table of contents',
+        disabled: now === state,
+        run: () => {
+          outline.setForDocument(state);
+          close(true);
+        },
+      });
+      render([
+        pick('shown'),
+        pick('collapsed'),
+        pick('hidden'),
+        { kind: 'sep' },
+        { kind: 'item', label: 'Use this everywhere', run: () => (outline.everywhere(), close(true)) },
+        { kind: 'item', label: 'Reset to default', disabled: !outline.isOwn(), run: () => (outline.reset(), close(true)) },
+      ]);
+      open(view, x, y, fromKeyboard);
+      return;
+    }
+
+    /*
+     * An open Markdown cell gets the document's own menu, built against the cell's editor.
+     *
+     * It has to come before the table branch below, because a cell is inside the grid and
+     * that branch would otherwise answer for it with the row's ref and the row and column
+     * actions: the right menu for a click on the grid, and the wrong one for a click in
+     * text somebody is in the middle of typing.
+     *
+     * A data cell is a plain text box rather than an editor, and it is already left to the
+     * platform's own menu by the `input, textarea` bail above.
+     */
+    const openCell = focusedCellEditor();
+    const cellView = openCell?.view && openCell.host.contains(event.target as Node) ? openCell.view : null;
+    if (cellView) {
+      let at = cellView.state.selection.main.head;
+      if (!fromKeyboard) {
+        let clicked: number | null = null;
+        try {
+          clicked = cellView.posAtCoords({ x: event.clientX, y: event.clientY }, false);
+        } catch {
+          clicked = null;
+        }
+        if (clicked != null) {
+          const sel = cellView.state.selection.main;
+          if (sel.empty || clicked < sel.from || clicked > sel.to) cellView.dispatch({ selection: { anchor: clicked } });
+          at = clicked;
+        }
+      }
+      render(build(cellView, at, event.target as Element));
+      open(cellView, x, y, fromKeyboard);
+      return;
+    }
+
     // A table is one block widget, so the position under the pointer is the
     // table's edge rather than the row that was clicked. Offer a ref to that row
     // and the table's own row and column actions, and no text formatting: those
@@ -565,6 +749,7 @@ export function mountContextMenu(root: HTMLElement, deps: ContextMenuDeps): void
           kind: 'item',
           label: 'Copy ref',
           keyHint: copyRefKey(),
+          icon: 'copyRef',
           run: () => {
             if (unchanged(view, doc)) deps.copyToClipboard(tableRowRef(deps.getFileName(), ref));
             close(true);
@@ -576,6 +761,7 @@ export function mountContextMenu(root: HTMLElement, deps: ContextMenuDeps): void
                 kind: 'item',
                 label: 'Send to terminal',
                 keyHint: SEND_REF_KEY,
+                icon: 'terminal',
                 run: () => {
                   if (unchanged(view, doc)) deps.sendRefToTerminal!();
                   close(true);
@@ -590,6 +776,10 @@ export function mountContextMenu(root: HTMLElement, deps: ContextMenuDeps): void
             kind: 'item',
             label: a.label,
             keyHint: a.keyHint,
+            // The glyph the command already names, which the grid's own menu draws from the
+            // same field. Dropped here before, so one command was drawn two ways depending on
+            // which menu it was reached from.
+            icon: a.icon,
             run: () => {
               if (unchanged(view, doc)) a.run();
               close(true);
@@ -620,7 +810,7 @@ export function mountContextMenu(root: HTMLElement, deps: ContextMenuDeps): void
       }
     }
 
-    render(build(view, pos));
+    render(build(view, pos, null));
     open(view, x, y, fromKeyboard);
   });
 

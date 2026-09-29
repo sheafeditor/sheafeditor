@@ -87,7 +87,9 @@ The API returns JSON over HTTP.
 
 ## Emoji shortcodes
 
-Build passed :white_check_mark: and the deploy is :rocket: queued. A colon-word that is not an emoji: 10:30:45 and `:not_code:` in code.
+Build passed :white_check_mark: and the deploy is :rocket: queued. Names with a plus or a hyphen count too: :+1: :-1: :e-mail: :t-rex: :non-potable_water:
+
+A colon-word that is not an emoji stays as typed: 10:30:45, :not_a_shortcode:, :30:, and `:not_code:` in code.
 
 ## Tables of contents markers
 

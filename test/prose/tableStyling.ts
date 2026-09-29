@@ -114,10 +114,6 @@ export const scenarios: Scenario[] = [
       const paints: RegExp[] = [
         /\.sheaf-table td:hover\s*\{[^}]*background:/,                       // pointer
         /\.sheaf-table td\.is-sel[,\s][^{]*\{[^}]*background:/,              // selected cells
-        // The row number and header of what is selected: coloured text, and no fill,
-        // so one selected cell does not light up two more pieces of chrome.
-        /\.sheaf-table td\.sheaf-table-gutter\.is-sel-axis[^{]*\{[^}]*color:/, // selected row, in the gutter
-        /\.sheaf-table th\.is-sel-axis[^{]*\{[^}]*color:/,              // selected column, in the header
         /\.sheaf-table \.sheaf-table-gutter:hover[^{]*\{[^}]*background:/,   // pointer on a row number
         /\.sheaf-table td\.is-focus[^{]*\{[^}]*outline:/,                    // the cell with the keyboard
         /\.sheaf-table tr\.is-row-dragging td\s*\{[^}]*opacity:/,            // the row being dragged
@@ -125,8 +121,28 @@ export const scenarios: Scenario[] = [
         /\.sheaf-table tr\.is-drop-(?:before|after) td\s*\{[^}]*box-shadow:/, // where a row lands
         /\.sheaf-table \.is-col-drop-(?:before|after)\s*\{[^}]*box-shadow:/,  // where a column lands
       ];
-      const axisFilled = /\.sheaf-table (?:td\.sheaf-table-gutter|th)\.is-sel-axis[^{]*\{[^}]*background/.test(rules);
-      return paints.every((r) => r.test(rules)) && !axisFilled;
+      // The row numbers and headers a selection spans are drawn as they always are.
+      // In the selection colour they read as links, and as more things selected.
+      const axisPainted = /\.sheaf-table (?:td\.sheaf-table-gutter|th)\.is-sel-axis(?![^{]*>)[^{]*\{[^}]*(?:background|color):/.test(rules);
+      const headerTinted = /\.sheaf-table th\.is-sel[\s,{]/.test(rules);
+      const linkOnChrome = /\.sheaf-table (?:\.sheaf-table-gutter|\.sheaf-table-corner|th):hover[^{]*\{[^}]*--md-link/.test(rules);
+      return paints.every((r) => r.test(rules)) && !axisPainted && !headerTinted && !linkOnChrome;
+    },
+  },
+  {
+    name: 'the hover bar floats over the table and holds no space above it while it is hidden',
+    run: () => {
+      const rules = tableRules();
+      const bar = ruleBody(/\.sheaf-table-controls(?=\s*\{)/);
+      // Out of the flow, so the table starts at its frame whether the bar shows or not.
+      const floats = /position:\s*absolute/.test(bar) && /right:\s*0/.test(bar);
+      const reserves = /margin(?:-bottom)?:/.test(bar);
+      // Invisible is not enough: an invisible bar over the line above would still take
+      // that line's clicks. It answers the pointer only once it is shown.
+      const inert = /pointer-events:\s*none/.test(bar);
+      const answersWhenShown =
+        /\.sheaf-table:hover \.sheaf-table-controls > \*,\s*\.sheaf-table:focus-within \.sheaf-table-controls > \*\s*\{[^}]*pointer-events:\s*auto/.test(rules);
+      return floats && !reserves && inert && answersWhenShown;
     },
   },
   {

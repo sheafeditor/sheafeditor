@@ -26,6 +26,7 @@ import { mkdir, readdir, stat, writeFile } from 'node:fs/promises';
 import { IncomingMessage, Server, ServerResponse, createServer } from 'node:http';
 import { basename, extname, join } from 'node:path';
 import { DocumentStore, OpenDocument } from './documents';
+import { NOTICE, SET_CONTENT, SET_CONTENT_TOOK_TYPED } from './events';
 import { editorPage, indexPage } from './page';
 import { folderOf, joinRelative, relativePosix, resolveInside } from './paths';
 import { EditorConfig, readConfig } from './settings';
@@ -45,6 +46,9 @@ const MAX_LISTED = 2000;
 const CONTENT_TYPES: Record<string, string> = {
   '.css': 'text/css; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
+  // Mermaid's module and its chunks. A browser refuses a module served as
+  // anything but JavaScript, so without this no diagram draws in a tab.
+  '.mjs': 'text/javascript; charset=utf-8',
   '.json': 'application/json; charset=utf-8',
   '.md': 'text/markdown; charset=utf-8',
   '.markdown': 'text/markdown; charset=utf-8',
@@ -121,6 +125,20 @@ export function createSheafServer(options: ServeOptions): Server {
       await sendFile(res, join(distRoot, 'serve-host.js'));
       return;
     }
+    /*
+     * A browser asks for both of these on its own, whether the page links an icon or not, so
+     * every page load logged a 404 in the console a person looks at when something is actually
+     * wrong. It cost a wrong first reading once already, while checking the split bundle,
+     * where a 404 is exactly what a chunk served from an unexpected path produces.
+     *
+     * Both answer with the icon the extension already ships, and `sendFile` takes the type
+     * from the file it sends rather than from the path asked for, so `/favicon.ico` is served
+     * as `image/png`, which every browser accepts.
+     */
+    if (path === '/favicon.ico' || path === '/apple-touch-icon.png') {
+      await sendFile(res, join(mediaRoot, 'icon.png'));
+      return;
+    }
     if (path.startsWith('/media/')) {
       const asset = resolveInside(mediaRoot, path.slice('/media/'.length));
       if (!asset) {
@@ -182,6 +200,22 @@ export function createSheafServer(options: ServeOptions): Server {
       return;
     }
 
+    if (path === '/api/files' && req.method === 'GET') {
+      /*
+       * The folder's documents, for completing a link's address. The same walk the index
+       * page uses, so the list a person picks from is the list they were shown.
+       *
+       * Walked per request rather than held for the tab. Measured on this folder: about
+       * 1.5ms for 66 files and 2.2ms for 662, so ten times the files costs half again as
+       * much and the walk is bounded by directories rather than by files. Against that,
+       * holding it would go stale for as long as a tab is open, and a list of documents
+       * to link to is exactly the thing that changes while somebody works: a file created
+       * a moment ago is the one they are most likely to be reaching for.
+       */
+      finish(res, 200, 'application/json; charset=utf-8', JSON.stringify({ files: await listMarkdown(root) }));
+      return;
+    }
+
     if (path === '/api/doc' && req.method === 'POST') {
       const body = await readJson<{ path?: string; text?: string }>(req, res);
       if (!body) return;
@@ -237,11 +271,24 @@ export function createSheafServer(options: ServeOptions): Server {
     res.write(': open\n\n');
 
     const unsubscribe = doc.subscribe({
-      setContent(text: string) {
+      setContent(text: string, tookTypedText: boolean) {
         // One `data:` line per line of the document, which is how the format
         // carries a newline. The client joins them back.
         const payload = text.split('\n').map((line) => `data: ${line}`).join('\n');
-        res.write(`event: setContent\n${payload}\n\n`);
+        /*
+         * Two event names rather than a field, because every `data:` line of this frame is a
+         * line of the person's document and there is nowhere in the body to put a flag that
+         * their text could not also spell. An event name is the one part of the frame that is
+         * ours, and telling the two apart is what the name is for.
+         */
+        res.write(`event: ${tookTypedText ? SET_CONTENT_TOOK_TYPED : SET_CONTENT}\n${payload}\n\n`);
+      },
+      notice(message: string) {
+        // A message is one line by construction, but split anyway: a `data:` line cannot hold a
+        // newline, and a sentence that grew one would otherwise break the frame rather than the
+        // sentence.
+        const payload = message.split('\n').map((line) => `data: ${line}`).join('\n');
+        res.write(`event: ${NOTICE}\n${payload}\n\n`);
       },
     });
     // Something between the tab and here may drop an idle connection, and a
@@ -306,11 +353,28 @@ export function createSheafServer(options: ServeOptions): Server {
       finish(res, 404, 'text/plain; charset=utf-8', 'No such file.');
       return;
     }
+    const type = CONTENT_TYPES[extname(file).toLowerCase()] ?? 'application/octet-stream';
     res.writeHead(200, {
-      'content-type': CONTENT_TYPES[extname(file).toLowerCase()] ?? 'application/octet-stream',
+      'content-type': type,
       'content-length': String(info.size),
       'cache-control': 'no-store',
       'x-content-type-options': 'nosniff',
+      /*
+       * An SVG is a document that can hold script, and it is the only type in the
+       * table above that can. Everything served from `/file/` came out of somebody's
+       * project, and this origin also answers the write endpoints, so an SVG opened
+       * as a page rather than drawn into an `<img>` would be script running beside
+       * them. The policy stops that: a sandboxed document gets an origin of its own,
+       * so a request it makes is cross-origin to this server and arrives without the
+       * header `/api/` requires, and `default-src 'none'` leaves it nothing to fetch
+       * with in the first place.
+       *
+       * It costs nothing where an SVG is a picture. A response policy does not apply
+       * to an image drawn by `<img>`, so every diagram and icon renders as before.
+       * Only this type carries it: `sandbox` on a PDF would take the viewer with it,
+       * and nothing else in the table is a document.
+       */
+      ...(type === 'image/svg+xml' ? { 'content-security-policy': "default-src 'none'; sandbox" } : {}),
     });
     createReadStream(file).pipe(res);
   }
@@ -331,7 +395,7 @@ export function createSheafServer(options: ServeOptions): Server {
         if (entry.isDirectory()) {
           if (SKIP_FOLDERS.has(entry.name)) continue;
           await walk(join(dir, entry.name));
-        } else if (/\.(md|markdown)$/i.test(entry.name)) {
+        } else if (/\.(md|markdown|txt)$/i.test(entry.name)) {
           found.push(relativePosix(from, join(dir, entry.name)));
         }
         if (found.length >= MAX_LISTED) return;

@@ -19,7 +19,8 @@
  */
 
 import * as esbuild from 'esbuild';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -54,6 +55,11 @@ function makeWindow({ user = {}, workspace = {} } = {}) {
   let answer;
   /** Who is told when a tab opens, as `tabGroups.onDidChangeTabs` tells them. */
   const tabListeners = new Set();
+  /** The extension id the registry knows, and the version it reports for it. */
+  const extensionId = 'sheafeditor.sheafeditor';
+  let installedVersion = '0.2.0';
+  /** Who is told when the extension registry moves, which an install does. */
+  const registryListeners = new Set();
   /** Every file Sheaf wrote, in order: `{ path, bytes }` each. */
   const saved = [];
   const writes = [];
@@ -70,6 +76,8 @@ function makeWindow({ user = {}, workspace = {} } = {}) {
   /** The files a workspace search finds, and every search that was run: `{ include, exclude, maxResults }` each. */
   const workspaceFiles = [];
   const searches = [];
+  /** The folders open in the window, which is where the workspace ends. */
+  const workspaceRoots = [];
   /** The view type of every custom editor the extension registered, in order. */
   const editorProviders = [];
   /** File watchers still open: `{ path, listeners }` each, `path` the one file watched. */
@@ -135,7 +143,17 @@ function makeWindow({ user = {}, workspace = {} } = {}) {
         this.edits.push({ uri, range, text });
       }
     },
-    Uri: { joinPath: (uri, ...parts) => file(resolvePath(uri.path, parts)) },
+    Uri: {
+      joinPath: (uri, ...parts) => file(resolvePath(uri.path, parts)),
+      /** A path on disk. Windows separators become the one a URI's path uses. */
+      file: (p) => file(String(p).replace(/\\/g, '/').replace(/^(?=[A-Za-z]:)/, '/')),
+      /** A `file:` URL, which is what a file manager puts on the clipboard. */
+      parse: (s) => {
+        const url = new URL(String(s));
+        if (url.protocol !== 'file:') throw new Error(`not a file URL: ${s}`);
+        return file(decodeURIComponent(url.pathname));
+      },
+    },
     /** A glob under a folder; the watchers here only ever watch one file by name. */
     RelativePattern: class {
       constructor(base, pattern) {
@@ -157,7 +175,19 @@ function makeWindow({ user = {}, workspace = {} } = {}) {
         changeListeners.add(fn);
         return { dispose: () => changeListeners.delete(fn) };
       },
-      getWorkspaceFolder: () => undefined,
+      /**
+       * The folder a file belongs to, or undefined for one outside every folder.
+       *
+       * It answered undefined for everything until a check needed it, which was fine while
+       * nothing read it and is not fine now: a host that resolves a pasted path has to know
+       * where the workspace ends, and a stand-in that says "nowhere" for every path would let
+       * a check pass over the boundary it exists to enforce. `workspaceRoots` is what the
+       * checks set; empty means no folder is open, which is a real state too.
+       */
+      getWorkspaceFolder: (uri) => {
+        const root = workspaceRoots.find((r) => uri.path === r || uri.path.startsWith(`${r.replace(/\/$/, '')}/`));
+        return root === undefined ? undefined : { uri: file(root), name: root.split('/').filter(Boolean).pop() ?? root, index: 0 };
+      },
       /** The documents open in the window, which is where an unsaved change to a file lives. */
       get textDocuments() {
         return documents;
@@ -233,7 +263,15 @@ function makeWindow({ user = {}, workspace = {} } = {}) {
         warnings.push(message);
         return items.find((item) => item === answer);
       },
-      showInformationMessage: (message) => messages.push(message),
+      // Returns the taken offer, as the warning above does, because About and the
+      // newer-build notice both put buttons on an information message and what
+      // happens next is the behaviour under test.
+      showInformationMessage: async (message, ...rest) => {
+        messages.push(message);
+        // A modal flag may sit between the message and the buttons.
+        const items = rest.filter((r) => typeof r === 'string');
+        return items.find((item) => item === answer);
+      },
       registerCustomEditorProvider: (viewType) => {
         editorProviders.push(viewType);
         return { dispose() {} };
@@ -248,11 +286,28 @@ function makeWindow({ user = {}, workspace = {} } = {}) {
       },
     },
     env: {
+      appName: 'Visual Studio Code',
+      // Set by a check that wants the About line to name a remote, which is how
+      // Sheaf is usually run here: the extension lives on the far side of the link.
+      remoteName: undefined,
       clipboard: {
         writeText: async (text) => {
           copied.push(text);
         },
         readText: async () => copied[copied.length - 1] ?? '',
+      },
+    },
+    version: '1.90.0',
+    /*
+     * The extension registry, which is how a window learns a newer build is on disk.
+     * VS Code refreshes it on install and leaves the loaded code running, so the
+     * version here and the one compiled into the bundle disagree exactly then.
+     */
+    extensions: {
+      getExtension: (id) => (id === extensionId ? { packageJSON: { version: installedVersion } } : undefined),
+      onDidChange: (fn) => {
+        registryListeners.add(fn);
+        return { dispose: () => registryListeners.delete(fn) };
       },
     },
     commands: {
@@ -262,6 +317,19 @@ function makeWindow({ user = {}, workspace = {} } = {}) {
       },
       executeCommand: async (id, ...args) => {
         executed.push([id, ...args]);
+        // Revert reads the file again, which is the only thing that brings what VS
+        // Code noted about it up to date. It works on whatever editor is in front of
+        // the person, and there is one document here.
+        if (id === 'workbench.action.files.revert') {
+          const doc = documents.find((d) => !d.isClosed && contents.has(d.uri.path));
+          if (doc) {
+            doc.text = new TextDecoder('utf-8', { ignoreBOM: true }).decode(contents.get(doc.uri.path));
+            doc.fileWas = doc.text;
+            doc.isDirty = false;
+            changed(doc);
+          }
+          return undefined;
+        }
         // A command the extension registered runs, the way it does in a window. VS
         // Code's own (`vscode.open`, `vscode.openWith`) have nothing behind them here
         // and are only recorded.
@@ -287,6 +355,8 @@ function makeWindow({ user = {}, workspace = {} } = {}) {
     run: (id, ...args) => handlers.get(id)(...args),
     /** The commands the extension registered when it activated. */
     registered: () => [...handlers.keys()],
+    /** Every command Sheaf ran, in order: `[id, ...args]` each. */
+    executed,
     /** The files opened in an editor, in order: `{ path, viewType }` each. */
     opened: () =>
       executed
@@ -320,6 +390,8 @@ function makeWindow({ user = {}, workspace = {} } = {}) {
     addFile: (...paths) => paths.forEach((path) => files.add(path)),
     /** Files a workspace search finds. */
     addWorkspaceFiles: (...paths) => workspaceFiles.push(...paths),
+    /** Folders open in the window, so a path can be inside the workspace or outside it. */
+    addWorkspaceRoots: (...roots) => workspaceRoots.push(...roots),
     /** Every workspace search Sheaf ran. */
     searches,
     /** The view type of every custom editor the extension registered. */
@@ -353,6 +425,15 @@ function makeWindow({ user = {}, workspace = {} } = {}) {
     answerWith: (label) => {
       answer = label;
     },
+    /** A build installed while this window was open, as `--install-extension` does. */
+    installBuild: async (version) => {
+      installedVersion = version;
+      for (const fn of registryListeners) await fn();
+    },
+    /** Sheaf running over a remote link, which is the usual shape here. */
+    overRemote: (name) => {
+      vscode.env.remoteName = name;
+    },
     /** A tab opening on a file, in the editor named by `viewType`. */
     openTab: (path, viewType = SHEAF) => {
       const opened = [{ input: new vscode.TabInputCustom(file(path), viewType) }];
@@ -372,7 +453,13 @@ function makeWindow({ user = {}, workspace = {} } = {}) {
      * Those who asked are told, as VS Code tells them.
      */
     writeFromOutside: (doc, text) => {
+      // The file moved and VS Code brought the document into line with it, which it
+      // does while the document is clean. Both hold the write afterwards, and reading
+      // it is what brought what VS Code noted about the file up to date.
+      files.add(doc.uri.path);
+      contents.set(doc.uri.path, new TextEncoder().encode(text));
       doc.text = text;
+      doc.fileWas = text;
       changed(doc);
     },
     /**
@@ -392,8 +479,35 @@ function makeWindow({ user = {}, workspace = {} } = {}) {
       doc.isDirty = true;
       changed(doc, redo ? 2 : 1);
     },
+    /**
+     * The file behind a document changed, and the document did not.
+     *
+     * This is the case VS Code leaves alone: it reloads a document that changed on
+     * disk only while that document is clean, so a file written while somebody is
+     * typing in it leaves the document holding text from before the write, with
+     * nothing in the editor saying so. Reading the file is the only way to find out.
+     */
+    writeFileFromOutside: (doc, text) => {
+      files.add(doc.uri.path);
+      contents.set(doc.uri.path, new TextEncoder().encode(text));
+    },
+    /** What the file behind a document holds, as bytes on disk rather than as a document. */
+    fileBehind: (doc) => {
+      const bytes = contents.get(doc.uri.path);
+      return bytes === undefined ? undefined : new TextDecoder('utf-8', { ignoreBOM: true }).decode(bytes);
+    },
     /** A Markdown file open in the window, which Sheaf can be resolved against. */
-    openDocument: (path, text, { eol = 1, languageId = 'markdown' } = {}) => {
+    openDocument: (path, text, { eol = 1, languageId = 'markdown', bom = false } = {}) => {
+      // A document is a file the window opened, so the file is there too, holding what
+      // the document does. Without that, code that reads the file rather than the
+      // document finds nothing where every real document has something.
+      //
+      // `bom` is the one place the two differ. A byte-order mark belongs to the file
+      // rather than to a document's text: VS Code leaves it out of `getText` and puts
+      // it back on every save, so anything writing the file itself has to do the same.
+      const onDisk = bom ? `﻿${text}` : text;
+      files.add(path);
+      contents.set(path, new TextEncoder().encode(onDisk));
       const doc = {
         uri: file(path),
         text,
@@ -404,9 +518,45 @@ function makeWindow({ user = {}, workspace = {} } = {}) {
         isUntitled: false,
         /** How many times Sheaf wrote this document to disk. */
         saves: 0,
+        /**
+         * What the file held when this document last read or wrote it, which is what
+         * VS Code notes in order to refuse a write to a file that has moved since.
+         */
+        fileWas: onDisk,
+        /** True when the file carries a byte-order mark the document's text does not. */
+        bom,
+        /** Runs at the top of every save, for a file that moves at that moment. */
+        beforeSave: null,
+        /**
+         * Runs at the end of a successful save, for a file that moves in the window
+         * between the write landing and Sheaf hearing that its own save is done.
+         *
+         * That window is real and it is not small. A watcher event and a save's promise
+         * resolving are separate turns of the event loop, so a write that arrives a
+         * moment after Sheaf's own is reported while Sheaf still believes every change
+         * it hears about is the echo of what it just wrote.
+         */
+        afterSave: null,
         getText: () => doc.text,
         positionAt: (offset) => ({ offset }),
         async save() {
+          // A file can move at any moment, this one included: between Sheaf reading it
+          // and handing the document over to be written. That ordering is the one that
+          // refuses a save over a write nothing has read yet.
+          doc.beforeSave?.();
+          /*
+           * "The content of the file is newer." VS Code compares the file against what
+           * it noted when it last read or wrote it, and refuses rather than write over
+           * a change it has not seen. It brings that note up to date only by reading
+           * the file, and it will not read into a document with unsaved changes, so
+           * once this refuses it refuses every time.
+           */
+          const onDisk = contents.has(path)
+            ? new TextDecoder('utf-8', { ignoreBOM: true }).decode(contents.get(path))
+            : undefined;
+          if (onDisk !== undefined && onDisk !== doc.fileWas) {
+            return false;
+          }
           doc.saves++;
           // VS Code's own trailing-whitespace save participant, which every save
           // runs. It spares the whitespace a text editor's cursor is sitting in,
@@ -421,7 +571,44 @@ function makeWindow({ user = {}, workspace = {} } = {}) {
             doc.text = trimmed;
             changed(doc);
           }
+          /*
+           * VS Code's other save participant, and the one that matters to the rule about
+           * what counts as the echo of a save: it changes something other than trailing
+           * whitespace. `files.insertFinalNewline` adds a line break at the end of a file
+           * that has none, so the text the document holds after a save differs from the
+           * text handed to it by a character that no amount of trimming accounts for.
+           *
+           * Modelled here because the checks about a write arriving during a save could
+           * not tell the two directions of that rule apart without it: with only trimming
+           * modelled, widening the rule to call every change during a save an outside
+           * write failed nothing.
+           */
+          const files = getConfiguration('files', { uri: doc.uri, languageId: doc.languageId });
+          if (files.get('insertFinalNewline', false) && doc.text !== '' && !doc.text.endsWith('\n')) {
+            doc.text = `${doc.text}\n`;
+            changed(doc);
+          }
+          /*
+           * The one that takes characters away. `files.trimFinalNewlines` leaves a single
+           * line break at the end and removes the rest, so what the document holds after a
+           * save is shorter than what was handed to it. A rule that reads a save's own echo
+           * as somebody else's write has something to call lost here, which the participant
+           * that adds a newline does not.
+           */
+          if (files.get('trimFinalNewlines', false)) {
+            const kept = doc.text.replace(/\n+$/, '\n');
+            if (kept !== doc.text) {
+              doc.text = kept;
+              changed(doc);
+            }
+          }
           doc.isDirty = false;
+          // The write itself, which is what anything reading the file afterwards sees,
+          // with the file's own byte-order mark put back as VS Code puts it back.
+          const written = doc.bom ? `﻿${doc.text}` : doc.text;
+          contents.set(doc.uri.path, new TextEncoder().encode(written));
+          doc.fileWas = written;
+          doc.afterSave?.();
           return true;
         },
       };
@@ -603,6 +790,162 @@ async function hostCases() {
   const cases = [];
   const check = (name, run) => cases.push({ name, run });
 
+  check('tables: nothing gives a table frame a vertical scrollbar, so a tall table is the document', () => {
+    /*
+     * A tall table's rows are the document. Capping the frame and scrolling inside it would
+     * put rows behind a scrollbar that the editor's own scrollbar already handles, and a
+     * person looking for row 400 would have two scrollbars to choose between.
+     *
+     * True today by omission: the frame sets `overflow-x` and nothing sets `overflow-y` or
+     * a height. Omission is not an invariant, so this says it.
+     *
+     * Asked of the stylesheet rather than of a rendered table, because the rendered version
+     * cannot be asked where the suites can reach it: jsdom has no layout, so `scrollHeight`
+     * and `clientHeight` are both 0 and 0 === 0 would pass whatever the CSS said. A
+     * rendered check belongs in the real-window suite.
+     */
+    const css = readFileSync(path.join(here, '..', 'media', 'webview.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+    const rules = [...css.matchAll(/([^{}]+)\{([^}]*)\}/g)]
+      .map(([, sel, body]) => ({ sel: sel.trim(), body }))
+      .filter((r) => r.sel.includes('.sheaf-table-grid'));
+    if (!rules.length) {
+      return { ok: false, detail: 'no rule in webview.css mentions .sheaf-table-grid, so this check is reading the wrong thing' };
+    }
+    const bad = [];
+    for (const r of rules) {
+      for (const [, prop, value] of r.body.matchAll(/([a-z-]+)\s*:\s*([^;]+)/g)) {
+        const v = value.trim();
+        if (prop === 'overflow-y' && v !== 'visible') bad.push(`${r.sel} sets overflow-y: ${v}`);
+        // The shorthand sets both axes, so anything but `visible` on the y half counts.
+        if (prop === 'overflow' && !/^visible(\s+\S+)?$/.test(v)) bad.push(`${r.sel} sets overflow: ${v}, which sets the vertical axis too`);
+        if (prop === 'max-height' || prop === 'height') bad.push(`${r.sel} sets ${prop}: ${v}, which would make the rows overflow`);
+      }
+    }
+    return {
+      ok: bad.length === 0,
+      detail: bad.length ? `${bad.join('; ')}, so a tall table would scroll inside its own frame rather than as part of the document` : '',
+    };
+  });
+
+  check('settings: a setting a host does not send reads as its default, not as nothing', () => {
+    /*
+     * Every host sends a `config` at `init` and not every host sends all of it: the
+     * website's demo sends three of the seven, and this suite's own harness sends the same
+     * three. So the page merges a host's config over the `DEFAULT_CONFIG` it declares.
+     * Without that merge each default lives a second time inside whichever `applyConfig`
+     * branch reads the setting, the two copies are free to disagree, and the demo gets a
+     * different page from the editor for a setting nobody thought about.
+     *
+     * The subject is `tableOfContents` and the reason is the instrument. Booting this page
+     * and reading it straight afterwards can see the outline rail and cannot see
+     * `frontMatter`, `comments`, `revealSyntaxOnLine` or `contentWidth`: all four render
+     * identically at init, because their decorations need what `scripts/check-render.mjs`
+     * does about the first screen and the lazy parse. So this check proves the rule for the
+     * one setting it can watch, and says so rather than implying the other four.
+     */
+    const DOC = '---\ntitle: A note\n---\n\n# Heading\n\nText, with a <!-- remark --> in it.\n\n## Second\n';
+    const BASE = { contentWidth: '708px', revealSyntaxOnLine: false, doubleClickToEditSource: false };
+    const render = (config) => {
+      const w = bootWebview();
+      w.receive({ type: 'init', text: DOC, config, fileName: 'notes.md', resourceBaseUri: 'https://webview/ws/' });
+      const doc = w.document();
+      return {
+        page: (doc.querySelector('#editor')?.innerHTML ?? '') + (doc.querySelector('#toolbar')?.innerHTML ?? ''),
+        text: w.doc(),
+      };
+    };
+    // The instrument first: two configs that must produce different pages. If they do not,
+    // this check can see nothing and everything below it would agree by accident.
+    const hidden = render({ ...BASE, tableOfContents: 'hidden' });
+    const shown = render({ ...BASE, tableOfContents: 'shown' });
+    if (!hidden.page || hidden.text !== DOC) {
+      return { ok: false, detail: `a boot produced ${hidden.page.length} characters and ${hidden.text === DOC ? 'the document' : 'the wrong document'}, so this check is reading the wrong thing` };
+    }
+    if (hidden.page === shown.page) {
+      return { ok: false, detail: 'hiding and showing the outline render the same page, so this check cannot see the setting it is about' };
+    }
+    // The rule: a host that leaves tableOfContents out gets what a host that sends its
+    // default gets, rather than whatever an absent value happens to do.
+    const absent = render(BASE);
+    return {
+      ok: absent.page === hidden.page,
+      detail:
+        absent.page === hidden.page
+          ? ''
+          : `a host that sends no tableOfContents gets a different page from one sending its default of hidden, so an absent setting is not reading as its default`,
+    };
+  });
+
+  check('commands: every command Sheaf offers is one activation registers, and it registers no other', () => {
+    /*
+     * `package.json` is what a person sees in the Command Palette and `registerCommand` is
+     * what happens when they pick one, and nothing held the two together. A command in the
+     * manifest with no registration is an entry that answers "command not found"; a
+     * registration with no manifest entry is a feature nobody can reach.
+     *
+     * Asked of activation rather than of the source text, because six of these are
+     * registered in a loop over a table of names, and a check that greps for
+     * `registerCommand('...')` reports those six as missing. Activating against the stub
+     * and reading back what registered is the only version of this that is true.
+     */
+    const { win } = start();
+    const declared = new Set(manifest().contributes.commands.map((c) => c.command));
+    const registered = new Set(win.registered().filter((id) => id.startsWith('sheaf.')));
+    if (declared.size < 10 || registered.size < 10) {
+      return { ok: false, detail: `${declared.size} commands declared and ${registered.size} registered, so this check is reading the wrong thing` };
+    }
+    const unreachable = [...declared].filter((id) => !registered.has(id));
+    const hidden = [...registered].filter((id) => !declared.has(id));
+    const wrong = [];
+    if (unreachable.length) wrong.push(`the Command Palette offers ${unreachable.join(', ')} and activation registers no handler, so picking it says the command does not exist`);
+    if (hidden.length) wrong.push(`activation registers ${hidden.join(', ')} and package.json declares no such command, so nothing can reach it`);
+    return { ok: wrong.length === 0, detail: wrong.join('; ') };
+  });
+
+  check('commands: the docs name every command the Command Palette offers, and promise no key that is not bound', () => {
+    /*
+     * `docs/settings.md` carries a table of every command, and the site renders it, so a
+     * command added without a row is one a person cannot find out about and a row left
+     * behind names something that no longer exists. Anything in `contributes.commands` is
+     * in the Command Palette, so there is no such thing as one that does not need a row.
+     *
+     * The keys are held one way only. A key the docs print has to be bound, or the page
+     * teaches a shortcut that does nothing. A binding the docs leave out is allowed:
+     * `copyRef` has a second one for keyboards where the first is taken, and saying so
+     * would cost more than it explains.
+     */
+    const { contributes } = manifest();
+    const doc = readFileSync(path.join(here, '..', 'docs', 'settings.md'), 'utf8');
+    const rows = [...doc.matchAll(/^\| \*\*(.+?)\*\*(.*?)\|/gm)].map((m) => ({ title: m[1], rest: m[2] }));
+    if (rows.length < 10) {
+      return { ok: false, detail: `${rows.length} command rows found in docs/settings.md, so this check is reading the wrong thing` };
+    }
+    const titles = new Map(contributes.commands.map((c) => [c.title, c.command]));
+    const printed = new Set(rows.map((r) => r.title));
+    const wrong = [];
+    for (const title of titles.keys()) {
+      if (!printed.has(title)) wrong.push(`the Command Palette offers "${title}" and docs/settings.md has no row for it`);
+    }
+    for (const row of rows) {
+      if (!titles.has(row.title)) wrong.push(`docs/settings.md has a row for "${row.title}" and no command has that title`);
+    }
+    // A key the docs print, against what package.json binds for that command, on this
+    // platform's spelling: the page says to use Ctrl in Cmd's place elsewhere.
+    for (const row of rows) {
+      const promised = /\(([^)]*(?:Cmd|Ctrl|Alt|Shift)[^)]*)\)/.exec(row.rest);
+      if (!promised) continue;
+      const id = titles.get(row.title);
+      const bound = contributes.keybindings
+        .filter((k) => k.command === id)
+        .map((k) => (k.mac ?? k.key).toLowerCase());
+      const want = promised[1].toLowerCase();
+      if (!bound.includes(want)) {
+        wrong.push(`docs/settings.md promises ${promised[1]} for "${row.title}" and package.json binds ${bound.length ? bound.join(' and ') : 'nothing'}`);
+      }
+    }
+    return { ok: wrong.length === 0, detail: wrong.join('; ') };
+  });
+
   check('default editor: turning Sheaf off for a workspace points Markdown at the text editor in workspace settings', async () => {
     const win = makeWindow({ workspace: { [SETTING]: false } });
     await load(win).syncDefaultEditorAssociation();
@@ -741,12 +1084,15 @@ async function hostCases() {
     return same(win.opened(), [{ path: '/ws/a.md', viewType: SHEAF }]);
   });
 
-  check('open in Sheaf: a selection holding a file Sheaf does not open leaves that file alone', async () => {
-    const { win } = start();
-    const selection = [file('/ws/a.md'), file('/ws/notes.txt'), file('/ws/NOTES.MD')];
+  check('open in Sheaf: a selection opens each file with the view type for it, and leaves the rest alone', async () => {
+    // A .txt goes through its own view type, because a view type only opens what it is
+    // contributed for. An image is not something this editor reads at all.
+    const { win, host } = start();
+    const selection = [file('/ws/a.md'), file('/ws/notes.txt'), file('/ws/logo.png'), file('/ws/NOTES.MD')];
     await win.run('sheaf.openWithWysiwyg', selection[0], selection);
     return same(win.opened(), [
       { path: '/ws/a.md', viewType: SHEAF },
+      { path: '/ws/notes.txt', viewType: host.MarkdownEditorProvider.textViewType },
       { path: '/ws/NOTES.MD', viewType: SHEAF },
     ]);
   });
@@ -759,8 +1105,8 @@ async function hostCases() {
    * One window with the host code loaded into it. Several editors share it, which is
    * what makes a document that is already open distinguishable from one that is not.
    */
-  const sheafWindow = () => {
-    const win = makeWindow();
+  const sheafWindow = (settings) => {
+    const win = makeWindow(settings);
     return { win, host: load(win) };
   };
 
@@ -1305,6 +1651,441 @@ async function hostCases() {
     return document.saves === 0;
   });
 
+  /*
+   * An agent writing the file while somebody is typing in it.
+   *
+   * VS Code reloads a document that changed on disk only while the document is clean,
+   * and one being typed into never is, so the document goes on holding text read
+   * before the write and the next auto-save puts it straight back over the top. The
+   * agent's work is gone and nothing has said a word about it. These are the checks
+   * for reading the file back before that save.
+   */
+  const OPEN_TABLE = 'Notes.\n\n| Task | State |\n| --- | --- |\n| Ship | Open |\n\nTail.\n';
+
+  check('outside write: a cell an agent changed while the person was typing is still there afterwards', async () => {
+    const { win, document, panel, type } = await openInSheaf(OPEN_TABLE);
+    await type(`${OPEN_TABLE}More typing.\n`); // The person, at the end of the document.
+    await pause(AFTER_THE_PAUSE); // Auto-save, so the file and the document agree.
+    // The agent reads the file, changes a cell three paragraphs from the caret, writes
+    // it back. The document knows nothing about it.
+    win.writeFileFromOutside(document, `${OPEN_TABLE.replace('Open', 'Done')}More typing.\n`);
+    await type(`${OPEN_TABLE}More typing here.\n`); // And the person types on.
+    await pause(AFTER_THE_PAUSE);
+    panel.close();
+    const both = `${OPEN_TABLE.replace('Open', 'Done')}More typing here.\n`;
+    return document.text === both && win.fileBehind(document) === both && win.warnings.length === 0;
+  });
+
+  check('outside write: a write to the very characters being typed leaves the person’s text, and says so', async () => {
+    const { win, document, panel, type } = await openInSheaf(OPEN_TABLE);
+    await type(`${OPEN_TABLE}More typing.\n`);
+    await pause(AFTER_THE_PAUSE);
+    // The control for the check above: same shape, but the agent wrote the same line
+    // the person is typing in, so there is no answer and the person keeps theirs.
+    win.writeFileFromOutside(document, `${OPEN_TABLE}More typing, rewritten entirely.\n`);
+    await type(`${OPEN_TABLE}More typing here.\n`);
+    await pause(AFTER_THE_PAUSE);
+    panel.close();
+    return (
+      document.text === `${OPEN_TABLE}More typing here.\n` &&
+      same(win.warnings, [
+        'Sheaf: something wrote to this file where you were typing, and your text was kept. The change that was written is in your file history, not in the document.',
+      ])
+    );
+  });
+
+  check('outside write: a file nobody else touched is read, matched and saved without a word', async () => {
+    // The ordinary case, which has to stay silent and has to still write the file.
+    const { win, document, panel, type } = await openInSheaf();
+    await type('Some woZrds.\n');
+    await pause(AFTER_THE_PAUSE);
+    panel.close();
+    return (
+      document.saves === 1 &&
+      win.fileBehind(document) === 'Some woZrds.\n' &&
+      win.warnings.length === 0
+    );
+  });
+
+  check('outside write: the save VS Code refuses is made by hand, and the document stops being unsaved', async () => {
+    /*
+     * Once the file has moved, VS Code refuses to write the document at all: it
+     * compares the file against what it noted when it last read or wrote it, and it
+     * brings that note up to date only by reading the file, which it will not do into
+     * a document with unsaved changes. So every save from then on fails.
+     *
+     * Safe to settle here rather than ask, because the document is not a rival version
+     * of the file by this point: the write has already been read and put into it. So
+     * the file is written directly, and the revert that follows changes no text and
+     * brings VS Code's note up to date.
+     */
+    const { win, document, panel, type } = await openInSheaf(OPEN_TABLE);
+    await type(`${OPEN_TABLE}More typing.\n`);
+    await pause(AFTER_THE_PAUSE);
+    win.writeFileFromOutside(document, `${OPEN_TABLE.replace('Open', 'Done')}More typing.\n`);
+    await type(`${OPEN_TABLE}More typing here.\n`);
+    await pause(AFTER_THE_PAUSE);
+    const both = `${OPEN_TABLE.replace('Open', 'Done')}More typing here.\n`;
+    const reverted = win.executed.some(([command]) => command === 'workbench.action.files.revert');
+    panel.close();
+    return (
+      win.fileBehind(document) === both && document.isDirty === false && reverted && win.warnings.length === 0
+    );
+  });
+
+  check('outside write: a write that lands after the file was read is still read before anything is written over it', async () => {
+    /*
+     * The ordering that made the by-hand write dangerous. Sheaf reads the file, finds
+     * nothing new, hands the document to VS Code, and the write lands in between. VS
+     * Code refuses that save, because the file has moved, and the recovery then wrote
+     * the document straight over it: a paragraph an agent had deleted came back, in
+     * the file and on screen, with nothing said about it.
+     *
+     * So the refusal is treated as the news it is, and the file is read again and put
+     * into the document before a byte of it is written over.
+     */
+    const three = 'Top line.\n\nMiddle line.\n\nBottom line.\n';
+    const { win, document, panel, type } = await openInSheaf(three);
+    await type(three.replace('Bottom', 'BoZZttom'));
+    await pause(AFTER_THE_PAUSE); // Saved, so the file and the document agree.
+    // The agent deletes a whole paragraph, as the save of the next keystroke is handed over.
+    document.beforeSave = () => {
+      document.beforeSave = null;
+      win.writeFileFromOutside(document, 'Top line.\n\nBottom line.\n');
+    };
+    await type(three.replace('Bottom', 'BoZZYYttom'));
+    await pause(AFTER_THE_PAUSE);
+    panel.close();
+    const both = 'Top line.\n\nBoZZYYttom line.\n';
+    return win.fileBehind(document) === both && document.getText() === both && win.warnings.length === 0;
+  });
+
+  check('outside write: a file with a byte-order mark still has it after the save is made by hand', async () => {
+    // The mark is the file's, not the document's, so writing the document's text over
+    // the file would take it off a file nobody edited. That is the whole-file diff this
+    // editor exists to avoid.
+    const win = makeWindow();
+    const { MarkdownEditorProvider } = load(win);
+    const document = win.openDocument('/ws/notes.md', OPEN_TABLE, { bom: true });
+    const panel = makePanel();
+    await new MarkdownEditorProvider({ extensionUri: file('/extension') }).resolveCustomTextEditor(
+      document,
+      panel,
+      {}
+    );
+    panel.receive({ type: 'edit', text: `${OPEN_TABLE}More typing.\n` });
+    await settle();
+    await pause(AFTER_THE_PAUSE);
+    win.writeFileFromOutside(document, `﻿${OPEN_TABLE.replace('Open', 'Done')}More typing.\n`);
+    panel.receive({ type: 'edit', text: `${OPEN_TABLE}More typing here.\n` });
+    await settle();
+    await pause(AFTER_THE_PAUSE);
+    panel.close();
+    return win.fileBehind(document) === `﻿${OPEN_TABLE.replace('Open', 'Done')}More typing here.\n`;
+  });
+
+  check('outside write: nothing is written by hand while the file is one VS Code will take', async () => {
+    // The control for writing by hand at all. No outside write, so the ordinary save
+    // works and the recovery must stay out of it: a revert here would be throwing away
+    // the document's own history for nothing.
+    const { win, document, panel, type } = await openInSheaf(OPEN_TABLE);
+    await type(`${OPEN_TABLE}More typing.\n`);
+    await pause(AFTER_THE_PAUSE);
+    panel.close();
+    return (
+      document.saves === 1 &&
+      win.fileBehind(document) === `${OPEN_TABLE}More typing.\n` &&
+      !win.executed.some(([command]) => command === 'workbench.action.files.revert')
+    );
+  });
+
+  check('outside write: two places changed in one write are both kept, with the person typing between them', async () => {
+    // One write, several places, which is what an agent does. Both of the agent's
+    // cells are three paragraphs from each other with the person's line in between.
+    const grid = 'Notes.\n\n| Task | State |\n| --- | --- |\n| Ship | Open |\n\nMiddle.\n\n| Docs | Open |\n\nTail.\n';
+    const { win, document, panel, type } = await openInSheaf(grid);
+    await type(grid.replace('Middle.', 'Middle typing.'));
+    await pause(AFTER_THE_PAUSE);
+    win.writeFileFromOutside(document, grid.replace('Middle.', 'Middle typing.').replaceAll('Open', 'Done'));
+    await type(grid.replace('Middle.', 'Middle typing more.'));
+    await pause(AFTER_THE_PAUSE);
+    panel.close();
+    return (
+      document.text === grid.replace('Middle.', 'Middle typing more.').replaceAll('Open', 'Done') &&
+      win.warnings.length === 0
+    );
+  });
+
+  /*
+   * The same trigger as the checks above, with one difference that turns out to be the
+   * whole of it: the person stops typing. Every check above types again after the
+   * write, and that later keystroke is what carries their earlier letters to disk. A
+   * person who types a word and reads on is the ordinary case, and the save they are
+   * owed is the one already on the debounce when the write landed.
+   */
+  const THREE_LINES = 'Top line.\n\nMiddle line here.\n\nBottom line.\n';
+  const AGENT_CHANGED_THE_TOP = 'Top line changed by an agent.\n\nMiddle line here.\n\nBottom line.\n';
+  const BOTH_CHANGES = 'Top line changed by an agent.\n\nZMiddle line here.\n\nBottom line.\n';
+
+  check('outside write: a letter typed just before the write reaches the file with nothing typed after it', async () => {
+    const { win, document, panel, type } = await openInSheaf(THREE_LINES);
+    await type('Top line.\n\nZMiddle line here.\n\nBottom line.\n');
+    // Inside the 700ms debounce, so the save the letter is riding on has not run yet
+    // and the write lands under it.
+    await pause(300);
+    win.writeFileFromOutside(document, AGENT_CHANGED_THE_TOP);
+    await pause(AFTER_THE_PAUSE);
+    // Read before closing: closing flushes a pending save, which would answer a
+    // different question from the one this asks.
+    const onDisk = win.fileBehind(document);
+    const inDocument = document.text;
+    panel.close();
+    return onDisk === BOTH_CHANGES && inDocument === BOTH_CHANGES && win.warnings.length === 0;
+  });
+
+  check('outside write: a save that reports success but was overtaken is not believed', async () => {
+    /*
+     * The fourth ordering, and the one that had no handling at all. VS Code refuses a save
+     * whose file it noticed moving, and the check below recovers from that refusal. It only
+     * refuses when it noticed: a write landing in the same handful of milliseconds reaches
+     * the filesystem alongside the save, the later one wins, and `save()` still answers true.
+     *
+     * Measured in a real window before this was written, over four attempts with the write
+     * aimed at the moment of the save: one was refused and recovered, and the other three
+     * reported success while the file held one change or the other and never both. Twice the
+     * person's letter went while the editor went on showing it, so the screen and the file
+     * disagreed for as long as the document stayed open; once it was the agent's line, which
+     * nothing was ever going to notice.
+     *
+     * Here the file is overwritten from underneath at the moment the save finishes, with the
+     * document's own record of what the file held left alone, which is what an overtaking
+     * write looks like from the extension's side.
+     */
+    const { win, document, panel, type } = await openInSheaf(THREE_LINES);
+    document.afterSave = () => {
+      document.afterSave = null;
+      // The file only. `writeFromOutside` would also reload the document, which is the case
+      // the check below this one covers; this is the one where nothing tells the editor.
+      win.writeFileFromOutside(document, AGENT_CHANGED_THE_TOP);
+    };
+    await type('Top line.\n\nZMiddle line here.\n\nBottom line.\n');
+    await pause(AFTER_THE_PAUSE);
+    const onDisk = win.fileBehind(document);
+    panel.close();
+    // Both changes, because the merge had a base to work from and nothing had been recorded
+    // as Sheaf's own that was not.
+    return onDisk === BOTH_CHANGES;
+  });
+
+  check('outside write: a write landing while Sheaf’s save is being refused still keeps the letter', async () => {
+    // The third ordering. The write arrives before VS Code reads the file for the save,
+    // so the save is refused, and the hand-written one that follows is the path that has
+    // to put the two together.
+    const { win, document, panel, type } = await openInSheaf(THREE_LINES);
+    document.beforeSave = () => {
+      document.beforeSave = null;
+      win.writeFileFromOutside(document, AGENT_CHANGED_THE_TOP);
+    };
+    await type('Top line.\n\nZMiddle line here.\n\nBottom line.\n');
+    await pause(AFTER_THE_PAUSE);
+    const onDisk = win.fileBehind(document);
+    panel.close();
+    return onDisk === BOTH_CHANGES && win.warnings.length === 0;
+  });
+
+  check('outside write: a write landing in the moment after Sheaf’s own save is news, not the echo of that save', async () => {
+    /*
+     * The letter is saved, and the write arrives immediately afterwards, carrying a
+     * copy of the file from before it. VS Code reloads the document, because it is
+     * clean again, and reports that while Sheaf still has a save outstanding.
+     *
+     * Read as an echo of Sheaf's own save, the write goes into the webview unopposed:
+     * no notice is worked out, because none is worked out for Sheaf's own changes, and
+     * the letter leaves the screen with nothing said and no way back but a Cmd+Z the
+     * person has no reason to press.
+     *
+     * What the write takes is a separate question, answered by whoever owns what the
+     * merge promises. This is about the write being seen at all.
+     *
+     * The control is that this check fails on the rule it was written for: called an
+     * echo, the write reaches the webview with no notice and nothing marked.
+     *
+     * The other direction is covered too, by "a save of their own does not throw away the
+     * record of what they typed" further down, and it took finding that the reasoning
+     * written here first was wrong. It said the missing piece was a save participant
+     * changing something other than trailing whitespace. Three participants were modelled
+     * and none of them discriminated, because the two effects anyone looks at are both
+     * repaired: `writable` refuses the spurious save on a clean document, and
+     * `keepTheLineBeingTyped` repairs the text before the notice is worked out.
+     *
+     * The effect nothing repairs is `this.typing.forget()`. The record of what the person
+     * typed is what lets the *next* write be recognised as taking it, so the cost of
+     * calling a save's own echo somebody else's write is not paid at the save at all. It is
+     * paid by the write after it, which really does take their letter and now says nothing.
+     */
+    const { win, ctx, document, panel, type } = await openInSheaf(THREE_LINES);
+    const pastTheWindow = ctx.host.KEEP_AFTER_OWN_SAVE_MS + 300;
+    document.afterSave = () => {
+      document.afterSave = null; // Once: this is one write, not a write per save.
+      // Past the window in which the person's own save is still the last thing that
+      // happened, so the letter is taken and reported rather than kept. Inside that
+      // window the check below keeps it, and the two together are what say the bound
+      // bounds anything: with it removed this one reports nothing taken and fails.
+      setTimeout(() => win.writeFromOutside(document, AGENT_CHANGED_THE_TOP), pastTheWindow);
+    };
+    await type('Top line.\n\nZMiddle line here.\n\nBottom line.\n');
+    await pause(pastTheWindow + AFTER_THE_PAUSE);
+    const tookTypedText = panel.posted.filter((m) => m.type === 'setContent').at(-1)?.tookTypedText;
+    panel.close();
+    return (
+      // Said, rather than passed off as Sheaf's own work.
+      same(win.warnings, [
+        'Sheaf: this file changed outside the editor, and your last change is gone: "Z". Undo brings it back.',
+      ]) &&
+      // And marked as the person's own, which is what makes their Undo reach it.
+      tookTypedText === true
+    );
+  });
+
+  check('outside write: a letter Sheaf had already saved is kept when the write was made from a copy read before that save', async () => {
+    /*
+     * The setup is the check above's, and only the question differs. There it is whether
+     * the write is seen at all; here it is what the write is allowed to take.
+     *
+     * The letter reached disk under Sheaf's own save, so nothing is unsaved and the path
+     * that protects unsaved typing has nothing to protect. The write carries a copy of
+     * the file from before that save, so measured against the text its author actually
+     * read it changes one other line and the letter stands.
+     *
+     * The control is the rule this was written for: with the base still chosen as the
+     * newest text Sheaf wrote, the two texts agree, nothing is merged, and the file is
+     * taken whole. That fails here on the document and on the notice at once.
+     */
+    const { win, document, panel, type } = await openInSheaf(THREE_LINES);
+    document.afterSave = () => {
+      document.afterSave = null; // Once: one write, not a write per save.
+      win.writeFromOutside(document, AGENT_CHANGED_THE_TOP);
+    };
+    await type('Top line.\n\nZMiddle line here.\n\nBottom line.\n');
+    await pause(AFTER_THE_PAUSE);
+    // What the webview is shown, which is where the merge lands. Carrying it on to the
+    // file is the auto-save path and is covered by the checks above.
+    const shown = panel.posted.filter((m) => m.type === 'setContent').at(-1)?.text;
+    panel.close();
+    // Both changes, and nothing to report: on this side of the debounce as on the other.
+    return shown === BOTH_CHANGES && win.warnings.length === 0;
+  });
+
+  check('outside write: the letter a merge kept is written to the file, not only shown', async () => {
+    /*
+     * The check above asks what the webview is shown and passes. This asks what the file
+     * holds, and they are not the same question: the merge posts `setContent` to the page
+     * and never edits the document, so the save that follows writes what VS Code reloaded
+     * from the file, which is the text without the letter.
+     *
+     * Measured in a real window over six delays, three runs each, with nobody touching the
+     * keyboard afterwards: the letter reaches the file at 100ms and 300ms, sometimes at
+     * 500ms, and never at 700ms or beyond. The screen keeps it in all eighteen and no
+     * notice fires in any of them. At 1500ms it had already been written to disk by Sheaf's
+     * own save before the write landed, so a completed save is being undone and not redone.
+     *
+     * Which makes the screen and the file disagree with nothing said, and that is worse
+     * than the loss it replaced: before the merge the letter left the screen and a notice
+     * offered Undo.
+     */
+    const { win, document, panel, type } = await openInSheaf(THREE_LINES);
+    await type('Top line.\n\nZMiddle line here.\n\nBottom line.\n');
+    // Past the debounce, so the letter is on disk before the write arrives.
+    await pause(1500);
+    win.writeFromOutside(document, AGENT_CHANGED_THE_TOP);
+    await pause(AFTER_THE_PAUSE * 3);
+    const onDisk = win.fileBehind(document);
+    const shown = panel.posted.filter((m) => m.type === 'setContent').at(-1)?.text;
+    panel.close();
+    return {
+      ok: onDisk === BOTH_CHANGES,
+      detail: `file ${JSON.stringify(onDisk)}; the page was shown ${JSON.stringify(shown)}; notices ${JSON.stringify(win.warnings)}`,
+    };
+  });
+
+  check('outside write: a save participant trimming blank lines is still the echo of that save', async () => {
+    /*
+     * The control the check above says it lacks, now that a participant changing
+     * something other than trailing whitespace is modelled.
+     *
+     * `files.trimFinalNewlines` is ordinary: many people have it on. It edits the
+     * document on the way out of a save, taking blank lines off the end, and
+     * `savingText` is captured before any participant runs. The rule that decides whether a change came from outside
+     * compares the two after trimming spaces and tabs from line ends, which accounts
+     * for the other participant and not for this one, so this save's own echo is read
+     * as somebody else's write.
+     *
+     * What that costs the person is a notice saying their file changed outside the
+     * editor and their last change is gone, at the moment they saved it themselves,
+     * with nothing having changed outside anything.
+     *
+     * Nothing arrives from outside here. The only write is Sheaf's own save.
+     */
+    const trims = { user: { '[markdown]': { 'files.trimFinalNewlines': true } } };
+    const { win, document, panel, type } = await openInSheaf('Top line.\n\n\n', '/ws/notes.md', sheafWindow(trims));
+    // Blank lines at the end, so the participant has something to take away. Asserted
+    // below rather than assumed: with nothing to trim this check proves nothing.
+    await type('Top line and more.\n\n\n');
+    await pause(AFTER_THE_PAUSE);
+    const participantActed = document.text === 'Top line and more.\n';
+    const notices = [...win.warnings];
+    const tookTypedText = panel.posted.filter((m) => m.type === 'setContent').at(-1)?.tookTypedText;
+    panel.close();
+    if (!participantActed) throw new Error('the final-newline participant did not run, so this check asks nothing');
+    if (notices.length) throw new Error(`a save of their own told the person: ${JSON.stringify(notices)}`);
+    if (tookTypedText) throw new Error('the editor was told its own save took the typed text');
+    return true;
+  });
+
+  check('outside write: a save of their own does not throw away the record of what they typed', async () => {
+    /*
+     * The control the check above says it lacks, found by reading what `outside` is used
+     * for rather than by guessing at a participant.
+     *
+     * A change read as coming from outside does three things, and two of them hide the
+     * mistake. The notice is worked out from `arriving`, which `keepTheLineBeingTyped`
+     * has already repaired, so there is nothing to report; and the save it schedules is
+     * refused on a clean document. The third is `this.typing.forget()`, and nothing
+     * repairs that: the record of what the person typed is what lets the *next* write be
+     * recognised as taking it, and once it is thrown away the next write is silent.
+     *
+     * So the cost of calling a save's own echo somebody else's write is not paid at the
+     * save. It is paid by the write after it, which is the one that really does take the
+     * person's letter and now says nothing about it.
+     *
+     * The shape needed to see it: whitespace trimmed on a line the person is not typing
+     * on. `keepTheLineBeingTyped` restores only their own line, so the arriving text
+     * differs from the webview's elsewhere, which is what makes the change reach the
+     * webview at all and the record be forgotten. A trim on their own line alone is
+     * repaired end to end and reaches nothing.
+     */
+    const trims = { user: { '[markdown]': { 'files.trimTrailingWhitespace': true } } };
+    // The trailing space on the first line is the file's, not theirs.
+    const { win, document, panel, type } = await openInSheaf('Start \n\nTail\n', '/ws/notes.md', sheafWindow(trims));
+    await type('Start \n\nZTail\n');
+    await pause(AFTER_THE_PAUSE);
+    // Their own save has been and gone, and the participant trimmed the first line.
+    const trimmedByTheSave = document.text === 'Start\n\nZTail\n';
+    // Now a write that really does take the letter, well inside the ten seconds a
+    // keystroke goes on counting for.
+    win.writeFromOutside(document, 'Start\n\nTail\n');
+    await pause(AFTER_THE_PAUSE);
+    const notices = [...win.warnings];
+    panel.close();
+    if (!trimmedByTheSave) {
+      throw new Error(`the save participant did not trim the first line, so this check asks nothing: ${JSON.stringify(document.text)}`);
+    }
+    if (!notices.some((w) => w.includes('your last change is gone') && w.includes('"Z"'))) {
+      throw new Error(`the write took their letter and said nothing that named it: ${JSON.stringify(notices)}`);
+    }
+    return true;
+  });
+
   check('auto-save: an editor losing focus with nothing pending writes nothing', async () => {
     const { document, panel } = await openInSheaf();
     panel.setActive(false);
@@ -1504,6 +2285,94 @@ async function hostCases() {
 
   /** What the host told the webview about the workspace's files. */
   const filesReply = (panel) => panel.posted.filter((message) => message.type === 'workspaceFiles');
+
+  /*
+   * What a pasted path names, which only the host can answer: the page cannot read another
+   * file, and its own origin is `vscode-webview://`, so it cannot resolve a relative path
+   * either. Every case below is one the editor then writes into somebody's document, so the
+   * two that matter most are the ones where the answer must be *nothing*.
+   */
+  const titleReply = (panel) => panel.posted.filter((m) => m.type === 'docTitle');
+
+  /** Ask what `pasted` names, from a document at `/ws/docs/notes.md`. */
+  const askTitle = async (pasted, set = () => {}) => {
+    const ctx = sheafWindow();
+    ctx.win.addWorkspaceRoots('/ws');
+    set(ctx.win);
+    const { panel } = await openInSheaf('Some words.\n', '/ws/docs/notes.md', ctx);
+    panel.receive({ type: 'docTitleRead', id: 'title-1', path: pasted });
+    await settle();
+    await settle();
+    const [reply] = titleReply(panel);
+    return reply ? { address: reply.address, title: reply.title } : null;
+  };
+
+  const withPlan = (text) => (win) => win.addFileHolding('/ws/docs/notes/plan.md', text);
+
+  check('pasted path: a path relative to the document is answered with the document’s own title', async () => {
+    const reply = await askTitle('notes/plan.md', withPlan('# Launch plan\n\nBody.\n'));
+    return (
+      same(reply, { address: 'notes/plan.md', title: 'Launch plan' }) || `got ${JSON.stringify(reply)}`
+    );
+  });
+
+  check('pasted path: an absolute path and a file: URL in the workspace are answered, made relative to the document', async () => {
+    const absolute = await askTitle('/ws/plan.md', (win) => win.addFileHolding('/ws/plan.md', '# Launch plan\n'));
+    const url = await askTitle('file:///ws/plan.md', (win) => win.addFileHolding('/ws/plan.md', '# Launch plan\n'));
+    // The document is in `/ws/docs`, so a file at the root is one level up.
+    const want = { address: '../plan.md', title: 'Launch plan' };
+    return (
+      (same(absolute, want) && same(url, want)) || `absolute ${JSON.stringify(absolute)}, url ${JSON.stringify(url)}`
+    );
+  });
+
+  check('pasted path: a file with no heading is answered with its file name', async () => {
+    const reply = await askTitle('notes/plan.md', withPlan('Body with no heading.\n'));
+    return same(reply, { address: 'notes/plan.md', title: 'plan' }) || `got ${JSON.stringify(reply)}`;
+  });
+
+  check('pasted path: a document already open answers with the title it now has, not the one on disk', async () => {
+    const reply = await askTitle('notes/plan.md', (win) => {
+      // Opening a document puts its text on disk too, so the bytes are written after, which
+      // is what "unsaved changes" means: the document and the file say different things.
+      win.openDocument('/ws/docs/notes/plan.md', '# Renamed while open\n');
+      win.addFileHolding('/ws/docs/notes/plan.md', '# On disk\n');
+    });
+    return same(reply, { address: 'notes/plan.md', title: 'Renamed while open' }) || `got ${JSON.stringify(reply)}`;
+  });
+
+  check('pasted path: a path outside the workspace, one that is not Markdown, and one that is not there are answered with nothing', async () => {
+    // The workspace boundary is the one that matters. A path outside it resolves, reads and
+    // links fine, and the link is then broken for everybody who clones the repository.
+    const outside = await askTitle('/elsewhere/plan.md', (win) => win.addFileHolding('/elsewhere/plan.md', '# Launch plan\n'));
+    const notMarkdown = await askTitle('notes/plan.txt', (win) => win.addFileHolding('/ws/docs/notes/plan.txt', '# Launch plan\n'));
+    const missing = await askTitle('notes/gone.md');
+    const empty = { address: undefined, title: undefined };
+    return (
+      (same(outside, empty) && same(notMarkdown, empty) && same(missing, empty)) ||
+      `outside ${JSON.stringify(outside)}, not markdown ${JSON.stringify(notMarkdown)}, missing ${JSON.stringify(missing)}`
+    );
+  });
+
+  check('pasted path: every request is answered, so the page never waits out its timeout', async () => {
+    // Answered with nothing rather than not answered. The page gives up after a quarter of a
+    // second and pastes the path as text, and a paste that takes that long to land reads as
+    // a stutter even though what it finally does is right.
+    const ctx = sheafWindow();
+    ctx.win.addWorkspaceRoots('/ws');
+    const { panel } = await openInSheaf('Some words.\n', '/ws/docs/notes.md', ctx);
+    for (const [i, pasted] of ['notes/gone.md', 'notes/plan.txt', 'https://example.com/a.md', ''].entries()) {
+      panel.receive({ type: 'docTitleRead', id: `title-${i}`, path: pasted });
+    }
+    await settle();
+    await settle();
+    // Sorted: each answer carries the id it was asked with, so four requests in flight at
+    // once come back in whatever order their reads finish in and the editor does not care.
+    const ids = titleReply(panel)
+      .map((m) => m.id)
+      .sort();
+    return same(ids, ['title-0', 'title-1', 'title-2', 'title-3']) || `answered ${JSON.stringify(ids)}`;
+  });
 
   check('link completion: the host answers a file-list request with workspace-relative paths, leaving out dependencies and build output', async () => {
     const { win, panel } = await openInSheaf();
@@ -1708,10 +2577,70 @@ async function hostCases() {
     return cssRule('.sheaf-table td.is-numeric')['font-variant-numeric'] === 'tabular-nums';
   });
 
+  /*
+   * The chrome's type scale: four named steps and nothing else.
+   *
+   * A count rather than a list, because the point is that the set does not grow. It had 55
+   * declarations holding 15 values, two of them 12.5px against the 12px fifteen other rules
+   * used, and the way that happened is one rule at a time with nobody counting.
+   *
+   * The document's own typography is exempt and stays in `em` and `--md-code-size`: a heading
+   * is a multiple of the body text by definition, and the chrome is the opposite case, where
+   * inheriting from whatever you are nested inside is the bug.
+   */
+  check('stylesheet: the chrome takes four named type steps, all from one base, and no chrome rule sets a size of its own', () => {
+    const css = readFileSync(path.join(here, '..', 'media', 'webview.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+    const strays = [];
+    for (const m of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+      const selector = m[1].trim().replace(/\s+/g, ' ');
+      // The document's own typography, and the one token block that defines the steps.
+      if (/^:root$|^@|\.tok-|\.md-|\.cm-line\.|\.sheaf-root\.source-mode/.test(selector)) continue;
+      for (const decl of m[2].split(';')) {
+        const at = decl.indexOf(':');
+        if (at < 0 || decl.slice(0, at).trim() !== 'font-size') continue;
+        const value = decl.slice(at + 1).trim();
+        if (/^var\(--sheaf-ui-(row|secondary|label|title)\)$/.test(value)) continue;
+        // A table's cells, a view's rows and a board's cards show document content, so they
+        // are sized against the document and named here rather than left to a pattern.
+        if (/^(\.sheaf-table table|\.sheaf-view table|\.sheaf-board|\.sheaf-frontmatter-fold)$/.test(selector)) continue;
+        // A row number and the corner sit beside the rows and are sized against them, or the
+        // numbers would not line up with the text they number.
+        if (/\.sheaf-table-gutter|\.sheaf-table-corner/.test(selector)) continue;
+        strays.push(`${selector} => ${value}`);
+      }
+    }
+    if (strays.length) return { ok: false, detail: `off the four steps: ${strays.join('; ')}` };
+    /*
+     * Read straight out of the file rather than through `cssRule`, which cannot see the first
+     * `:root` block. Its regex takes everything since the previous `}` as the selector, and the
+     * `@import` above that block comes with it, so the selector reads `@import url('katex.css');
+     * :root` and matches nothing. The later `:root` blocks it does read are why that has gone
+     * unnoticed.
+     */
+    const declared = (name) => (new RegExp(`--${name}:\\s*([^;]+);`).exec(css) ?? [])[1]?.trim() ?? null;
+    // All four from one base, which is what makes the chrome one knob rather than four.
+    const derived = ['row', 'secondary', 'label', 'title'].filter((k) => !/var\(--sheaf-ui-step\)/.test(declared(`sheaf-ui-${k}`) ?? ''));
+    if (derived.length) return { ok: false, detail: `these steps do not derive from --sheaf-ui-step: ${derived.join(', ')}` };
+    // Named for the host's UI size, with VS Code's own default as the fallback a browser tab takes.
+    return declared('sheaf-ui-step') === 'var(--vscode-font-size, 13px)'
+      ? true
+      : { ok: false, detail: `--sheaf-ui-step is ${declared('sheaf-ui-step')}` };
+  });
+
   check('stylesheet: the header row sticks to the top of the editor, and a table that fits its frame lets it', () => {
     const head = cssRule('.sheaf-table thead tr');
     const frame = cssRule('.sheaf-table.has-widths:not(.is-scroll-x) > .sheaf-table-grid');
-    return head.position === 'sticky' && head.top === '0' && !!head['z-index'] && !!head.background && frame['overflow-x'] === 'visible';
+    // A sticky `top` is measured inside the scroller's padding, so the row has to
+    // undo the space above the first line to reach the top of the pane. `top: 0`
+    // held it that far down, with rows still showing above it.
+    return (
+      head.position === 'sticky' &&
+      head.top === 'calc(-1 * var(--sheaf-page-top) - 1px)' &&
+      cssRule(':root')['--sheaf-page-top'] === '56px' &&
+      !!head['z-index'] &&
+      !!head.background &&
+      frame['overflow-x'] === 'visible'
+    );
   });
 
   check('links: an address beside the document opens the file it names', async () => {
@@ -1908,10 +2837,16 @@ async function hostCases() {
     );
   });
 
-  check('explorer menu: Open in Sheaf is offered for nothing but Markdown', () => {
+  check('explorer menu: Open in Sheaf is offered for Markdown and .txt, and nothing else', () => {
+    // `.txt` is offered because a person keeping notes in one has no other way in, and
+    // the editor never opens one by itself. `.mdx`, `.cmd` and `.text` only look like
+    // the three. The clause reads `resourceExtname`, which is the last extension and
+    // nothing more, so those are the only strings it is ever asked about.
     const offered = whenRegex(explorerWhenClause());
     return (
-      offered !== undefined && ['.txt', '.cmd', '.mdx', '.md.txt', ''].every((ext) => !offered.test(ext))
+      offered !== undefined &&
+      ['.md', '.markdown', '.txt'].every((ext) => offered.test(ext)) &&
+      ['.cmd', '.mdx', '.text', ''].every((ext) => !offered.test(ext))
     );
   });
 
@@ -1929,22 +2864,24 @@ async function hostCases() {
   check('table of contents: an editor in a window that has never been told otherwise opens with it off', async () => {
     const { ready, init } = await openInSheaf();
     ready();
-    return init().config.tableOfContents === false;
+    return init().config.tableOfContents === 'hidden';
   });
 
   check('table of contents: with the setting on, every editor opened is told so, not just the one that turned it on', async () => {
     const ctx = sheafWindow();
+    // `true` is what this setting held when it was a boolean, and it still means shown:
+    // every editor is told the state it names rather than the value as written.
     ctx.win.vscode.workspace.getConfiguration().update(TOC, true, GLOBAL);
     const first = await openInSheaf('# One\n', '/ws/one.md', ctx);
     const second = await openInSheaf('# Two\n', '/ws/two.md', ctx);
     first.ready();
     second.ready();
-    return first.init().config.tableOfContents === true && second.init().config.tableOfContents === true;
+    return first.init().config.tableOfContents === 'shown' && second.init().config.tableOfContents === 'shown';
   });
 
   check('table of contents: the toolbar button writes it on in user settings, where it holds for every file', async () => {
     const { win, webview } = await openWithWebview('# One\n\nWords.\n');
-    webview.window.document.querySelector('[aria-label="Table of contents"]').click();
+    webview.window.document.querySelector('.sheaf-tb-toc').click();
     await settle();
     webview.close();
     return (
@@ -1954,12 +2891,65 @@ async function hostCases() {
     );
   });
 
-  check('table of contents: the toolbar button of an editor already showing it writes it off again', async () => {
+  check('table of contents: the toolbar button cycles the three states and says which one it is in', async () => {
     const { win, webview } = await openWithWebview('# One\n\nWords.\n', undefined, { user: { [TOC]: true } });
-    webview.window.document.querySelector('[aria-label="Table of contents"]').click();
-    await settle();
+    const button = webview.window.document.querySelector('.sheaf-tb-toc');
+    const drawn = () => ({
+      pressed: button.getAttribute('aria-pressed'),
+      folded: button.classList.contains('is-folded'),
+      name: button.getAttribute('aria-label'),
+    });
+    const states = [];
+    const looks = [drawn()];
+    // Three presses, so the third has to come back to where it started.
+    for (let i = 0; i < 3; i++) {
+      button.click();
+      await settle();
+      states.push(load(win).outlineSetting());
+      looks.push(drawn());
+    }
     webview.close();
-    return same(win.writesTo(GLOBAL), [{ key: TOC, target: GLOBAL }]) && load(win).tableOfContentsOn() === false;
+    return (
+      same(states, ['collapsed', 'hidden', 'shown']) &&
+      // Pressed means drawn at all, and the folded look is the middle one. The name has
+      // to differ in all three, because it is the only thing that is read out.
+      same(
+        looks.map((l) => `${l.pressed}${l.folded ? '/folded' : ''}`),
+        ['true', 'true/folded', 'false', 'true']
+      ) &&
+      new Set(looks.slice(0, 3).map((l) => l.name)).size === 3 &&
+      win.writesTo(WORKSPACE).length === 0
+    );
+  });
+
+  check('line numbers: the toolbar’s toggle writes a user setting, so a reopened document still has them', async () => {
+    /*
+     * The gutter was a module variable in the webview, so turning it on lasted until the
+     * document closed and every document opened without it. It is a setting now, written
+     * globally, for the reason the heading list is: it is a habit of the person rather than a
+     * property of one file, and VS Code settles its own `editor.lineNumbers` the same way.
+     *
+     * The reopen is what the issue is about, so it is what this asks: a second editor,
+     * opened after the toggle, has to be told the gutter is on.
+     */
+    const { win, panel, ready, init } = await openInSheaf();
+    ready();
+    await settle();
+    const before = init().config.lineNumbers;
+    panel.receive({ type: 'setLineNumbers', on: true });
+    await settle();
+    // Global, not workspace: a workspace write would leave it behind in one folder.
+    const wrote = win.writesTo(GLOBAL).filter((w) => w.key === 'sheaf.lineNumbers');
+    // A document opened afterwards, which is the case the issue names.
+    const second = await openInSheaf('Other words.\n', '/ws/other.md', win === undefined ? undefined : { win, host: load(win) });
+    second.ready();
+    await settle();
+    return (
+      before === false &&
+      wrote.length === 1 &&
+      second.init().config.lineNumbers === true &&
+      win.writesTo(WORKSPACE).length === 0
+    );
   });
 
   check('table of contents: the command turns it on, and turns it off again', async () => {
@@ -1968,6 +2958,24 @@ async function hostCases() {
     const on = host.tableOfContentsOn();
     await win.run('sheaf.toggleTableOfContents');
     return on === true && host.tableOfContentsOn() === false && win.writesTo(WORKSPACE).length === 0;
+  });
+
+  check('table of contents: the three commands each write their own state, collapsed included', async () => {
+    const { host, win } = start();
+    const after = [];
+    for (const command of ['sheaf.showTableOfContents', 'sheaf.collapseTableOfContents', 'sheaf.hideTableOfContents']) {
+      await win.run(command);
+      after.push(host.outlineSetting());
+    }
+    // Collapsed is the state toggling cannot reach, which is why the three exist.
+    return (
+      same(after, ['shown', 'collapsed', 'hidden']) &&
+      same(
+        win.writesTo(GLOBAL).map((w) => w.key),
+        [TOC, TOC, TOC]
+      ) &&
+      win.writesTo(WORKSPACE).length === 0
+    );
   });
 
   check('table of contents: the command needs no editor in front of the person, since the setting is the window’s', async () => {
@@ -1993,7 +3001,7 @@ async function hostCases() {
   check('table of contents: with the setting off the document has no rail in it at all', async () => {
     const { webview } = await openWithWebview('# One\n\nWords.\n');
     const rail = webview.window.document.querySelector('.sheaf-toc');
-    const button = webview.window.document.querySelector('[aria-label="Table of contents"]');
+    const button = webview.window.document.querySelector('.sheaf-tb-toc');
     const ok = rail.hidden && rail.querySelectorAll('.sheaf-toc-entry').length === 0 && button.getAttribute('aria-pressed') === 'false';
     webview.close();
     return ok;
@@ -2514,13 +3522,19 @@ async function hostCases() {
     );
   });
 
-  check('manifest: activating the extension registers both of Sheaf’s editors', () => {
+  check('manifest: activating the extension registers all three of Sheaf’s editors', () => {
+    // Three view types and two editors: the Markdown one is registered twice, once for
+    // the files it opens by itself and once for .txt, which it never does.
     const { host, win } = start();
-    return same(win.editorProviders, [SHEAF, host.MarkdownEditorProvider.gridViewType]);
+    return same(win.editorProviders, [
+      SHEAF,
+      host.MarkdownEditorProvider.textViewType,
+      host.MarkdownEditorProvider.gridViewType,
+    ]);
   });
 
   check('manifest: the two reference keys answer inside a Sheaf editor, a document or a data file, and nowhere else', () => {
-    const onlyInSheaf = `activeCustomEditorId == '${SHEAF}' || activeCustomEditorId == 'sheaf.csv'`;
+    const onlyInSheaf = `activeCustomEditorId == '${SHEAF}' || activeCustomEditorId == 'sheaf.text' || activeCustomEditorId == 'sheaf.csv'`;
     // Chords that VS Code or a coding agent extension already answers. One of those
     // here would do one thing in Sheaf and something else a tab away.
     const spokenFor = [
@@ -2554,12 +3568,15 @@ async function hostCases() {
     return chords.size === 4;
   });
 
-  check('manifest: the table of contents is a boolean setting that starts off, and names no other product', () => {
+  check('manifest: the table of contents starts off, still takes the two values it used to, and names no other product', () => {
+    // Three states now, and the two booleans it held before them are still accepted,
+    // because a person who wrote one into their settings should not have to know.
     const setting = manifest().contributes.configuration.properties[TOC];
     const copy = `${setting?.description ?? ''} ${(manifest().contributes.commands ?? []).map((c) => c.title).join(' ')}`;
     return (
-      setting?.type === 'boolean' &&
-      setting.default === false &&
+      same(setting?.type, ['string', 'boolean']) &&
+      same(setting?.enum, ['shown', 'collapsed', 'hidden', true, false]) &&
+      setting.default === 'hidden' &&
       typeof setting.description === 'string' &&
       setting.description.length > 40 &&
       !/notion|obsidian|typora|bear|ulysses|google docs|quip/i.test(copy)
@@ -2595,7 +3612,7 @@ async function hostCases() {
     const viewType = MarkdownEditorProvider.viewType;
     const contributed = (manifest().contributes.customEditors ?? []).map((editor) => editor.viewType);
     const named = whenClauseViewTypes();
-    const ours = [viewType, MarkdownEditorProvider.gridViewType];
+    const ours = [viewType, MarkdownEditorProvider.textViewType, MarkdownEditorProvider.gridViewType];
     return contributed.includes(viewType) && named.length > 0 && named.every((id) => ours.includes(id));
   });
 
@@ -2619,6 +3636,74 @@ async function hostCases() {
     const contributed = contributedCommands();
     const inMenus = menuCommands();
     return inMenus.length > 0 && inMenus.every((command) => contributed.includes(command));
+  });
+
+  /*
+   * Which build is running.
+   *
+   * The bundle these drive is stamped by `scripts/run-tests.mjs` with a fixed
+   * commit, so what they read is the real path through `src/buildStamp.ts` rather
+   * than its fallback.
+   */
+
+  /** The first line of an About message, which is the part meant for a bug report. */
+  const aboutLine = (message) => message.split('\n')[0];
+
+  check('about: the line names the version, the commit and the host, and Copy puts it on the clipboard', async () => {
+    const { win } = start();
+    win.answerWith('Copy');
+    await win.run('sheaf.about');
+    const line = win.messages[win.messages.length - 1];
+    const named = line.includes('Sheaf 0.2.0') && line.includes('abc1234') && line.includes('Visual Studio Code 1.90.0');
+    return named && win.copied[win.copied.length - 1] === line && !line.includes('built from a modified tree');
+  });
+
+  check('about: in a window that is behind, About says so and Copy still takes only the build line', async () => {
+    const { win } = start();
+    // Stale on purpose, which is the only state where About has two things to say.
+    // With the window up to date the two strings are identical and a check on this
+    // could not fail, which is how the first draft of it passed for nothing.
+    win.answerWith('Copy');
+    await win.installBuild('0.2.809');
+    await win.run('sheaf.about');
+    const shown = win.messages[win.messages.length - 1];
+    const copied = win.copied[win.copied.length - 1];
+    // A bug report wants the build, not a note about this window needing a reload.
+    return shown.includes('0.2.809 is installed') && shown.includes('reload') && copied === aboutLine(shown) && !copied.includes('installed');
+  });
+
+  check('about: over a remote link the line says so, because the extension runs on the far side', async () => {
+    const win = makeWindow();
+    win.overRemote('ssh-remote');
+    start(win);
+    await win.run('sheaf.about');
+    return win.messages[win.messages.length - 1].includes('over ssh-remote');
+  });
+
+  check('about: a build installed while the window is open offers a reload, and taking it reloads', async () => {
+    const { win } = start();
+    win.answerWith('Reload Window');
+    await win.installBuild('0.2.809');
+    const said = win.messages.some((m) => m.includes('0.2.809') && m.includes('0.2.0'));
+    const reloaded = win.executed.some(([id]) => id === 'workbench.action.reloadWindow');
+    return said && reloaded;
+  });
+
+  check('about: the same installed build is mentioned once, however often the registry moves', async () => {
+    const { win } = start();
+    const before = win.messages.length;
+    await win.installBuild('0.2.809');
+    await win.installBuild('0.2.809');
+    await win.installBuild('0.2.809');
+    // A notification that comes back every few seconds is worse than none at all.
+    return win.messages.length - before === 1;
+  });
+
+  check('about: a window running the build that is installed says nothing on its own', async () => {
+    const { win } = start();
+    // The registry agrees with the stamp, which is every ordinary window.
+    await win.installBuild('0.2.0');
+    return win.messages.length === 0;
   });
 
   check('packaging: the editor bundle is the same bytes in both hosts, so nothing host-specific can reach it', async () => {
@@ -2660,6 +3745,857 @@ async function hostCases() {
     };
   });
 
+  /*
+   * The changelog says it follows Keep a Changelog, where a version heading with a
+   * date means that version shipped. One was written ahead of its release: forty
+   * entries sat under `## [0.3.0] - 2026-09-26` while the only tag in the repository
+   * was v0.1.0, so the public repository advertised a release nobody had cut, and
+   * anybody reading `[Unreleased]` to see what the next one held was short by forty.
+   *
+   * Two readings, because neither covers the other. The tag is what makes a version
+   * real, and the manifest is what the release workflow checks the tag against.
+   */
+  const datedHeadings = () => {
+    const text = readFileSync(path.join(here, '..', 'CHANGELOG.md'), 'utf8');
+    const found = [];
+    for (const line of text.split('\n')) {
+      const m = /^##\s*\[(\d+\.\d+\.\d+)\]\s*-\s*(\S+)/.exec(line);
+      if (m) found.push({ version: m[1], date: m[2] });
+    }
+    return found;
+  };
+
+  /** -1, 0 or 1, comparing two `x.y.z` strings numerically rather than as text. */
+  const compareVersions = (a, b) => {
+    const pa = a.split('.').map(Number);
+    const pb = b.split('.').map(Number);
+    for (let i = 0; i < 3; i++) if (pa[i] !== pb[i]) return pa[i] < pb[i] ? -1 : 1;
+    return 0;
+  };
+
+  check('every dated version in the changelog is a version that was tagged', () => {
+    const dated = datedHeadings();
+    if (!dated.length) return { ok: false, detail: 'the changelog has no dated version heading at all, so this check is measuring nothing' };
+    const listed = spawnSync('git', ['for-each-ref', '--format=%(refname:short)', 'refs/tags'], {
+      cwd: path.join(here, '..'),
+      encoding: 'utf8',
+    });
+    if (listed.status !== 0) return { ok: true, detail: 'git could not list tags here, so there is nothing to compare' };
+    const tags = new Set(listed.stdout.split('\n').map((t) => t.trim()).filter(Boolean));
+    // A clone with no tags cannot answer this, and saying so is better than passing
+    // quietly: a check that reports the same thing when it works and when it cannot
+    // run is the failure this suite has already been bitten by once.
+    if (!tags.size) return { ok: true, detail: `no tags in this clone, so the ${dated.length} dated headings are unchecked` };
+    /*
+     * Only versions from the first tag onwards. 0.0.1 has a dated heading and no tag
+     * because it went out before releases were tagged at all, and an exception list
+     * for it would be the first entry in a list that eventually excuses everything.
+     * The rule instead is that once this project started tagging, a dated heading
+     * means a tag, which is stated rather than enumerated.
+     */
+    const versions = [...tags].filter((t) => /^v\d+\.\d+\.\d+$/.test(t)).map((t) => t.slice(1));
+    const first = versions.reduce((a, b) => (compareVersions(a, b) <= 0 ? a : b));
+    const inScope = dated.filter((d) => compareVersions(d.version, first) >= 0);
+    const missing = inScope.filter((d) => !tags.has(`v${d.version}`)).map((d) => `${d.version} dated ${d.date}`);
+    return {
+      ok: missing.length === 0,
+      detail: missing.length
+        ? `the changelog says ${JSON.stringify(missing)} shipped and no tag of that name exists, so the entries under it belong under [Unreleased] until it does`
+        : `${inScope.length} dated headings from v${first} onwards, every one tagged; ${dated.length - inScope.length} older than the first tag and out of scope`,
+    };
+  });
+
+  check('the manifest is at or ahead of the newest version the changelog says shipped', () => {
+    const dated = datedHeadings();
+    if (!dated.length) return { ok: false, detail: 'the changelog has no dated version heading at all' };
+    const newest = dated.reduce((a, b) => (compareVersions(a.version, b.version) >= 0 ? a : b));
+    const version = manifest().version;
+    return {
+      ok: compareVersions(version, newest.version) >= 0,
+      detail: compareVersions(version, newest.version) >= 0
+        ? `package.json ${version} against the newest shipped ${newest.version}`
+        : `package.json says ${version} and the changelog says ${newest.version} shipped, so one of them is wrong about what the last release was`,
+    };
+  });
+
+  /*
+   * What the `.vsix` carries, decided per top-level path rather than left to whatever
+   * `.vscodeignore` happens to cover. Packaging takes minutes, so the artefact itself cannot
+   * be a gate; what can be is that nothing arrived at the top of the repository without
+   * somebody deciding whether it ships.
+   *
+   * The failure this catches is a new directory shipping silently. `.vscodeignore` excludes
+   * by pattern, so a directory nobody thought about is included by default, and the only
+   * place that shows is a package listing nobody reads.
+   *
+   * Verified against the artefact on 2026-09-27: a clean export of HEAD packages 265 files
+   * and 2.68 MB, and its only top-level entries are dist/, media/, package.json, readme.md,
+   * changelog.md, LICENSE.txt and the two files vsce writes itself. So this table is a record
+   * of a measurement rather than of an intention.
+   */
+  const SHIPS = ['dist', 'media', 'package.json', 'README.md', 'CHANGELOG.md', 'LICENSE'];
+  const STAYS = [
+    '.claude', '.github', '.vscode', '.gitattributes', '.gitignore', '.gitleaksignore',
+    '.vscodeignore', 'CLAUDE.md', 'CONTRIBUTING.md', 'docs', 'esbuild.mjs', 'sample',
+    'scripts', 'src', 'test', 'tsconfig.json', 'package-lock.json',
+  ];
+  /* `vsce` drops this one itself, with `--no-dependencies`, so `.vscodeignore` never names it. */
+  const DROPPED_BY_VSCE = ['package-lock.json'];
+
+  /*
+   * What the unreleased entries name has to exist. A changelog entry is written when work
+   * lands and read again only when it becomes the release body and both store listings, so an
+   * entry that goes false because another issue removed what it described is wrong
+   * permanently rather than until somebody notices.
+   *
+   * That happened: an entry ended "`sheaf` in a terminal lists `.txt` files too", written
+   * while a `bin` entry existed in the manifest, and the issue that correctly deleted that
+   * entry left the sentence behind. A reader following it reaches an unrelated npm package.
+   *
+   * Three shapes, each resolved exactly. What is deliberately **not** checked is a bolded
+   * in-editor name, and the reason is worth stating rather than leaving as an omission: of
+   * nineteen bolded spans in the unreleased section without terminal punctuation, twelve are
+   * names and five are ordinary prose fragments, and two of the twelve are abbreviations of a
+   * command's title rather than the title ("Show" for "Show Front Matter"). No rule I would
+   * trust separates those, and a check whose exception list grows every release is worse than
+   * a narrower one that always means what it says.
+   */
+  check('every setting, command and chord the unreleased notes name exists', () => {
+    const text = readFileSync(path.join(here, '..', 'CHANGELOG.md'), 'utf8');
+    const section = /## \[Unreleased\]\n([\s\S]*?)\n## \[/.exec(text);
+    if (!section) return { ok: false, detail: 'no [Unreleased] section found, so nothing was read' };
+    const notes = section[1];
+
+    const m = manifest().contributes;
+    const settings = new Set(Object.keys(m.configuration?.properties ?? {}));
+    const titles = new Set((m.commands ?? []).map((c) => c.title));
+    const chords = new Set(
+      (m.keybindings ?? []).flatMap((k) => [k.key, k.mac].filter(Boolean).map((s) => s.toLowerCase()))
+    );
+
+    /*
+     * Most of Sheaf's shortcuts are the editor's rather than the workbench's, so they are
+     * declared in the webview's own registry and appear in no manifest. Reading only the
+     * manifest made this check wrong for the majority of them, which does not make the
+     * notes wrong: it made naming a real shortcut in bold the thing that failed.
+     */
+    const registry = readFileSync(path.join(here, '..', 'src', 'webview', 'shortcuts.ts'), 'utf8');
+    const specs = [...registry.matchAll(/\bkey: '([^']+)'/g)].map(([, spec]) => spec);
+    if (!specs.length) return { ok: false, detail: 'read no key specs from src/webview/shortcuts.ts, so the editor half of this proved nothing' };
+    for (const spec of specs) {
+      const parts = spec.split('-').map((p) => p.toLowerCase());
+      for (const mod of ['cmd', 'ctrl']) chords.add(parts.map((p) => (p === 'mod' ? mod : p)).join('+'));
+    }
+
+    const named = { settings: [], commands: [], chords: [] };
+    const missing = [];
+
+    for (const [, token] of notes.matchAll(/`(sheaf\.[A-Za-z][A-Za-z0-9.]*)`/g)) {
+      named.settings.push(token);
+      if (!settings.has(token)) missing.push(`setting \`${token}\``);
+    }
+    for (const [, title] of notes.matchAll(/\*\*(Sheaf: [^*]+?)\*\*/g)) {
+      named.commands.push(title);
+      // The notes write the category with the title, as the palette shows it.
+      const bare = title.replace(/^Sheaf: /, '');
+      if (!titles.has(bare)) missing.push(`command **${title}**`);
+    }
+    for (const [, chord] of notes.matchAll(/\*\*((?:Cmd|Ctrl|Alt|Shift|Opt)(?:\+[A-Za-z0-9]+)+)\*\*/g)) {
+      named.chords.push(chord);
+      if (!chords.has(chord.toLowerCase().replace(/opt/g, 'alt'))) missing.push(`chord **${chord}**`);
+    }
+
+    /*
+     * The guard the original slip needs. A matcher that finds nothing reports nothing wrong,
+     * and a parse broken by a stray backtick reads exactly like a clean release. So the run
+     * fails when it resolved nothing at all, and the counts are printed either way.
+     */
+    const found = named.settings.length + named.commands.length + named.chords.length;
+    if (!found) {
+      return { ok: false, detail: `read ${notes.split('\n').length} lines of [Unreleased] and resolved no setting, command or chord, so the patterns matched nothing and this proved nothing` };
+    }
+
+    return {
+      ok: missing.length === 0,
+      detail: missing.length
+        ? `the unreleased notes name ${JSON.stringify(missing)}, which neither the manifest nor the editor's shortcut registry declares; the notes become the release body and both store listings, so this is wrong permanently once tagged`
+        : `${named.settings.length} settings, ${named.commands.length} commands, ${named.chords.length} chords, all declared`,
+    };
+  });
+
+  check('every path at the top of the repository is decided: it ships, or it is excluded', () => {
+    /*
+     * The index and the untracked-but-not-ignored files, rather than `ls-tree HEAD`. HEAD is
+     * the previous commit, so reading it would let a new directory pass its own landing and
+     * only fail the run after, which is a commit too late to be useful. A control of mine did
+     * exactly that: a new directory was invisible to the check and read as the check not
+     * working.
+     */
+    const repo = path.join(here, '..');
+    const ask = (args) => spawnSync('git', args, { cwd: repo, encoding: 'utf8' });
+    const inIndex = ask(['ls-files']);
+    const untracked = ask(['ls-files', '--others', '--exclude-standard']);
+    if (inIndex.status !== 0) return { ok: false, detail: 'git could not list the index, so nothing was checked' };
+    const tops = (out) => out.split('\n').map((s) => s.trim()).filter(Boolean).map((p) => p.split('/')[0]);
+    const tracked = [...new Set([...tops(inIndex.stdout), ...tops(untracked.status === 0 ? untracked.stdout : '')])];
+    if (tracked.length < 10) return { ok: false, detail: `git listed only ${tracked.length} paths, which is not this repository` };
+
+    const undecided = tracked.filter((p) => !SHIPS.includes(p) && !STAYS.includes(p));
+    if (undecided.length) {
+      return {
+        ok: false,
+        detail: `${JSON.stringify(undecided)} is at the top of the repository and nothing here says whether it belongs in the .vsix. Add it to SHIPS or to STAYS, and if it stays, exclude it in .vscodeignore.`,
+      };
+    }
+
+    /*
+     * And the exclusions are real rather than recorded. A `.vscodeignore` line removed while
+     * the entry stays on the list above would ship a directory with this check still green,
+     * which is the same shape as a ledger describing a matrix that no longer exists.
+     */
+    const ignore = readFileSync(path.join(here, '..', '.vscodeignore'), 'utf8')
+      .split('\n')
+      .map((l) => l.trim())
+      .filter((l) => l && !l.startsWith('#'));
+    const excluded = (name) =>
+      DROPPED_BY_VSCE.includes(name) ||
+      ignore.some((line) => {
+        // The four shapes `.vscodeignore` actually uses: the bare name, a directory, an
+        // extension anywhere, and a filename anywhere. Deliberately not a glob engine: a
+        // pattern this cannot read is one to add here rather than one to approximate.
+        if (line === name || line === `${name}/**` || line === `${name}/` || line === `**/${name}`) return true;
+        const ext = /^(?:\*\*\/)?\*(\.[A-Za-z0-9]+)$/.exec(line);
+        return Boolean(ext) && name.endsWith(ext[1]);
+      });
+    const leaking = STAYS.filter((name) => tracked.includes(name) && !excluded(name));
+    return {
+      ok: leaking.length === 0,
+      detail: leaking.length
+        ? `${JSON.stringify(leaking)} is listed here as not shipping and .vscodeignore does not exclude it, so it is in the .vsix`
+        : `${SHIPS.length} ship, ${STAYS.length} excluded, ${tracked.length} tracked at the top`,
+    };
+  });
+
+  check('only one shipping page mentions a `sheaf` command, and it is the one that says there is none', () => {
+    /*
+     * Installing the extension puts nothing on anybody's path, and `sheaf` on npm is an
+     * unrelated package, so a reader who follows a promise of that command reaches a
+     * stranger's code. `docs/features/in-a-browser.md` says exactly that, and two changelog
+     * entries said the opposite, one of them in a section that had already shipped and is
+     * on the Marketplace listing today.
+     *
+     * So the rule is one statement in one place. The denial is the statement; anywhere else
+     * mentioning the command is a second answer to a question that has one. The paired check
+     * above asserts the manifest declares no `bin`, which is the same claim from the other
+     * side: this one is about what a reader is told, that one about what the package says.
+     *
+     * The browser host is reached as `node <extension dir>/dist/serve.js <folder>`, which is
+     * a developer's invocation and belongs on that page rather than in release notes.
+     */
+    const answersIt = path.join('docs', 'features', 'in-a-browser.md');
+    const prose = ['CHANGELOG.md', 'README.md', 'CONTRIBUTING.md'];
+    const docsDir = path.join(here, '..', 'docs');
+    const walk = (dir) =>
+      readdirSync(dir, { withFileTypes: true }).flatMap((e) =>
+        e.isDirectory() ? walk(path.join(dir, e.name)) : e.name.endsWith('.md') ? [path.join(dir, e.name)] : []
+      );
+    for (const page of walk(docsDir)) prose.push(path.relative(path.join(here, '..'), page));
+
+    const said = [];
+    for (const rel of prose) {
+      let text;
+      try {
+        text = readFileSync(path.join(here, '..', rel), 'utf8');
+      } catch {
+        continue;
+      }
+      text.split('\n').forEach((line, i) => {
+        if (!/`sheaf`/.test(line)) return;
+        if (rel === answersIt) return;
+        said.push(`${rel}:${i + 1}`);
+      });
+    }
+    // The denial has to be there, or this check passes by the page having been deleted.
+    const denial = readFileSync(path.join(here, '..', answersIt), 'utf8');
+    if (!/`sheaf`/.test(denial) || !/no `sheaf` command/.test(denial)) {
+      return { ok: false, detail: `${answersIt} no longer says there is no \`sheaf\` command, so nothing tells a reader the npm package is somebody else's` };
+    }
+    return {
+      ok: said.length === 0,
+      detail: said.length
+        ? `${JSON.stringify(said)} mention a \`sheaf\` command, which nothing provides; ${answersIt} is where that question is answered`
+        : `${prose.length} shipping pages checked; only ${answersIt} mentions it`,
+    };
+  });
+
+  check('the manifest claims no command on anybody\'s path, which is what the docs promise', () => {
+    /*
+     * `package.json` declared `"bin": { "sheaf": "./dist/serve.js" }`. VS Code ignores
+     * `bin`, so it put nothing on anybody's path, and `docs/features/in-a-browser.md`
+     * tells a reader in as many words that there is no `sheaf` command and that the
+     * `sheaf` package on npm belongs to somebody else and should not be installed
+     * expecting this one. So the manifest and the page disagreed, in a public
+     * repository, about a name that resolves to a stranger's code.
+     *
+     * `dist/serve.js` stays: it ships, it has a working shebang, and the check scripts
+     * run it directly. It is the mapping that claimed a name, not the file.
+     *
+     * If a CLI is ever published it goes out under a name the organisation owns, and
+     * this check is the place that will say so when somebody adds the entry back.
+     */
+    const bin = manifest().bin;
+    if (!bin) return { ok: true, detail: 'no bin entry' };
+    const names = Object.keys(bin);
+    return {
+      ok: false,
+      detail: `package.json maps ${JSON.stringify(names)} onto a path, which VS Code ignores and which claims an npm name; the browser host is reached as "node <extension dir>/dist/serve.js <folder>"`,
+    };
+  });
+
+  check('the files both hosts share reach neither vscode nor node, so the browser can load them', () => {
+    /*
+     * `src/protocol.ts` and `src/settingValues.ts` exist so that one fact is declared once and
+     * read by the extension host, the browser host and the editor. What makes that possible is
+     * that the browser bundles them, so the moment either reaches `vscode` or a Node builtin it
+     * stops being importable out there and the fact goes back to being declared twice. That is
+     * what was behind the line-numbers button in a browser tab turning them on and never off:
+     * three declarations of `EditorConfig`, one per host and one in the editor, with nothing
+     * comparing them, so a host could carry a setting the editor drew a button for.
+     *
+     * The rule was written as "imports nothing from this repository" and the correct code breaks
+     * it: `protocol.ts` imports `settingValues.ts`, which is right, because the alternative is
+     * copying the setting value spaces into it. So the rule is about what the closure may
+     * **reach**, not about whether a file has imports, and it is stated that way here because
+     * the prose version was wrong on its first real use.
+     *
+     * Transitive on purpose. A leaf importing a leaf is fine; a leaf importing a leaf that
+     * imports `vscode` is the same failure two steps away, and two steps is where nobody looks.
+     */
+    const SHARED = ['src/protocol.ts', 'src/settingValues.ts'];
+    const root = path.join(here, '..');
+    const seen = new Set();
+    const reached = [];
+    const walk = (rel) => {
+      if (seen.has(rel)) return;
+      seen.add(rel);
+      let text;
+      try {
+        text = readFileSync(path.join(root, rel), 'utf8');
+      } catch {
+        reached.push(`${rel} does not exist`);
+        return;
+      }
+      for (const [, spec] of text.matchAll(/from\s+'([^']+)'/g)) {
+        if (spec === 'vscode' || spec.startsWith('vscode/')) {
+          reached.push(`${rel} imports ${spec}`);
+          continue;
+        }
+        if (spec.startsWith('node:')) {
+          reached.push(`${rel} imports ${spec}`);
+          continue;
+        }
+        if (!spec.startsWith('.')) continue; // a package, which the browser bundles too
+        const next = path.relative(root, path.resolve(path.dirname(path.join(root, rel)), spec));
+        walk(next.endsWith('.ts') ? next : `${next}.ts`);
+      }
+    };
+    for (const f of SHARED) walk(f);
+    // A walk that read nothing would pass while proving nothing, which is the failure this
+    // suite has met four times in a week.
+    if (seen.size < SHARED.length) {
+      return { ok: false, detail: `the walk read ${seen.size} files from ${SHARED.length} roots, so it found none of them` };
+    }
+    return {
+      ok: reached.length === 0,
+      detail: reached.length
+        ? `${JSON.stringify(reached)}, so the browser host can no longer import it and the fact it holds goes back to being declared twice`
+        : `${seen.size} files in the closure of ${SHARED.join(' and ')}, none reaching vscode or node`,
+    };
+  });
+
+  check('security: every action a workflow runs is pinned to a commit, not to a tag', () => {
+    /*
+     * `release.yml` reaches every machine that has Sheaf: it holds `id-token: write`,
+     * `contents: write` and `attestations: write`, and it publishes to both registries.
+     * Every action it runs executes with those permissions.
+     *
+     * A tag is mutable. `actions/checkout@v7` is whatever the owner of that repository
+     * last pointed `v7` at, and nothing here would notice it moving. Pinning to a commit
+     * means an upstream account compromise cannot reach this pipeline without somebody
+     * changing a line in this repository.
+     *
+     * The version stays as a trailing comment, because a bare 40-character hash tells a
+     * reader nothing about what it is or whether it is current, and the thing that makes
+     * pinning rot is nobody being able to tell.
+     */
+    const dir = path.join(here, '..', '.github', 'workflows');
+    const files = readdirSync(dir).filter((f) => f.endsWith('.yml') || f.endsWith('.yaml'));
+    const uses = [];
+    for (const file of files) {
+      const text = readFileSync(path.join(dir, file), 'utf8');
+      for (const [i, line] of text.split('\n').entries()) {
+        const m = /^\s*(?:-\s*)?uses:\s*(\S+)(.*)$/.exec(line);
+        if (m) uses.push({ file, line: i + 1, ref: m[1], rest: m[2] });
+      }
+    }
+    // A parse that found almost nothing would agree with anything.
+    if (uses.length < 5) {
+      return { ok: false, detail: `${uses.length} action references found across ${files.length} workflow files, so this check is reading the wrong thing` };
+    }
+    const wrong = [];
+    for (const u of uses) {
+      // A local action, `./path`, is this repository's own and needs no pin.
+      if (u.ref.startsWith('./')) continue;
+      const at = u.ref.lastIndexOf('@');
+      const rev = at < 0 ? '' : u.ref.slice(at + 1);
+      if (!/^[0-9a-f]{40}$/.test(rev)) {
+        wrong.push(`${u.file}:${u.line} runs ${u.ref}, which is a tag or a branch and can be moved by whoever owns it`);
+      } else if (!/#\s*\S/.test(u.rest)) {
+        wrong.push(`${u.file}:${u.line} is pinned but says no version, so nobody can tell what it is or whether it is current`);
+      }
+    }
+    return { ok: wrong.length === 0, detail: wrong.join('; ') };
+  });
+
+  check('security: CI runs read-only and the release workflow runs alone', () => {
+    /*
+     * `release.yml` is the one thing here that reaches other people's machines. It holds
+     * `id-token: write`, `contents: write` and `attestations: write`, it reaches both
+     * publish tokens through the `release` environment, and what it builds installs for
+     * everyone who has Sheaf.
+     *
+     * Two things it can be held to here. `ci.yml` declares read-only permissions, because
+     * without a `permissions:` block a job inherits the repository default and hands that
+     * token to every step, `npm ci` and its three hundred packages included. And the
+     * release workflow has a concurrency group, so two tags pushed close together queue
+     * instead of publishing twice.
+     *
+     * Read as text rather than parsed, so this needs no YAML package to keep working.
+     */
+    const dir = path.join(here, '..', '.github', 'workflows');
+    const files = readdirSync(dir).filter((f) => f.endsWith('.yml'));
+    if (files.length < 2) return { ok: false, detail: `${files.length} workflow files found, so this check is looking in the wrong place` };
+    const ci = readFileSync(path.join(dir, 'ci.yml'), 'utf8');
+    const release = readFileSync(path.join(dir, 'release.yml'), 'utf8');
+    const wrong = [];
+    if (!/^permissions:\s*\n\s+contents:\s*read\s*$/m.test(ci)) wrong.push('ci.yml does not declare read-only permissions, so its token is whatever the repository default is');
+    if (!/^concurrency:\s*\n\s+group:/m.test(release)) wrong.push('release.yml has no concurrency group, so two tags can publish at once');
+    return { ok: wrong.length === 0, detail: wrong.join('; ') };
+  });
+
+  check('security: the webview policy keeps a document from running script or sending anything anywhere', async () => {
+    /*
+     * The content security policy is the boundary. A Markdown document can put almost
+     * anything on the page: inline HTML that Sheaf renders, an image address, a cell of a
+     * table drawn as HTML. What stops any of it from running as code, or from carrying
+     * what it read back out, is this one string in `getHtml`, and until now nothing asked
+     * what it said. Widening it is a one-word edit that every gate would have passed.
+     *
+     * Four properties, each for a different way out:
+     *
+     * `default-src 'none'` is the floor, so a directive nobody thought to write is closed
+     * rather than open. **No `connect-src`** then matters as much as anything present: it
+     * falls back to the floor, so the editor cannot fetch, post or open a socket at all.
+     * That is what makes "no server, no account, no cloud copy" a property of the page
+     * rather than an intention, and a `connect-src` appearing here would end it quietly.
+     *
+     * `script-src` carries a nonce and nothing else. `'unsafe-inline'` there would let an
+     * inline handler in a document's own HTML run; `'unsafe-eval'` would let a string
+     * become code; a host or scheme would let a remote file become code.
+     *
+     * `img-src` is the one that cannot be closed, because documents legitimately show
+     * pictures, so it is held to what the code already permits: this webview's own
+     * source, `https:` and `data:`. A `*` or an `http:` here is a downgrade rather than a
+     * hole, and an `http:` image in a document the editor serves over `https:` is a mixed-content
+     * mismatch besides.
+     */
+    const { panel } = await openInSheaf();
+    const html = panel.webview.html;
+    const csp = /content="([^"]*)"/.exec(/<meta http-equiv="Content-Security-Policy"[^>]*>/.exec(html)?.[0] ?? '')?.[1];
+    if (!csp) return { ok: false, detail: `no Content-Security-Policy meta tag in the ${html.length}-character page: this check is proving nothing` };
+    const directive = (name) => new RegExp(`(?:^|;)\\s*${name}\\s([^;]*)`).exec(csp)?.[1]?.trim();
+    const script = directive('script-src') ?? '';
+    const img = directive('img-src') ?? '';
+    const wrong = [];
+    if (directive('default-src') !== `'none'`) wrong.push(`default-src is "${directive('default-src')}" rather than 'none', so a directive nobody wrote is open`);
+    if (directive('connect-src') !== undefined) wrong.push(`connect-src is present ("${directive('connect-src')}"), so the editor can reach the network; with none it inherits 'none' and cannot`);
+    if (!/^'nonce-[^']+'$/.test(script)) wrong.push(`script-src is "${script}" rather than a nonce alone`);
+    for (const bad of [`'unsafe-inline'`, `'unsafe-eval'`, `'unsafe-hashes'`, 'http:', '*']) {
+      if (img.includes(bad)) wrong.push(`img-src allows ${bad}`);
+    }
+    if (!img.includes('https:') || !img.includes('data:')) wrong.push(`img-src is "${img}", which no longer covers the addresses images are written with`);
+    return { ok: wrong.length === 0, detail: wrong.join('; ') };
+  });
+
+  check('shape: no widget builds its DOM in a closure bigger than it already is', () => {
+    /*
+     * Ten widget classes draw the editor's blocks, and eight of them keep `toDOM` between
+     * 6 and 43 lines by doing the work in functions at module scope, which a suite can
+     * call directly. Two went the other way, and the sizes say the rest of the story:
+     *
+     *     tables.ts      3274        images.ts        43
+     *     viewBlock.ts    780        mermaid.ts       39
+     *                               livePreview.ts     6
+     *                               maths.ts           6
+     *
+     * A closure that size is an object written as a function. `tables.ts` holds 203 local
+     * declarations and 153 nested functions in there, registering 35 listeners over 18
+     * event types, and nothing outside the method can reach any of it, so the only way to
+     * exercise one of those functions is to mount the widget and drive the DOM. That is
+     * why a table fix is expensive to verify, and tables are about half of every bug
+     * filed on this project.
+     *
+     * The eight small ones are the argument that this is a choice rather than the nature
+     * of a widget. So the two large ones are held where they are: the closure may shrink
+     * and may not grow, and a new widget starts with no budget at all here, which is the
+     * point at which it is cheapest to not do this.
+     *
+     * Each budget is exact, so it fails in both directions. Over it is the growth this is
+     * for. Under it matters too, because a passing check prints nothing: this runner
+     * reports a name only when it fails, so "lower the budget" in the detail of a pass is
+     * a sentence nobody reads, and the number would drift above the real size until it
+     * held nothing.
+     */
+    const BUDGETS = [
+      // 3266: the first drag on a table freezes every column, and the call that does it is one
+      // line. The decision itself is `frozenWidths` at module scope, which is what this check
+      // asks for; what is left in the closure is the call and nothing else.
+      ['tables.ts', 3266],
+      ['viewBlock.ts', 780],
+    ];
+    const over = [];
+    const under = [];
+    const lost = [];
+    for (const [file, budget] of BUDGETS) {
+      const lines = readFileSync(path.join(here, '..', 'src', 'webview', file), 'utf8').split('\n');
+      const start = lines.findIndex((line) => /^ {2}toDOM\(/.test(line));
+      const end = start === -1 ? -1 : lines.findIndex((line, i) => i > start && line === '  }');
+      // A rename or a reformat must fail loudly rather than pass by finding nothing.
+      if (start === -1 || end === -1) {
+        lost.push(file);
+        continue;
+      }
+      const span = end - start + 1;
+      if (span > budget) over.push(`${file}'s toDOM is ${span} lines, over its ${budget}-line budget`);
+      else if (span < budget) under.push(`${file}'s toDOM is ${span} lines, ${budget - span} under budget, which is good: change its entry here to ${span}`);
+    }
+    return {
+      ok: over.length === 0 && under.length === 0 && lost.length === 0,
+      detail: lost.length
+        ? `no \`  toDOM(\` and closing \`  }\` in ${lost.join(', ')}: this check lost its anchor and is proving nothing`
+        : over.length
+          ? `${over.join('; ')}. Put the decision it adds at module scope as a function taking its inputs explicitly, the way the eight small widgets do, and leave only the DOM wiring in the closure.`
+          : under.length
+            ? under.join('; ')
+            : '',
+    };
+  });
+
+  const withoutComments = (text) => text.replace(/\/\*[^]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '');
+  /**
+   * The messages a `type X =` union declares, each with its field names. Fields are read
+   * at the variant's own level only, so `terminal` inside `capabilities: { terminal?: … }`
+   * is not mistaken for a message field.
+   */
+  const messagesIn = (source, name) => {
+    const text = withoutComments(source);
+    const start = text.search(new RegExp(`\\btype ${name} =`));
+    if (start < 0) return null;
+    let depth = 0;
+    let end = text.length;
+    for (let i = text.indexOf('=', start); i < text.length; i++) {
+      if (text[i] === '{') depth++;
+      else if (text[i] === '}') depth--;
+      else if (text[i] === ';' && depth === 0) {
+        end = i;
+        break;
+      }
+    }
+    const body = text.slice(start, end);
+    const out = new Map();
+    for (let i = 0; i < body.length; i++) {
+      if (body[i] !== '{') continue;
+      let d = 1;
+      let j = i + 1;
+      const fields = new Set();
+      let type = null;
+      for (; j < body.length && d > 0; j++) {
+        if (body[j] === '{') d++;
+        else if (body[j] === '}') d--;
+        else if (d === 1) {
+          const rest = body.slice(j);
+          const m = /^(\w+)(\??):/.exec(rest);
+          if (m && /[\s{;]/.test(body[j - 1] ?? '{')) {
+            if (m[1] === 'type') {
+              const value = /^type\??:\s*'([^']+)'/.exec(rest);
+              if (value) type = value[1];
+            } else fields.add(m[1] + m[2]);
+          }
+        }
+      }
+      if (type) out.set(type, fields);
+      i = j - 1;
+    }
+    return out;
+  };
+
+  check('shape: every setting the host sends is one the editor page reads, and neither side is alone', () => {
+    /*
+     * `EditorConfig` is still declared twice: once in `src/protocol.ts`, which every host
+     * reads, and once in `webview/main.ts` for what the page accepts. The protocol check
+     * above compares the messages, and `config` is one field of `init`, so what is inside
+     * it is not held by that check at all. This is the inside.
+     *
+     * The page's copy is the one left to remove. It stays for now because it is not this
+     * check's job to remove it, and while it stays this is what holds the two together.
+     *
+     * Both directions, and no exception, which is why `autoSave` no longer lives in the
+     * host's copy: it is read by the host when it decides to save and the page has no use
+     * for it, and a field in the page's config that the page never reads is one nobody can
+     * tell is unread. The folder server proved it was not needed by never sending it.
+     *
+     * Optionality is held one way. A field the host may omit and the page requires is a
+     * bug; the reverse is fine, since a page may tolerate more than one host sends.
+     */
+    const read = (...parts) => readFileSync(path.join(here, '..', ...parts), 'utf8');
+    const fieldsOf = (source, declaration) => {
+      const text = withoutComments(source);
+      const at = text.indexOf(declaration);
+      if (at < 0) return null;
+      const body = text.slice(at + declaration.length, text.indexOf('\n}\n', at));
+      const out = new Map();
+      for (const m of body.matchAll(/^\s{2}(\w+)(\??):/gm)) out.set(m[1], m[2] === '?');
+      return out;
+    };
+    const host = fieldsOf(read('src', 'protocol.ts'), 'interface EditorConfig {');
+    const page = fieldsOf(read('src', 'webview', 'main.ts'), 'interface EditorConfig {');
+    for (const [side, parsed] of [
+      ['the host', host],
+      ['the page', page],
+    ]) {
+      if (!parsed || !parsed.has('contentWidth')) {
+        return { ok: false, detail: `${side}'s EditorConfig parsed ${parsed ? parsed.size : 0} fields and contentWidth is not among them, so this check is reading the wrong thing` };
+      }
+    }
+    const wrong = [];
+    for (const [name, optional] of host) {
+      if (!page.has(name)) {
+        wrong.push(`the host sends ${name} and the editor page reads no such setting`);
+      } else if (optional && !page.get(name)) {
+        wrong.push(`the host may omit ${name} and the page requires it`);
+      }
+    }
+    for (const name of page.keys()) {
+      if (!host.has(name)) wrong.push(`the editor page reads ${name} and the VS Code host never sends it`);
+    }
+    return { ok: wrong.length === 0, detail: wrong.join('; ') };
+  });
+
+  check('shape: every message the page can send is one the host answers, and the host answers no other', () => {
+    /*
+     * `FromWebview` is declared once, in `src/protocol.ts`, so no two sides can disagree
+     * about its shape.
+     * What they can disagree about is whether a message is acted on: a variant with no
+     * `case` in the provider's switch is accepted, matched by the type, and dropped. The
+     * other direction matters as much, because a `case` for a message the union does not
+     * declare is a handler nothing can ever reach.
+     */
+    const source = readFileSync(path.join(here, '..', 'src', 'markdownEditorProvider.ts'), 'utf8');
+    const declared = messagesIn(readFileSync(path.join(here, '..', 'src', 'protocol.ts'), 'utf8'), 'FromWebview');
+    if (!declared || !declared.has('edit')) {
+      return { ok: false, detail: `the FromWebview union parsed ${declared ? declared.size : 0} messages, so this check is reading the wrong thing` };
+    }
+    const at = source.indexOf('onDidReceiveMessage');
+    if (at < 0) return { ok: false, detail: 'no onDidReceiveMessage in the provider, so there is no switch to read' };
+    const handled = new Set([...withoutComments(source.slice(at)).matchAll(/case '([a-zA-Z]+)':/g)].map((m) => m[1]));
+    const ignored = [...declared.keys()].filter((name) => !handled.has(name));
+    const unreachable = [...handled].filter((name) => !declared.has(name));
+    const wrong = [];
+    if (ignored.length) wrong.push(`the page can send ${ignored.join(', ')} and the host has no case for ${ignored.length > 1 ? 'them' : 'it'}`);
+    if (unreachable.length) wrong.push(`the host has a case for ${unreachable.join(', ')} and the page can send no such message`);
+    return { ok: wrong.length === 0, detail: wrong.join('; ') };
+  });
+
+  check('shape: every message the host can send is one the editor page declares, field for field', () => {
+    /*
+     * `ToWebview` is declared in `src/protocol.ts` for what a host sends, and again in
+     * `webview/main.ts` for what the page accepts.
+     *
+     * The reasoning here used to be that one declaration was impossible, because sharing it
+     * would mean the page importing from host code and the boundary check exists to stop
+     * that. That was wrong, and `src/protocol.ts` is the counter-example: a leaf that
+     * imports nothing is below all three hosts rather than inside one of them, so everybody
+     * can read it and no arrow points the wrong way. The page's copy is simply the one not
+     * yet removed, and until it is, this holds the two together.
+     *
+     * The rule is not symmetry. The page may accept a message field no VS Code host sends,
+     * because the folder server is a host too: `init.capabilities` is exactly that. What
+     * must not happen is the host sending a message, or a field, the page does not declare,
+     * because the page would ignore it in silence.
+     */
+    const read = (...parts) => readFileSync(path.join(here, '..', ...parts), 'utf8');
+    const host = messagesIn(read('src', 'protocol.ts'), 'ToWebview');
+    const page = messagesIn(read('src', 'webview', 'main.ts'), 'ToWebview');
+    // A parse that quietly found nothing would agree with anything, so it has to say so.
+    for (const [side, parsed] of [
+      ['the host', host],
+      ['the page', page],
+    ]) {
+      if (!parsed) return { ok: false, detail: `no ToWebview union found for ${side}, so this check is reading the wrong thing` };
+      for (const always of ['init', 'setContent']) {
+        if (!parsed.has(always)) {
+          return { ok: false, detail: `${side}'s union parsed ${parsed.size} messages and ${always} is not among them, so the parse is wrong` };
+        }
+      }
+    }
+    const wrong = [];
+    for (const [name, fields] of host) {
+      const theirs = page.get(name);
+      if (!theirs) {
+        wrong.push(`the host sends ${name} and the page declares no such message`);
+        continue;
+      }
+      const missing = [...fields].filter((f) => !theirs.has(f));
+      if (missing.length) wrong.push(`the host sends ${name} with ${missing.join(', ')} and the page does not declare ${missing.length > 1 ? 'those' : 'that'}`);
+    }
+    for (const name of page.keys()) {
+      if (!host.has(name)) wrong.push(`the page declares ${name} and the host's union has no such message`);
+    }
+    return { ok: wrong.length === 0, detail: wrong.join('; ') };
+  });
+
+  check('shape: VS Code sends every message the wire declares, because it is the host with nothing to degrade', () => {
+    /*
+     * The browser host carries a record of what it sends, message by message, and a check
+     * beside it that the record and the code agree. VS Code has no such record and should
+     * not need one: it is the host every other host is a reduction of, so the honest
+     * statement about it is that it sends all of them. Nothing said so, and nothing
+     * compared it to anything.
+     *
+     * What that leaves open is the mirror of the defect the other record was built for. A
+     * message added to `ToWebview` that only a browser tab ever sends is a feature missing
+     * from VS Code, silently, with the editor drawing whatever reads it in both places.
+     * The browser side of that is now a compile error; this side was not even a claim.
+     *
+     * Absolute rather than a list with exceptions. If a message genuinely belongs to one
+     * host only, this fails and somebody has to say so out loud and decide whether the
+     * difference belongs in the editor at all, which is the conversation `CLAUDE.md` asks
+     * for when a host starts differing. An exception list would let it be settled by
+     * whoever added the message, on their own.
+     */
+    const read = (...parts) => readFileSync(path.join(here, '..', ...parts), 'utf8');
+    const declared = messagesIn(read('src', 'protocol.ts'), 'ToWebview');
+    if (!declared?.has('init')) {
+      return { ok: false, detail: 'no ToWebview union found in protocol.ts, so this check is reading the wrong thing' };
+    }
+
+    /*
+     * The extension host is `src/` without the two host-specific folders and without the
+     * wire's own declaration, which names every message and would answer this question
+     * with itself. `\s*` rather than a space because `init` is sent as a multi-line object
+     * literal, and a one-line regex silently found the other fifteen and not that one.
+     */
+    const files = readdirSync(path.join(here, '..', 'src')).filter((f) => f.endsWith('.ts') && f !== 'protocol.ts');
+    const sent = new Set();
+    for (const file of files) {
+      for (const [, name] of read('src', file).matchAll(/postMessage\(\{\s*type: '(\w+)'/g)) sent.add(name);
+    }
+    if (!sent.size) return { ok: false, detail: 'no sends found in the extension host at all, so this check is reading the wrong thing' };
+
+    const never = [...declared.keys()].filter((name) => !sent.has(name)).sort();
+    const notOnTheWire = [...sent].filter((name) => !declared.has(name)).sort();
+    return {
+      ok: never.length === 0 && notOnTheWire.length === 0,
+      detail:
+        `${declared.size} declared, ${sent.size} sent from ${files.length} files` +
+        (never.length ? `; declared and never sent by VS Code ${JSON.stringify(never)}` : '') +
+        (notOnTheWire.length ? `; sent and not on the wire ${JSON.stringify(notOnTheWire)}` : ''),
+    };
+  });
+
+  check('shape: the editor gains no new import cycle, since a cycle fails at run time and nothing else would say so', () => {
+    /*
+     * 55 modules under `src/webview/` and no cycle among them.
+     *
+     * A cycle costs nothing until a module in it reads an imported binding while that
+     * module is still evaluating, and then it is `undefined` at run time, which in a
+     * webview is a blank editor and a console message. Nothing else sees it coming: the
+     * types are correct, the imports resolve, and only the order esbuild happens to
+     * choose decides whether it breaks. So the count is held at zero rather than at
+     * whatever it happens to be.
+     *
+     * There was one, `cellEditor` to `toolbar` to `tables` and back, which `pendingMarks`
+     * closed by living in the toolbar while both editors needed it. It has its own module
+     * now. KNOWN is the way back if a cycle ever has to be lived with for a while; an
+     * entry in it that no longer exists fails too, so it cannot be left behind.
+     */
+    const KNOWN = [];
+    const dir = path.join(here, '..', 'src', 'webview');
+    const names = readdirSync(dir)
+      .filter((f) => f.endsWith('.ts'))
+      .map((f) => f.slice(0, -3));
+    const has = new Set(names);
+    const edges = new Map(names.map((n) => [n, new Set()]));
+    for (const name of names) {
+      const source = readFileSync(path.join(dir, `${name}.ts`), 'utf8');
+      for (const m of source.matchAll(/^\s*(?:import|export)[^'"\n]*from\s+['"]\.\/([A-Za-z0-9_.-]+)['"]/gm)) {
+        const dep = m[1].replace(/\.ts$/, '');
+        if (has.has(dep) && dep !== name) edges.get(name).add(dep);
+      }
+    }
+    // Every strongly connected component of more than one module is a cycle.
+    const index = new Map();
+    const low = new Map();
+    const onStack = new Set();
+    const stack = [];
+    const found = [];
+    let next = 0;
+    const walk = (v) => {
+      index.set(v, next);
+      low.set(v, next);
+      next += 1;
+      stack.push(v);
+      onStack.add(v);
+      for (const w of edges.get(v)) {
+        if (!index.has(w)) {
+          walk(w);
+          low.set(v, Math.min(low.get(v), low.get(w)));
+        } else if (onStack.has(w)) {
+          low.set(v, Math.min(low.get(v), index.get(w)));
+        }
+      }
+      if (low.get(v) === index.get(v)) {
+        const part = [];
+        for (;;) {
+          const w = stack.pop();
+          onStack.delete(w);
+          part.push(w);
+          if (w === v) break;
+        }
+        if (part.length > 1) found.push(part.sort());
+      }
+    };
+    for (const n of names) if (!index.has(n)) walk(n);
+
+    // The graph has to have been read, or an empty one passes while proving nothing.
+    const totalEdges = [...edges.values()].reduce((sum, set) => sum + set.size, 0);
+    if (names.length < 20 || totalEdges < 50) {
+      return { ok: false, detail: `read ${names.length} modules and ${totalEdges} imports, which is too few to be the editor` };
+    }
+    const asText = (c) => c.join(' -> ');
+    const known = new Set(KNOWN.map((c) => asText([...c].sort())));
+    const fresh = found.filter((c) => !known.has(asText(c)));
+    const goneStale = [...known].filter((k) => !found.some((c) => asText(c) === k));
+    return {
+      ok: fresh.length === 0 && goneStale.length === 0,
+      detail: fresh.length
+        ? `new import cycle: ${fresh.map(asText).join('; ')}. A cycle works only while every binding in it is read inside a function; move what is shared into a module both sides import.`
+        : goneStale.length
+          ? `the known cycle ${goneStale.join('; ')} is gone: take it out of KNOWN in this check so no cycle is allowed at all`
+          : '',
+    };
+  });
+
   check('packaging: the maths library\'s licence notice is built and nothing keeps it out of the package', () => {
     // The typesetting library is MIT, which requires its notice to travel with the
     // copy. The build writes it beside the code it covers, and the only way it could
@@ -2672,6 +4608,190 @@ async function hostCases() {
       .filter((line) => line && !line.startsWith('#'));
     const excluded = ignore.some((rule) => /katex/i.test(rule) && !rule.startsWith('!'));
     return copied && !excluded;
+  });
+
+  check('shape: what the editor parses when a document opens does not grow', async () => {
+    /*
+     * The cost a person feels is the script parsed and evaluated every time a document
+     * opens. That was 2,158 KB before the editor was split, and 1,036 KB of it was
+     * grammars for languages nobody writes in a Markdown fence.
+     *
+     * **The entry's own size is the wrong measure, which a control caught.** With
+     * splitting, a new static import can land in a chunk the entry imports eagerly, so
+     * the entry stays the same size while the page parses more. What counts is the
+     * closure: the entry plus every chunk reachable from it by an import statement. A
+     * dynamic import is what makes a grammar cost nothing until a fence asks for it, so
+     * only those are excluded here.
+     *
+     * Built in memory, so the figure does not depend on whether the last build was a
+     * production one.
+     *
+     * A band rather than an exact figure, and the reason is the process rather than the
+     * code. An exact figure means every commit that touches the editor carries a one-line
+     * edit here, builders landing in parallel conflict on that line, and a number bumped
+     * to get an unrelated branch green is bumped without anyone reading it. So the ceiling
+     * has room for ordinary growth and the floor catches a real improvement: under it, the
+     * check fails asking to be lowered, because a passing check prints nothing and "you
+     * could lower this" in the detail of a pass is a sentence nobody reads.
+     *
+     * The band is wide next to what this exists to catch. `@codemirror/language-data`
+     * going eager again is a thousand kilobytes, forty times the headroom.
+     */
+    const CEILING_KB = 1250;
+    const FLOOR_KB = 1200;
+    /*
+     * Moved up 25 KB on 2026-09-29, after a run of features took the closure from 1,222 to
+     * 1,226 KB. Checked before moving it, which is the point of the check: the closure is the
+     * same eight files it has always been, no new library is reached by a static import, and
+     * the growth is Sheaf's own code in the entry. A band that is raised without that reading
+     * is a band that means nothing.
+     */
+    const built = await esbuild.build({
+      entryPoints: [path.join(here, '..', 'src', 'webview', 'main.ts')],
+      bundle: true, write: false, minify: true, splitting: true, format: 'esm',
+      platform: 'browser', target: 'es2020', metafile: true, logLevel: 'silent',
+      outdir: path.join(here, '..', 'media'), entryNames: 'webview', chunkNames: 'editor/[name]-[hash]',
+      absWorkingDir: path.join(here, '..'),
+    });
+    const outputs = built.metafile.outputs;
+    const entry = Object.keys(outputs).find((f) => f.endsWith('media/webview.js'));
+    if (!entry) return { ok: false, detail: 'no media/webview.js in the build, so this check lost its subject' };
+    const eager = new Set([entry]);
+    const stack = [entry];
+    while (stack.length) {
+      for (const imp of outputs[stack.pop()]?.imports ?? []) {
+        if (imp.kind === 'import-statement' && !eager.has(imp.path)) {
+          eager.add(imp.path);
+          stack.push(imp.path);
+        }
+      }
+    }
+    const deferred = Object.keys(outputs).length - eager.size;
+    // Nothing deferred would mean splitting stopped working, and the total would be
+    // under budget for the worst possible reason.
+    if (deferred < 50) return { ok: false, detail: `only ${deferred} files load on demand, so the editor is no longer split and this number means nothing` };
+    const kb = Math.round([...eager].reduce((sum, f) => sum + outputs[f].bytes, 0) / 1024);
+    return {
+      ok: kb <= CEILING_KB && kb >= FLOOR_KB,
+      detail:
+        kb > CEILING_KB
+          ? `${kb} KB is parsed when a document opens, over the ${CEILING_KB} KB ceiling, across ${eager.size} files. Something new is reached by a static import; ${deferred} files already wait for a dynamic one.`
+          : kb < FLOOR_KB
+            ? `${kb} KB is parsed when a document opens, ${FLOOR_KB - kb} KB under the floor, which is good: move CEILING_KB and FLOOR_KB here down to ${kb + 25} and ${kb - 25}`
+            : '',
+    };
+  });
+
+  check('packaging: everything the build writes under media/ is ignored by git', () => {
+    /*
+     * `media/` holds both kinds of file: a handful that are source, the stylesheets and
+     * the icon, and a great many the build writes. Every generated one has to be ignored,
+     * or a session running `git add -A` commits it, and generated files in a repository
+     * rot on the next build and conflict on every branch that rebuilt them.
+     *
+     * This was written because the editor's chunk directory was not ignored when it was
+     * added: `.gitignore` named `webview.js`, its map, the KaTeX files and mermaid, and
+     * the 124 new files sat there as untracked additions waiting for somebody's `add -A`.
+     * Nothing failed, because nothing was looking.
+     *
+     * Asked of `git check-ignore` rather than by reading `.gitignore`, so a pattern that
+     * looks right and does not match is caught the same as a missing line.
+     *
+     * The paths are named here as well as read off the disk, because `media/` in a
+     * checkout nobody has built yet holds the source files and nothing else. Reading the
+     * disk alone, the check found no generated entry, decided it was looking in the wrong
+     * place and failed, so `npm run gates` could not pass in a fresh clone or a new
+     * worktree: the suites run before the build. `git check-ignore` answers about a path
+     * rather than a file, so naming them works in either state, and the disk is still
+     * read on top of the list, which is what catches an output nobody added to the list.
+     */
+    const dir = path.join(here, '..', 'media');
+    // The stylesheets and the icon are source; everything else here is written by a build.
+    const SOURCE = ['webview.css', 'browser-theme.css', 'icon.svg', 'icon-small.svg', 'icon.png'];
+    // What the build writes, whether or not it has run in this checkout yet. A new output
+    // belongs on this list the same as it belongs in `.gitignore`.
+    const WRITES = [
+      'media/webview.js',
+      'media/webview.js.map',
+      'media/editor/',
+      'media/katex.css',
+      'media/katex-fonts/',
+      'media/katex-LICENSE.txt',
+      'media/mermaid/',
+    ];
+    const present = readdirSync(dir, { withFileTypes: true });
+    // The guard the list needs: if `media/` moved or the source files were renamed, the
+    // names above describe somewhere else and everything past here would pass on nothing.
+    const missing = SOURCE.filter((name) => !present.some((e) => e.name === name));
+    if (missing.length) {
+      return { ok: false, detail: `${missing.join(', ')} ${missing.length === 1 ? 'is' : 'are'} not in media/, so this check is looking in the wrong place` };
+    }
+    const generated = new Set(WRITES);
+    for (const e of present) {
+      if (!SOURCE.includes(e.name)) generated.add(e.isDirectory() ? `media/${e.name}/` : `media/${e.name}`);
+    }
+    const notIgnored = [...generated].filter((rel) => {
+      const r = spawnSync('git', ['check-ignore', '-q', rel], { cwd: path.join(here, '..') });
+      return r.status !== 0;
+    });
+    return {
+      ok: notIgnored.length === 0,
+      detail: notIgnored.length
+        ? `${notIgnored.join(', ')} ${notIgnored.length === 1 ? 'is' : 'are'} written by the build and not ignored, so a \`git add -A\` would commit ${notIgnored.length === 1 ? 'it' : 'them'}`
+        : '',
+    };
+  });
+
+  check('packaging: the editor\'s own chunks are built and nothing keeps them out of the package', () => {
+    /*
+     * The editor is split, so `media/webview.js` is an entry that fetches a grammar from
+     * `media/editor/` when a fence asks for one. A packaging rule that dropped that folder
+     * would leave every fenced code block unhighlighted, and nothing would fail at build
+     * time: the entry still builds, still loads, and still edits text.
+     *
+     * Both halves are checked, because either alone would pass while the other was broken:
+     * the build has to emit the chunks, and the package has to carry them.
+     */
+    const build = readFileSync(path.join(here, '..', 'esbuild.mjs'), 'utf8');
+    const emits = /splitting:\s*true/.test(build) && /chunkNames:\s*'editor\//.test(build);
+    const ignore = readFileSync(path.join(here, '..', '.vscodeignore'), 'utf8')
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line && !line.startsWith('#'));
+    // A rule naming the folder, or one sweeping up every .js, would take the chunks with it.
+    const excluded = ignore.some((rule) => !rule.startsWith('!') && (/editor/i.test(rule) || /(^|\/)\*+\.js$/.test(rule) || /^media(\/\*+)?$/.test(rule)));
+    return {
+      ok: emits && !excluded,
+      detail: !emits
+        ? 'esbuild.mjs no longer splits the editor into chunks under media/editor/'
+        : excluded
+          ? 'a .vscodeignore rule would keep the editor\'s chunks out of the package, so every fenced code block would lose its highlighting'
+          : '',
+    };
+  });
+
+  check('packaging: the diagram library, its chunks and its licence are built and nothing keeps them out of the package', () => {
+    // Mermaid ships as its published module and the chunks it imports by relative
+    // path. A packaging rule that dropped `.mjs` files, or the folder, would leave
+    // every diagram showing a loading error with nothing failing at build time.
+    const build = readFileSync(path.join(here, '..', 'esbuild.mjs'), 'utf8');
+    const copied =
+      /mermaid\.esm\.min\.mjs/.test(build) &&
+      /chunks', 'mermaid\.esm\.min'/.test(build) &&
+      /join\(to, 'LICENSE\.txt'\)/.test(build);
+    const ignore = readFileSync(path.join(here, '..', '.vscodeignore'), 'utf8')
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line && !line.startsWith('#'));
+    // A rule naming Mermaid, one dropping every module (`*.mjs`, `**/*.mjs`), or one
+    // dropping the media folder. `esbuild.mjs` is one file, and not one of these.
+    const excluded = ignore.some(
+      (rule) => !rule.startsWith('!') && (/mermaid/i.test(rule) || /(^|\/)\*+\.mjs$/.test(rule) || /^media\/?\**$/.test(rule))
+    );
+    // The editor looks for the module beside itself, under the same name the build writes.
+    const source = readFileSync(path.join(here, '..', 'src', 'webview', 'mermaid.ts'), 'utf8');
+    const sameName = source.includes("'mermaid/mermaid.esm.min.mjs'");
+    return copied && !excluded && sameName;
   });
 
   // ---- View blocks: the data files they read, through the host ----
@@ -3152,6 +5272,73 @@ async function hostCases() {
     );
   });
 
+  check('front matter: a state one editor keeps is handed to the next editor on that document, and to no other', async () => {
+    // The same store as the folds and the widths, for the same reason: how much
+    // metadata somebody wants to look at is not something to write into their file.
+    const ctx = sheafWindow();
+    const state = workspaceMemento();
+    const reply = (panel) => panel.posted.filter((message) => message.type === 'frontMatterState');
+    const first = await openWithStorage(ctx, state, '/ws/notes.md', NOTED);
+    first.panel.receive({ type: 'frontMatterStateWrite', state: 'shown' });
+    await settle();
+    first.panel.close();
+    const again = await openWithStorage(ctx, state, '/ws/notes.md', NOTED);
+    again.panel.receive({ type: 'frontMatterStateRead', id: 'frontmatter-1' });
+    const other = await openWithStorage(ctx, state, '/ws/other.md', NOTED);
+    other.panel.receive({ type: 'frontMatterStateRead', id: 'frontmatter-1' });
+    await settle();
+    return (
+      same(reply(again.panel), [{ type: 'frontMatterState', id: 'frontmatter-1', state: 'shown' }]) &&
+      // Null rather than a state, which is the page's word for "follow the setting".
+      same(reply(other.panel), [{ type: 'frontMatterState', id: 'frontmatter-1', state: null }]) &&
+      again.document.text === NOTED
+    );
+  });
+
+  check('the heading list: a fold one editor keeps is handed to the next editor on that document, and to no other', async () => {
+    // Two elements, two keys, one store. They are separate messages rather than one
+    // carrying an element name, which is worth revisiting if a third ever arrives.
+    const ctx = sheafWindow();
+    const state = workspaceMemento();
+    const reply = (panel) => panel.posted.filter((message) => message.type === 'outlineState');
+    const first = await openWithStorage(ctx, state, '/ws/notes.md', NOTED);
+    first.panel.receive({ type: 'outlineStateWrite', state: 'collapsed' });
+    await settle();
+    first.panel.close();
+    const again = await openWithStorage(ctx, state, '/ws/notes.md', NOTED);
+    again.panel.receive({ type: 'outlineStateRead', id: 'outline-1' });
+    const other = await openWithStorage(ctx, state, '/ws/other.md', NOTED);
+    other.panel.receive({ type: 'outlineStateRead', id: 'outline-1' });
+    await settle();
+    return (
+      same(reply(again.panel), [{ type: 'outlineState', id: 'outline-1', state: 'collapsed' }]) &&
+      same(reply(other.panel), [{ type: 'outlineState', id: 'outline-1', state: null }]) &&
+      again.document.text === NOTED
+    );
+  });
+
+  check('front matter: a state nobody could have written is read as none, and null forgets one', async () => {
+    const ctx = sheafWindow();
+    const state = workspaceMemento();
+    const reply = (panel) => panel.posted.filter((message) => message.type === 'frontMatterState');
+    const { panel } = await openWithStorage(ctx, state, '/ws/notes.md', NOTED);
+    // Whatever else is in that storage, a state Sheaf does not know is not one to act on.
+    panel.receive({ type: 'frontMatterStateWrite', state: 'enormous' });
+    await settle();
+    panel.receive({ type: 'frontMatterStateRead', id: 'frontmatter-1' });
+    await settle();
+    panel.receive({ type: 'frontMatterStateWrite', state: 'hidden' });
+    await settle();
+    panel.receive({ type: 'frontMatterStateWrite', state: null });
+    await settle();
+    panel.receive({ type: 'frontMatterStateRead', id: 'frontmatter-2' });
+    await settle();
+    return same(reply(panel), [
+      { type: 'frontMatterState', id: 'frontmatter-1', state: null },
+      { type: 'frontMatterState', id: 'frontmatter-2', state: null },
+    ]);
+  });
+
   check('comments: keeping a collapse writes nothing into the document or beside it', async () => {
     const ctx = sheafWindow();
     const state = workspaceMemento();
@@ -3267,7 +5454,20 @@ for (const { name, run } of cases) {
   let ok = false;
   let detail = '';
   try {
-    ok = await run();
+    /*
+     * A check says true or false, or it says `{ ok, detail }` and explains itself.
+     * This took the second shape as a pass, because an object is truthy, so every
+     * check written that way reported what it found and passed regardless. One of
+     * them held that the editor bundle is the same bytes in both hosts, which is the
+     * guarantee the whole host split rests on, and it could not have failed.
+     */
+    const result = await run();
+    if (result && typeof result === 'object') {
+      ok = result.ok === true;
+      if (result.detail) detail = ` ${result.detail}`;
+    } else {
+      ok = result === true;
+    }
   } catch (err) {
     detail = ` threw: ${err.message}`;
   }

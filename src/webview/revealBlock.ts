@@ -53,6 +53,25 @@ export function toggleBlockReveal(view: EditorView): boolean {
 }
 
 /**
+ * Edit Markdown one scope in, where the editor's whole document is the thing to show:
+ * a table cell, which opens a CodeMirror view holding that one cell's inline Markdown.
+ *
+ * There is no block to find in a cell and no `blockRangeAt` answer to trust, because the
+ * cell's parser is built without the block constructs. The range is `0` to the end, which
+ * is the cell, and `revealField` maps it through edits with the bias that makes text typed
+ * at either edge join it, so the source stays shown while the cell is typed into.
+ *
+ * Here rather than in the cell editor so that the key, the toolbar button and the
+ * right-click item are one function: three surfaces that each toggled their own reveal
+ * would disagree the moment one of them was changed.
+ */
+export function toggleWholeReveal(view: EditorView): boolean {
+  if (view.state.field(revealField, false)) return closeReveal(view);
+  view.dispatch({ effects: setReveal.of({ from: 0, to: view.state.doc.length }) });
+  return true;
+}
+
+/**
  * The double-click reveal, for anyone who turns `sheaf.doubleClickToEditSource`
  * on. It selects the word under the pointer as well, so typing replaces the word
  * rather than landing inside it. False leaves the click to CodeMirror, whose own

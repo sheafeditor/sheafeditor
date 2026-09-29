@@ -30,9 +30,9 @@ const ref = arg('ref', 'HEAD');
 const out = resolve(REPO, arg('out', join('.claude', 'scratch', 'build')));
 
 /** Run a command, inheriting output, and stop the script if it fails. */
-function step(label, cmd, args, cwd) {
+function step(label, cmd, args, cwd, env) {
   process.stdout.write(`${label}\n`);
-  const r = spawnSync(cmd, args, { cwd, stdio: 'inherit', shell: false });
+  const r = spawnSync(cmd, args, { cwd, stdio: 'inherit', shell: false, env: env ? { ...process.env, ...env } : process.env });
   if (r.status !== 0) {
     process.stderr.write(`${label} failed\n`);
     process.exit(r.status ?? 1);
@@ -61,7 +61,15 @@ if (untar.status !== 0) {
 }
 
 step('Installing dependencies', 'npm', ['ci', '--no-audit', '--no-fund'], out);
-step('Packaging', 'npm', ['run', 'package'], out);
+// The export has no `.git`, so the build cannot ask which commit it is. This is the
+// only place that knows, and a package whose own About says `unknown` would defeat
+// the point of building it from a named commit. The tree is clean by construction:
+// `git archive` takes what is committed and nothing else.
+step('Packaging', 'npm', ['run', 'package'], out, {
+  SHEAF_BUILD_COMMIT: sha.stdout.trim(),
+  SHEAF_BUILD_BRANCH: ref,
+  SHEAF_BUILD_DIRTY: '0',
+});
 
 const vsix = readdirSync(out).filter((f) => f.endsWith('.vsix'));
 for (const f of vsix) process.stdout.write(`\n${join(out, f)}\n`);

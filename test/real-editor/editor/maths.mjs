@@ -151,4 +151,150 @@ export const scenarios = [
       };
     },
   },
+  {
+    id: 'render.maths.e06',
+    feature: 'render.maths',
+    name: 'A space just inside a dollar stops it opening or closing, so a sentence about money stays a sentence',
+    run: async (S) => {
+      // `$ 5` cannot open and `y $` cannot close. Without both halves, "it cost $ 5 or $ 10"
+      // becomes one half-drawn formula in the middle of a sentence.
+      const doc = 'Intro.\n\nIt cost $ 5 or $ 10, and x $ y $ z as well.\n\nAfter line\n';
+      await S.fresh('maths-space-inside', doc);
+      await S.sleep(900);
+      const m = await S.eval(() => ({
+        katex: document.querySelectorAll('.katex').length,
+        text: [...document.querySelectorAll('.cm-line')].map((l) => l.textContent).find((t) => t.startsWith('It cost')) ?? null,
+      }));
+      const d = await S.disk();
+      const ok = m.katex === 0 && m.text === 'It cost $ 5 or $ 10, and x $ y $ z as well.' && d === doc;
+      return { ok, detail: `${j(m)}${d === doc ? '' : '; the file changed'}` };
+    },
+  },
+  {
+    id: 'render.maths.e07',
+    feature: 'render.maths',
+    name: 'A dollar followed by a digit cannot close a span, so two prices in a sentence stay two prices',
+    run: async (S) => {
+      // A range written with no space around the dash, so the space rule cannot be what keeps it
+      // text: the `$` before `10` is preceded by `-`, and only the digit after it stops it closing.
+      const doc = 'Intro.\n\nIt cost $5-$10 each, or $20 for two.\n\nAfter line\n';
+      await S.fresh('maths-digit-after', doc);
+      await S.sleep(900);
+      const m = await S.eval(() => ({
+        katex: document.querySelectorAll('.katex').length,
+        text: [...document.querySelectorAll('.cm-line')].map((l) => l.textContent).find((t) => t.startsWith('It cost')) ?? null,
+      }));
+      const d = await S.disk();
+      const ok = m.katex === 0 && m.text === 'It cost $5-$10 each, or $20 for two.' && d === doc;
+      return { ok, detail: `${j(m)}${d === doc ? '' : '; the file changed'}` };
+    },
+  },
+  {
+    id: 'render.maths.e08',
+    feature: 'render.maths',
+    name: 'An opening dollar gives up at the end of its line rather than reaching down the page for a closer',
+    run: async (S) => {
+      const doc = 'Intro.\n\nA stray $ here on one line\n\nand a stray $ here on another.\n\nAfter line\n';
+      await S.fresh('maths-across-lines', doc);
+      await S.sleep(900);
+      const m = await S.eval(() => ({
+        katex: document.querySelectorAll('.katex').length,
+        lines: [...document.querySelectorAll('.cm-line')].map((l) => l.textContent).filter((t) => t.includes('stray')),
+      }));
+      const d = await S.disk();
+      const ok = m.katex === 0 && m.lines.length === 2 && m.lines.every((t) => t.includes('$')) && d === doc;
+      return { ok, detail: `${j(m)}${d === doc ? '' : '; the file changed'}` };
+    },
+  },
+  {
+    id: 'render.maths.e09',
+    feature: 'render.maths',
+    name: 'A stray dollar before a code span does not swallow the code',
+    run: async (S) => {
+      // The no-backtick rule. Without it an earlier `$` reaches across the code span and takes it
+      // into a formula, and the code a person wrote stops being code.
+      const doc = 'Intro.\n\nCosts $20 when `a $ b` is the flag, per unit.\n\nAfter line\n';
+      await S.fresh('maths-backtick', doc);
+      await S.sleep(900);
+      const m = await S.eval(() => ({
+        katex: document.querySelectorAll('.katex').length,
+        code: [...document.querySelectorAll('.tok-inline-code')].map((e) => e.textContent),
+      }));
+      const d = await S.disk();
+      const ok = m.katex === 0 && m.code.some((t) => t.includes('a $ b')) && d === doc;
+      return { ok, detail: `${j(m)}${d === doc ? '' : '; the file changed'}` };
+    },
+  },
+  {
+    id: 'render.maths.e10',
+    feature: 'render.maths',
+    name: 'A backslashed dollar inside an equation is a dollar sign in the equation, not its end',
+    run: async (S) => {
+      const doc = 'Intro.\n\nThe price is $c = \\$5 + x$ altogether.\n\nAfter line\n';
+      await S.fresh('maths-escaped-inside', doc);
+      await S.sleep(900);
+      const m = await S.eval(() => {
+        const nodes = [...document.querySelectorAll('.katex')];
+        return { katex: nodes.length, first: nodes[0]?.textContent ?? null };
+      });
+      const d = await S.disk();
+      const ok = m.katex === 1 && (m.first ?? '').includes('$') && d === doc;
+      return { ok, detail: `${j(m)}${d === doc ? '' : '; the file changed'}` };
+    },
+  },
+  {
+    id: 'render.maths.e11',
+    feature: 'render.maths',
+    name: 'A $$ block inside a fence, a quote or a list item stays as written',
+    run: async (S) => {
+      // Narrower than github.com on purpose: the cost of it is source shown, and the cost of the
+      // other way is something drawn wrongly inside a block that meant something else.
+      const doc =
+        'Intro.\n\n```\n$$\na^2\n$$\n```\n\n> $$\n> b^2\n> $$\n\n- $$\n  c^2\n  $$\n\nAfter line\n';
+      await S.fresh('maths-nested-blocks', doc);
+      await S.sleep(1000);
+      const m = await S.eval(() => ({
+        blocks: document.querySelectorAll('.md-math-block').length,
+        katex: document.querySelectorAll('.katex').length,
+      }));
+      const d = await S.disk();
+      return { ok: m.blocks === 0 && d === doc, detail: `${j(m)}${d === doc ? '' : '; the file changed'}` };
+    },
+  },
+  {
+    id: 'render.maths.e12',
+    feature: 'render.maths',
+    name: 'A $$ opened and never closed leaves the rest of the document as written',
+    run: async (S) => {
+      // The same question as a fence, answered the other way: a block stays inside one paragraph,
+      // so an opener with no closer cannot take the page with it.
+      const doc = 'Intro.\n\n$$\na^2 + b^2\n\nA paragraph that is not maths.\n\nAnother one.\n';
+      await S.fresh('maths-unclosed', doc);
+      await S.sleep(1000);
+      const m = await S.eval(() => ({
+        blocks: document.querySelectorAll('.md-math-block').length,
+        plain: [...document.querySelectorAll('.cm-line')].some((l) => l.textContent.startsWith('A paragraph that is not maths')),
+      }));
+      const d = await S.disk();
+      return { ok: m.blocks === 0 && m.plain && d === doc, detail: `${j(m)}${d === doc ? '' : '; the file changed'}` };
+    },
+  },
+  {
+    id: 'render.maths.e13',
+    feature: 'render.maths',
+    name: 'An equation KaTeX cannot read shows its source and says what is wrong, rather than drawing nothing',
+    run: async (S) => {
+      const doc = 'Intro.\n\n$$\n\\frac{1}{\n$$\n\nAfter line\n';
+      await S.fresh('maths-bad-tex', doc);
+      await S.sleep(1000);
+      const m = await S.eval(() => ({
+        errors: document.querySelectorAll('.md-math-error, .md-math .is-error').length,
+        text: [...document.querySelectorAll('.cm-line')].map((l) => l.textContent).join(' | ').slice(0, 120),
+      }));
+      const errs = await S.errors();
+      const d = await S.disk();
+      const ok = m.text.includes('\\frac{1}{') && d === doc && errs.length === 0;
+      return { ok, detail: `${j(m)}; console ${j(errs)}${d === doc ? '' : '; the file changed'}` };
+    },
+  },
 ];

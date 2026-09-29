@@ -60,7 +60,7 @@ function copyRef(doc: string, from: number, to: number): string {
 
 export const scenarios: Scenario[] = [
   {
-    name: 'a right-click on a paragraph opens on Turn into, with Edit Markdown under it and nothing the keyboard already binds',
+    name: 'a right-click on a paragraph opens on Edit Markdown, with Copy ref under it and nothing the keyboard already binds',
     run: () => {
       const p = mountProse('# Title\n\nA paragraph of text.');
       p.select(14);
@@ -70,7 +70,7 @@ export const scenarios: Scenario[] = [
       const shown = m.labels();
       m.close();
       p.destroy();
-      return JSON.stringify(shown) === JSON.stringify(['Turn into', 'Edit Markdown', 'Highlight', 'Inline code', 'Link', 'Clear formatting', 'Copy ref']);
+      return JSON.stringify(shown) === JSON.stringify(['Edit Markdown', 'Copy ref', 'Turn into', 'Highlight', 'Inline code', 'Link', 'Clear formatting']);
     },
   },
   {
@@ -100,7 +100,7 @@ export const scenarios: Scenario[] = [
     },
   },
   {
-    name: 'the menu opens from the keyboard onto Turn into, the arrows walk the new order, and Escape gives the caret back',
+    name: 'the menu opens from the keyboard onto Edit Markdown, the arrows walk the new order, and Escape gives the caret back',
     run: () => {
       const p = mountProse('A paragraph of text.');
       p.select(3);
@@ -117,7 +117,7 @@ export const scenarios: Scenario[] = [
       const returned = document.activeElement === before;
       m.close();
       p.destroy();
-      return seen.join('|') === 'Turn into|Edit Markdown|Highlight|Inline code' && closed && returned;
+      return seen.join('|') === 'Edit Markdown|Copy ref|Turn into|Highlight' && closed && returned;
     },
   },
   {

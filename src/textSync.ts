@@ -69,6 +69,272 @@ export function minimalEdit(
 }
 
 /**
+ * Two changes to the same text put together by character span, one span each.
+ *
+ * This is the finer of the two ways `mergeOutsideChange` tries, and the only one
+ * that can put together two changes inside a single line: a cell an agent rewrote
+ * and a cell the person is typing in, three columns along the same table row.
+ */
+function mergeSpans(base: string, mine: string, theirs: string): string | null {
+  const ours = minimalEdit(base, mine);
+  const other = minimalEdit(base, theirs);
+  /*
+   * Refused unless the two spans are wholly apart. Strictly apart, not merely
+   * non-overlapping: two insertions at the very same offset are each zero
+   * characters wide and so overlap nothing, but there is no answer to which of
+   * them goes first, and putting one inside the other makes a word neither person
+   * typed. `Start` typed into as `StartQ` while something else made it `Started
+   * differently` came out as `StartQed differently`, which is the kind of text a
+   * person cannot account for afterwards.
+   *
+   * The cost is that a change immediately after another is refused too, and the
+   * person keeps theirs. Refusing a merge loses a change that can be made again;
+   * a wrong merge writes a sentence nobody wrote.
+   */
+  if (ours.start <= other.end && other.start <= ours.end) return null;
+  // Ahead of the other change, so its offsets in the other's text are its own.
+  if (ours.end <= other.start) return theirs.slice(0, ours.start) + ours.replacement + theirs.slice(ours.end);
+  const shift = other.replacement.length - (other.end - other.start);
+  return theirs.slice(0, ours.start + shift) + ours.replacement + theirs.slice(ours.end + shift);
+}
+
+/** Lines [start, end) of the base became `lines`. */
+interface Hunk {
+  start: number;
+  end: number;
+  lines: string[];
+}
+
+/**
+ * How large a region of differing lines is still diffed line by line. The table
+ * below is one cell per pair of differing lines, so the cost is the product of the
+ * two sides. A region past this is somebody replacing the whole document, where
+ * there is nothing to put together anyway.
+ */
+const DIFF_CELL_LIMIT = 4_000_000;
+
+/**
+ * How much of the longer of two lines has to be shared, in tenths, for them to count
+ * as one line that changed rather than two different lines.
+ */
+const SAME_LINE_SHARE = 6;
+
+/** Lines shorter than this are too short to judge by how much they share. */
+const SAME_LINE_FLOOR = 8;
+
+/**
+ * Whether these are the same line, one of them changed, rather than two unrelated
+ * lines.
+ *
+ * The line diff needs this as well as equality, and a merge that loses work is what
+ * happens without it. Something writing the file read it a moment ago, so its copy of
+ * the line being typed in is short of the last few letters. To a diff that only knows
+ * equality, that line is gone and another has arrived, and so a paragraph deleted
+ * right beside it has no unchanged line between the two to anchor on: the deletion and
+ * the typed line collapse into one range, the range disagrees with the person's typing,
+ * and the deletion is dropped along with it. The agent is left believing it removed
+ * something that is still there.
+ *
+ * Shared prefix and suffix is the measure, because that is the shape of the difference
+ * between a line and the same line typed further into. A blank line is never the same
+ * line as one with something on it, and a short line is not judged this way at all,
+ * where a few shared characters are easy to come by and the cost of being wrong is a
+ * line of somebody's prose replaced by another.
+ */
+function sameLineChanged(a: string, b: string): boolean {
+  if (a === b) return true;
+  const longest = Math.max(a.length, b.length);
+  if (longest < SAME_LINE_FLOOR) return false;
+  if (a.trim() === '' || b.trim() === '') return false;
+  let pre = 0;
+  while (pre < a.length && pre < b.length && a[pre] === b[pre]) pre++;
+  let post = 0;
+  while (
+    post < a.length - pre &&
+    post < b.length - pre &&
+    a[a.length - 1 - post] === b[b.length - 1 - post]
+  ) {
+    post++;
+  }
+  return (pre + post) * 10 >= longest * SAME_LINE_SHARE;
+}
+
+/**
+ * Every place `next` differs from `base`, a line at a time, or null when the region
+ * that differs is too large to diff.
+ *
+ * Common lines at the start and end are trimmed first, which is nearly all of a
+ * document, and the shortest edit over what is left is read off an LCS table. The
+ * table matches a line against the same line changed as well as against itself, so
+ * a changed line anchors the ranges around it instead of reading as one line gone
+ * and another arrived. A line matched that way is still a change, and comes back as
+ * a range of its own.
+ */
+function lineHunks(base: string[], next: string[]): Hunk[] | null {
+  let pre = 0;
+  while (pre < base.length && pre < next.length && base[pre] === next[pre]) pre++;
+  let post = 0;
+  while (
+    post < base.length - pre &&
+    post < next.length - pre &&
+    base[base.length - 1 - post] === next[next.length - 1 - post]
+  ) {
+    post++;
+  }
+  const a = base.slice(pre, base.length - post);
+  const b = next.slice(pre, next.length - post);
+  if (a.length === 0 && b.length === 0) return [];
+  if (a.length === 0) return [{ start: pre, end: pre, lines: b }];
+  if (b.length === 0) return [{ start: pre, end: pre + a.length, lines: [] }];
+  if (a.length * b.length > DIFF_CELL_LIMIT) return null;
+  const width = b.length + 1;
+  const common = new Int32Array((a.length + 1) * width);
+  for (let i = a.length - 1; i >= 0; i--) {
+    for (let j = b.length - 1; j >= 0; j--) {
+      common[i * width + j] = sameLineChanged(a[i], b[j])
+        ? common[(i + 1) * width + j + 1] + 1
+        : Math.max(common[(i + 1) * width + j], common[i * width + j + 1]);
+    }
+  }
+  const hunks: Hunk[] = [];
+  let open: Hunk | undefined;
+  let i = 0;
+  let j = 0;
+  while (i < a.length || j < b.length) {
+    if (i < a.length && j < b.length && sameLineChanged(a[i], b[j])) {
+      // A line both sides have closes whatever was open, and is a range of its own
+      // when it is that line changed rather than that line kept.
+      if (a[i] !== b[j]) hunks.push({ start: pre + i, end: pre + i + 1, lines: [b[j]] });
+      open = undefined;
+      i++;
+      j++;
+      continue;
+    }
+    if (!open) {
+      open = { start: pre + i, end: pre + i, lines: [] };
+      hunks.push(open);
+    }
+    // Which side to step is the table's answer, so the hunks are as few as the
+    // shortest edit allows. A line dropped and a line added at one place land in
+    // one hunk, which is what a rewritten line is.
+    if (j >= b.length || (i < a.length && common[(i + 1) * width + j] >= common[i * width + j + 1])) {
+      open.end = pre + ++i;
+    } else {
+      open.lines.push(b[j++]);
+    }
+  }
+  return hunks;
+}
+
+/** `lines` with `hunks` applied, where the hunks' line numbers start at `offset`. */
+function applyHunks(lines: string[], hunks: Hunk[], offset: number): string[] {
+  const out: string[] = [];
+  let at = 0;
+  for (const hunk of hunks) {
+    out.push(...lines.slice(at, hunk.start - offset), ...hunk.lines);
+    at = hunk.end - offset;
+  }
+  out.push(...lines.slice(at));
+  return out;
+}
+
+/** What putting two changes together came to. */
+export interface Merged {
+  /** The text they make together. Always something: at worst it is the person's own. */
+  text: string;
+  /** True when part of the other change could not be kept and is not in `text`. */
+  dropped: boolean;
+}
+
+/**
+ * The person's change and somebody else's, both made to the same text, put together.
+ *
+ * This is what stops an agent's write being lost. Something else writes the file
+ * while a person is typing in it, and both changes are real: the person's letters
+ * and, say, a cell an agent rewrote three paragraphs away. Planning the person's
+ * text straight onto the file, which is what used to happen, silently takes the
+ * other change back out, because the text the person's editor holds was read
+ * before that change existed.
+ *
+ * The two are compared a line at a time, because a line is the unit git stores and
+ * the unit an agent writes. Each side becomes a list of changed line ranges, and a
+ * range only ever has to agree with the ranges it actually overlaps. Everywhere else
+ * both are applied to the base. This is what lets an agent that rewrote two tables
+ * in one write keep both of them: a single span from the first table to the second
+ * would cover the person's typing in between and be refused outright.
+ *
+ * Ranges that do overlap are settled between themselves, and settling one costs
+ * nothing anywhere else. That is the difference that matters in practice, because an
+ * agent writing a file it read a moment ago is stale on the line being typed and
+ * current everywhere else: all-or-nothing threw away the whole write for the sake of
+ * the one line, which is the case this is really for. Inside an overlap the finer
+ * character merge is tried first, so two edits to different cells of one row still
+ * come together. When even that has no answer the person at the keyboard keeps
+ * theirs, those lines of the other change are dropped, and `dropped` says so.
+ *
+ * Every text here is in one set of line endings. The caller converts first.
+ */
+export function mergeOutsideChange(base: string, mine: string, theirs: string): Merged {
+  if (theirs === base) return { text: mine, dropped: false };
+  if (mine === base) return { text: theirs, dropped: false };
+  if (mine === theirs) return { text: mine, dropped: false };
+  const baseLines = base.split('\n');
+  const ours = lineHunks(baseLines, mine.split('\n'));
+  const other = lineHunks(baseLines, theirs.split('\n'));
+  if (!ours || !other) {
+    // Too much of it differs to compare line by line, so the whole texts are all
+    // there is to go on.
+    const spans = mergeSpans(base, mine, theirs);
+    return spans === null ? { text: mine, dropped: true } : { text: spans, dropped: false };
+  }
+  /*
+   * Every changed range from both sides in order, so a run of them that overlaps can
+   * be taken together. An insertion goes ahead of a rewrite that starts at the same
+   * line: the new lines land before the rewritten ones, which is an order rather
+   * than a guess, and it is the only thing to decide between two changes that share
+   * a line without either covering any of the other's.
+   */
+  const ranges = [
+    ...ours.map((hunk) => ({ hunk, mine: true })),
+    ...other.map((hunk) => ({ hunk, mine: false })),
+  ].sort((a, b) => a.hunk.start - b.hunk.start || a.hunk.end - b.hunk.end);
+  const together: string[] = [];
+  let at = 0;
+  let dropped = false;
+  for (let i = 0; i < ranges.length; ) {
+    // As far as this run of overlapping ranges reaches. Two ranges from one side
+    // never overlap, so a run of more than one always holds both sides.
+    let end = ranges[i].hunk.end;
+    let next = i + 1;
+    while (next < ranges.length && ranges[next].hunk.start < end) {
+      end = Math.max(end, ranges[next].hunk.end);
+      next++;
+    }
+    const run = ranges.slice(i, next);
+    const start = run[0].hunk.start;
+    together.push(...baseLines.slice(at, start));
+    if (run.length === 1) {
+      together.push(...run[0].hunk.lines);
+    } else {
+      const region = baseLines.slice(start, end);
+      const side = (isMine: boolean) =>
+        applyHunks(region, run.filter((r) => r.mine === isMine).map((r) => r.hunk), start).join('\n');
+      const settled = mergeSpans(region.join('\n'), side(true), side(false));
+      if (settled === null) {
+        together.push(...side(true).split('\n'));
+        dropped = true;
+      } else {
+        together.push(...settled.split('\n'));
+      }
+    }
+    at = end;
+    i = next;
+  }
+  together.push(...baseLines.slice(at));
+  return { text: together.join('\n'), dropped };
+}
+
+/**
  * The document as the webview holds it: every line ending written as the newline
  * CodeMirror turns it into. This is what the host must send, at `init` and at every
  * `setContent`. Sent anything else, the webview is left diffing the newlines it holds
@@ -192,8 +458,16 @@ export class DocumentSync {
    * The document changed. Pushes it to the webview unless the webview is ahead, and
    * says whether it pushed, so the caller knows whether the webview has seen this
    * document yet.
+   *
+   * `tookTypedText` has no default on purpose, so a host that has not decided what to
+   * say is a compile error rather than a quiet `false`. It had one, and the host behind
+   * a browser tab took it: that host calls this with the text alone, so a write landing
+   * from disk was never marked as taking anything, and the editor annotated the change
+   * as somebody else's ordinary edit. The protection on the other side of that default
+   * is `RecentTyping`, which imports nothing but this file and would run in either host
+   * unchanged, so what the second host was missing was the call rather than the means.
    */
-  public documentChanged(text: string, tookTypedText = false): boolean {
+  public documentChanged(text: string, tookTypedText: boolean): boolean {
     if (this.draining) {
       // Mid-burst: this is either the echo of an edit of our own or an outside
       // write the burst is about to be planned against. `drain` posts whatever
@@ -211,10 +485,42 @@ export class DocumentSync {
   private async drain(): Promise<void> {
     let replans = 0;
     let abandoned = false;
+    // True once somebody else's change has been put together with the person's. The
+    // webview sent the text it was holding and never saw that change, so it has to
+    // be given the result even though the document now holds exactly what was asked
+    // for: otherwise the file is right and the page is a version behind.
+    let merged = false;
     while (this.pendingText !== undefined) {
       const text = this.pendingText;
       this.pendingText = undefined;
-      const plan = planEdit(this.host.getText(), text, this.host.crlf());
+      /*
+       * What the webview sent was written against the document as it stood when it
+       * read it. If the document has moved since, from an agent, a formatter or a
+       * pull, planning the webview's text straight onto it takes that change back
+       * out: the webview never saw it, so its text does not carry it.
+       *
+       * So the two are put together first, and what is planned is the person's own
+       * change made to the document as it now reads. Where they changed the same
+       * characters there is nothing to put together and the person at the keyboard
+       * keeps theirs, which is what used to happen to every outside change. Nothing
+       * says so yet; that notice is still to be written, and so is the VS Code half
+       * of this, where the document never learns the file moved at all.
+       *
+       * `syncedText` is the last text the two sides agreed on, which is exactly the
+       * base such a merge needs. It is set every time an edit lands and every time a
+       * document is posted, so it tracks the agreement rather than the document.
+       */
+      const shownNow = toWebviewText(this.host.getText());
+      const shownBase = toWebviewText(this.syncedText);
+      let want = text;
+      if (shownNow !== shownBase) {
+        // The webview is behind either way: it is holding text that predates the
+        // other change, whether all of that change was kept or only the part of it
+        // clear of what the person was typing.
+        merged = true;
+        want = mergeOutsideChange(shownBase, text, shownNow).text;
+      }
+      const plan = planEdit(this.host.getText(), want, this.host.crlf());
       if (!plan) {
         // The document already holds it — an edit of ours that has landed, or an
         // outside write that happened to agree with the webview.
@@ -238,13 +544,15 @@ export class DocumentSync {
         continue; // Newer text arrived meanwhile; it supersedes this one.
       }
       if (replans++ < REPLAN_LIMIT) {
+        // Planned again against whatever the document moved to, and the top of this
+        // loop is where that move is put together with what the person sent.
         this.pendingText = text;
       } else {
         abandoned = true;
       }
     }
     const text = this.host.getText();
-    if (abandoned || text !== this.syncedText) {
+    if (abandoned || merged || text !== this.syncedText) {
       this.syncedText = text;
       this.host.setContent(toWebviewText(text));
     }

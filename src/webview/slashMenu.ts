@@ -18,13 +18,14 @@
 import { EditorSelection, EditorState, Extension, Prec, StateEffect, StateField } from '@codemirror/state';
 import { EditorView, ViewPlugin, ViewUpdate, keymap } from '@codemirror/view';
 import { syntaxTree } from '@codemirror/language';
-import { insertCsvTable, insertPipeTable } from './tables';
+import { insertCsvTable, insertPipeTable, insertViewBlock } from './tables';
 import { insertDivider } from './toolbar';
 import { TurnIntoKind, replaceAndConvert } from './blockModel';
 import { FloatingIcon, floatingIcon } from './floatingIcons';
+import { placeOrClose, whileScrolling } from './caretList';
 
 export interface SlashItem {
-  id: TurnIntoKind | 'table' | 'csv' | 'divider';
+  id: TurnIntoKind | 'table' | 'csv' | 'view' | 'divider';
   label: string;
   keywords: string;
   /** The icon the toolbar gives this command, so both surfaces read as one system. */
@@ -58,6 +59,9 @@ export const SLASH_ITEMS: SlashItem[] = [
   // The data table is a fenced block with a language on it, so what a pick writes is
   // the fence and `csv` together. Neither half alone is the syntax, so the row is bare.
   { id: 'csv', label: 'CSV data table', keywords: 'tsv spreadsheet data grid', icon: 'dataTable' },
+  // A view of a table elsewhere in the document, filtered, sorted or shown as a
+  // board. It reads the named table above the caret, so it draws rows at once.
+  { id: 'view', label: 'View of a table', keywords: 'filter sort board query slice', icon: 'dataTable' },
   { id: 'divider', label: 'Divider', keywords: 'hr rule horizontal line ---', icon: 'divider', hint: '---' },
 ];
 
@@ -184,10 +188,11 @@ export function pickSlashItem(view: EditorView, item: SlashItem): void {
   if (!value) return;
   const head = view.state.selection.main.head;
   view.dispatch({ effects: closeSlash.of(null) });
-  if (item.id === 'table' || item.id === 'csv' || item.id === 'divider') {
+  if (item.id === 'table' || item.id === 'csv' || item.id === 'view' || item.id === 'divider') {
     view.dispatch({ changes: { from: value.from, to: head }, selection: EditorSelection.cursor(value.from), userEvent: 'delete.slash' });
     if (item.id === 'table') insertPipeTable(view);
     else if (item.id === 'csv') insertCsvTable(view);
+    else if (item.id === 'view') insertViewBlock(view);
     else insertDivider(view);
     return;
   }
@@ -227,25 +232,22 @@ const slashKeymap = Prec.highest(
   ])
 );
 
-/**
- * Put a list that opened at the caret just below the line at `coords`, or above it
- * when there is no room below, kept inside the window, with its highlighted row in view.
- */
-export function placeListAt(dom: HTMLElement, coords: { left: number; top: number; bottom: number }): void {
-  const height = dom.offsetHeight;
-  const below = coords.bottom + 4;
-  const top = below + height > window.innerHeight && coords.top - height - 4 > 0 ? coords.top - height - 4 : below;
-  dom.style.left = `${Math.max(4, Math.min(coords.left, window.innerWidth - dom.offsetWidth - 4))}px`;
-  dom.style.top = `${Math.max(4, top)}px`;
-  dom.querySelector('.is-selected')?.scrollIntoView?.({ block: 'nearest' });
-}
-
 /** Draws the open menu next to the caret. */
 const slashView = ViewPlugin.fromClass(
   class {
     dom: HTMLElement | null = null;
+    /** True once the menu has been drawn beside its slash. See `placeOrClose`. */
+    placed = false;
+    /** Redraws the menu where its slash has moved to while the document scrolls. */
+    private readonly scrolling = whileScrolling(() => this.dom, () => this.sync());
     constructor(readonly view: EditorView) {
       this.sync();
+    }
+    /** Close, once the view has finished the frame the measure was read in. */
+    private closeWhenTheFrameIsDone(): void {
+      setTimeout(() => {
+        if (slashMenuOf(this.view.state)) this.view.dispatch({ effects: closeSlash.of(null) });
+      }, 0);
     }
     update(update: ViewUpdate): void {
       if (update.docChanged || update.selectionSet || update.transactions.some((tr) => tr.effects.length) || update.geometryChanged) this.sync();
@@ -255,6 +257,7 @@ const slashView = ViewPlugin.fromClass(
       if (!menu) {
         this.dom?.remove();
         this.dom = null;
+        this.placed = false;
         return;
       }
       if (!this.dom) {
@@ -312,11 +315,13 @@ const slashView = ViewPlugin.fromClass(
           }
         },
         write: (coords) => {
-          if (coords && this.dom) placeListAt(this.dom, coords);
+          if (!this.dom) return;
+          this.placed = placeOrClose(this.view, this.dom, coords, this.placed, () => this.closeWhenTheFrameIsDone());
         },
       });
     }
     destroy(): void {
+      this.scrolling.stop();
       this.dom?.remove();
     }
   },

@@ -1,101 +1,29 @@
 import * as vscode from 'vscode';
-import { DocumentSync, minimalEdit, planEdit, toWebviewText } from './textSync';
-import { noticeAboutLostText, noticeAboutRestoredText, RecentTyping } from './recentTyping';
-
-/** Messages sent extension host -> webview. */
-type ToWebview =
-  | {
-      type: 'init';
-      text: string;
-      config: EditorConfig;
-      fileName: string;
-      resourceBaseUri: string;
-      fragment?: string;
-      /** Set when the file is a data file shown as one grid, rather than a Markdown document. */
-      mode?: 'csv';
-      /** Shown in place of the editor, for a file this editor will not open. */
-      notice?: string;
-    }
-  | { type: 'setContent'; text: string; tookTypedText?: boolean; ownUndo?: boolean }
-  | { type: 'revealFragment'; id: string }
-  | { type: 'undoOutsideChange' }
-  | { type: 'configChanged'; config: EditorConfig }
-  | { type: 'imageSaved'; id: string; path?: string; error?: string }
-  | { type: 'clipboardText'; id: string; text: string }
-  | { type: 'workspaceFiles'; id: string; files: string[] }
-  | { type: 'tableWidths'; id: string; widths: TableWidths }
-  | { type: 'tableBoards'; id: string; boards: TableBoards }
-  | { type: 'commentFolds'; id: string; folds: CommentFolds }
-  /**
-   * A data file a view block reads, by the path the view wrote. Sent in answer to
-   * `dataFileRead` with its `id`, and again without one whenever the file changes.
-   */
-  | {
-      type: 'dataFile';
-      id?: string;
-      path: string;
-      text?: string;
-      error?: string;
-      notice?: string;
-      /** Set with `error` when the path is one Sheaf may read and there is simply no file there yet. */
-      missing?: boolean;
-    }
-  /**
-   * The answer to `dataFileCreate`: the path the file was written at, as the
-   * document should name it, or why nothing was written.
-   */
-  | { type: 'dataFileCreated'; id: string; path?: string; error?: string }
-  | { type: 'getSelection'; id: string }
-  | { type: 'toggleSourceMode' };
-
-/** Messages sent webview -> extension host. */
-type FromWebview =
-  | { type: 'ready' }
-  | { type: 'edit'; text: string }
-  | { type: 'openAsText' }
-  | { type: 'clipboardWrite'; text: string }
-  | { type: 'clipboardRead'; id: string }
-  /** The workspace's files, for completing a link's address. */
-  | { type: 'workspaceFilesRead'; id: string }
-  /** The column widths set by hand in this document's tables, and keeping them. */
-  | { type: 'tableWidthsRead'; id: string }
-  | { type: 'tableWidthsWrite'; widths: TableWidths }
-  /** The pipe tables in this document shown as boards, and keeping them. */
-  | { type: 'tableBoardsRead'; id: string }
-  | { type: 'tableBoardsWrite'; boards: TableBoards }
-  /** The comments collapsed in this document, and keeping them. */
-  | { type: 'commentFoldsRead'; id: string }
-  | { type: 'commentFoldsWrite'; folds: CommentFolds }
-  /** A .csv or .tsv file a view block names, relative to the document. */
-  | { type: 'dataFileRead'; id: string; path: string }
-  /**
-   * An edit made through a view of a data file: the whole of the file's new text,
-   * and `base`, the text the edit was made against, both in the webview's line
-   * endings and without a byte-order mark. Written as the one changed range.
-   * `step` marks the undo or redo of an earlier such edit, sent as its inverse,
-   * which only changes what a refusal says.
-   */
-  | { type: 'dataFileEdit'; path: string; base: string; text: string; step?: 'undo' | 'redo' }
-  /**
-   * A new .csv or .tsv file, relative to the document, holding `text` in the
-   * webview's line endings. Never written over an existing file: with `nextFree`
-   * the next free name is taken instead (`tasks-2.csv`), and without it the
-   * request is refused. Answered with `dataFileCreated`.
-   */
-  | { type: 'dataFileCreate'; id: string; path: string; text: string; nextFree?: boolean }
-  | { type: 'saveImage'; id: string; name: string; data: string }
-  | { type: 'openLink'; address: string }
-  | { type: 'setTableOfContents'; on: boolean }
-  | { type: 'selection'; ranges: SelectionRange[]; ref: string; id?: string }
-  | { type: 'runCommand'; command: string }
-  /** Keyboard focus has left the page, to the tab bar or anywhere else in the window. */
-  | { type: 'blur' };
-
-/** The lines one of the webview's selected ranges covers, counted from one. */
-interface SelectionRange {
-  start: number;
-  end: number;
-}
+import { DocumentSync, mergeOutsideChange, minimalEdit, planEdit, toWebviewText } from './textSync';
+import {
+  readComments,
+  readFrontMatter,
+  readOutline,
+  type CommentsSetting,
+  type FrontMatterSetting,
+  type OutlineSetting,
+} from './settingValues';
+import {
+  noticeAboutLostText,
+  noticeAboutOutsideChangeLost,
+  noticeAboutRestoredText,
+  RecentTyping,
+} from './recentTyping';
+import type {
+  CommentFolds,
+  EditorConfig,
+  FromWebview,
+  SelectionRange,
+  TableBoards,
+  TableWidths,
+  ToWebview,
+} from './protocol';
+import { documentTitle, relativeLink } from './docLink';
 
 /**
  * What the person has picked in a Sheaf editor, in the form the commands that hand it
@@ -111,12 +39,6 @@ export interface DocumentSelection {
   /** The reference Copy ref puts on the clipboard, built in the webview that has it. */
   ref: string;
 }
-
-/**
- * Column widths set by hand in one document's tables: by table key (the webview's
- * digest of a table's header row), then by column index, in pixels.
- */
-type TableWidths = Record<string, Record<string, number>>;
 
 /**
  * Where a document's column widths are kept: the workspace's own storage, which
@@ -139,18 +61,24 @@ function cleanTableWidths(value: unknown): TableWidths {
   return out;
 }
 
-/**
- * The pipe tables in one document shown as boards: by table key (the same digest
- * of the header row the widths use), the header text of the column each is
- * grouped by.
- */
-type TableBoards = Record<string, { group: string }>;
-
 /** Where a document's boards are kept: beside its widths, in the workspace's own storage. */
 const tableBoardsKey = (uri: vscode.Uri): string => `sheaf.tableBoards:${uri.toString()}`;
 
 /** The longest header text a board may be grouped by; anything longer is not a header the page wrote. */
 const MAX_BOARD_GROUP = 1000;
+
+/**
+ * How long Sheaf's own save goes on counting as something a write cannot have known
+ * about, and so how far back a merge may reach for the base a write was made from.
+ *
+ * Long enough to cover the gap the race lives in: a keystroke reaches the document at
+ * once, auto-save writes it about 700ms later, and a tool that read the file before
+ * that writes it back a moment after. Short enough that it is still the person's own
+ * save that was the last thing to happen, which is the whole claim the number stands
+ * on. Reopening a file an hour later and finding deleted text back is what a larger
+ * number would buy.
+ */
+export const KEEP_AFTER_OWN_SAVE_MS = 2_500;
 
 /** Keep only what can be a board, so a damaged or foreign value reads as none. */
 function cleanTableBoards(value: unknown): TableBoards {
@@ -164,15 +92,19 @@ function cleanTableBoards(value: unknown): TableBoards {
   return out;
 }
 
-/**
- * The comments collapsed in one document: by comment key (the webview's digest of
- * the comment's own text), and nothing else, because collapsed is all there is to
- * say. A comment that is open is simply absent.
- */
-type CommentFolds = Record<string, true>;
-
 /** Where a document's collapsed comments are kept: beside its widths and boards. */
 const commentFoldsKey = (uri: vscode.Uri): string => `sheaf.commentFolds:${uri.toString()}`;
+
+/**
+ * Where one document's own front matter state is kept, beside its widths, its boards
+ * and its comment folds. The setting says what a document does by default; this says
+ * what this one does, and it is here rather than in the file because how much metadata
+ * somebody wants to look at is not something to write into their document.
+ */
+const frontMatterKey = (uri: vscode.Uri): string => `sheaf.frontMatter:${uri.toString()}`;
+
+/** The same, for whether this document's heading list is folded away. */
+const outlineKey = (uri: vscode.Uri): string => `sheaf.outline:${uri.toString()}`;
 
 /** The longest comment key the webview writes; anything longer is not one of its digests. */
 const MAX_COMMENT_KEY = 64;
@@ -199,26 +131,7 @@ const MAX_FREE_NAMES = 999;
 /** How long one workspace search answers for before the next request searches again. */
 const FILES_CACHE_MS = 5000;
 
-interface EditorConfig {
-  contentWidth: string;
-  revealSyntaxOnLine: boolean;
-  doubleClickToEditSource: boolean;
-  autoSave: boolean;
-  tableOfContents: boolean;
-  comments: CommentsSetting;
-}
-
-/** Whether a comment is drawn in full or shrunk to a marker. */
-export type CommentsSetting = 'show' | 'hidden';
-
-/**
- * The setting's value, or `show` for anything that is not one of the two names.
- * A setting nobody can read must not end in comments being drawn as nothing:
- * a person has to be able to see that a comment is there.
- */
-function readComments(value: unknown): CommentsSetting {
-  return value === 'hidden' ? 'hidden' : 'show';
-}
+export type { CommentsSetting, FrontMatterSetting, OutlineSetting };
 
 /** How long to wait after the last edit before auto-saving. */
 const AUTOSAVE_DEBOUNCE_MS = 700;
@@ -243,17 +156,44 @@ function readConfig(): EditorConfig {
   const cfg = vscode.workspace.getConfiguration('sheaf');
   return {
     contentWidth: cfg.get<string>('contentWidth', '708px'),
+    lineNumbers: cfg.get<boolean>('lineNumbers', false),
     revealSyntaxOnLine: cfg.get<boolean>('revealSyntaxOnLine', false),
     doubleClickToEditSource: cfg.get<boolean>('doubleClickToEditSource', false),
-    autoSave: cfg.get<boolean>('autoSave', true),
-    tableOfContents: cfg.get<boolean>('tableOfContents', false),
+    tableOfContents: readOutline(cfg.get<unknown>('tableOfContents', 'hidden')),
     comments: readComments(cfg.get<unknown>('comments', 'show')),
+    frontMatter: readFrontMatter(cfg.get<unknown>('frontMatter', 'collapsed')),
   };
 }
 
-/** Whether the table of contents is on, as the setting has it now. */
+/**
+ * Whether a keystroke is written to disk on its own.
+ *
+ * Read on its own rather than carried in `EditorConfig`, because that type is what the
+ * editor page is sent and the page has no use for this: the host decides when to save.
+ * A setting in the page's config that the page never reads is one nobody can tell is
+ * unread, which is how the two declarations of that type drift.
+ */
+function autoSaveOn(): boolean {
+  return vscode.workspace.getConfiguration('sheaf').get<boolean>('autoSave', true);
+}
+
+/** How much of the heading list is drawn, as the setting has it now. */
+export function outlineSetting(): OutlineSetting {
+  return readOutline(vscode.workspace.getConfiguration('sheaf').get<unknown>('tableOfContents', 'hidden'));
+}
+
+/** Whether the heading list is on screen at all, as the setting has it now. */
 export function tableOfContentsOn(): boolean {
-  return vscode.workspace.getConfiguration('sheaf').get<boolean>('tableOfContents', false);
+  return outlineSetting() !== 'hidden';
+}
+
+/**
+ * Draw the front matter in full, as one line, or not at all, for every Sheaf editor
+ * and for next time. Written to user settings rather than to the folder, because it
+ * is how this person likes to read a document rather than anything about the project.
+ */
+export async function setFrontMatter(value: FrontMatterSetting): Promise<void> {
+  await vscode.workspace.getConfiguration('sheaf').update('frontMatter', value, vscode.ConfigurationTarget.Global);
 }
 
 /** Whether comments are drawn in full, as the setting has it now. */
@@ -282,10 +222,31 @@ export async function setComments(value: CommentsSetting): Promise<void> {
  * something they want in one file. Every open editor hears about it through the
  * configuration-change listener each one already has, so none of them is told directly.
  */
-export async function setTableOfContents(on: boolean): Promise<void> {
+/**
+ * Turn the line-number gutter on or off, for this document and every other.
+ *
+ * User settings, for the reason the heading list above gives: line numbers are something a
+ * person wants or does not want, not something they want in one file. VS Code settles its
+ * own the same way, in `editor.lineNumbers`, so somebody who wants them in both places sets
+ * two settings rather than learning two mechanisms.
+ *
+ * It was a module variable in the webview before this, so turning them on lasted until the
+ * document closed and every document opened without them.
+ */
+export async function setLineNumbers(on: boolean): Promise<void> {
+  await vscode.workspace.getConfiguration('sheaf').update('lineNumbers', on, vscode.ConfigurationTarget.Global);
+}
+
+export async function setTableOfContents(on: boolean | OutlineSetting): Promise<void> {
+  // `readOutline` rather than the same three cases written out here, which is what this
+  // was: the file it comes from is already imported above, and the browser host needed
+  // the identical reconciliation and had none, which is how a `true` from the toolbar
+  // came to be stored out there in a field declared as one of three names. A string that
+  // is none of the three now lands on `hidden` instead of being written to the settings
+  // as given, which is the one behaviour this changes and the better of the two.
   await vscode.workspace
     .getConfiguration('sheaf')
-    .update('tableOfContents', on, vscode.ConfigurationTarget.Global);
+    .update('tableOfContents', readOutline(on), vscode.ConfigurationTarget.Global);
 }
 
 /**
@@ -298,6 +259,15 @@ export async function setTableOfContents(on: boolean): Promise<void> {
  */
 export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
   public static readonly viewType = 'sheaf.wysiwyg';
+  /**
+   * The same editor, offered for .txt files and never the default for one.
+   *
+   * A second view type rather than another pattern on the first, because whether an
+   * editor opens a file by itself is settled per view type and not per pattern. A
+   * `.txt` is somebody's notes as often as it is a log or a fixture, so Sheaf is
+   * there to be chosen and double-clicking one still opens the text editor.
+   */
+  public static readonly textViewType = 'sheaf.text';
   /** The editor offered for .csv and .tsv files, which shows the whole file as one grid. */
   public static readonly gridViewType = 'sheaf.csv';
 
@@ -321,9 +291,13 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
     );
   }
 
-  public static register(context: vscode.ExtensionContext, mode: EditorMode = 'markdown'): vscode.Disposable {
+  public static register(
+    context: vscode.ExtensionContext,
+    mode: EditorMode = 'markdown',
+    viewType = mode === 'grid' ? MarkdownEditorProvider.gridViewType : MarkdownEditorProvider.viewType
+  ): vscode.Disposable {
     return vscode.window.registerCustomEditorProvider(
-      mode === 'grid' ? MarkdownEditorProvider.gridViewType : MarkdownEditorProvider.viewType,
+      viewType,
       new MarkdownEditorProviderFactory(context, mode),
       {
         webviewOptions: { retainContextWhenHidden: true },
@@ -366,6 +340,30 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
   private lostTextNotice = 0;
   /** The document's text when a save of Sheaf's own began, for as long as it runs. */
   private savingText?: string;
+  /**
+   * The texts this editor knows the file has held, oldest first: what it held when
+   * the document opened, and every text handed to a save since.
+   *
+   * Two jobs, and the second is why this is a list rather than one text. The last of
+   * them is the base a merge is made against, which is as close as there is to what
+   * anything writing the file read. And finding the file's current contents anywhere
+   * in the list is what says the write was Sheaf's own.
+   *
+   * That second job is not something a single text can do. A save resolves before
+   * its bytes are always visible: reading the file right afterwards can still return
+   * what it held before, and a document being typed into produces saves faster than
+   * they land. Against one remembered text, every one of those reads looks like
+   * somebody else's write, the person's own letters read as a conflict, and a notice
+   * goes up about a write nobody made.
+   */
+  private readonly fileHasHeld: { text: string; at: number }[] = [];
+  /** True while a change read back from the file is being written into the document. */
+  private mergingOutsideChange = false;
+  /**
+   * True once the file has been found to have moved under what VS Code noted about
+   * it, which is what makes it refuse to write this document at all.
+   */
+  private fileMovedUnderTheRecord = false;
   /** The lines selected in this editor, as its webview last reported them. */
   private selectedRanges: SelectionRange[] = [];
   /** The reference for that selection, built by the webview that holds it. */
@@ -456,6 +454,10 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
     this.panel = webviewPanel;
     this.frame?.setFile(document.uri.path);
     this.webviewText = toWebviewText(document.getText());
+    // A document that opens clean is the file. One that opens dirty, restored from a
+    // previous session, is not, and nothing here knows what the file holds until the
+    // first save settles it.
+    if (!document.isDirty) this.rememberFile(document.getText());
     this.sync = new DocumentSync({
       getText: () => document.getText(),
       crlf: () => document.eol === vscode.EndOfLine.CRLF,
@@ -501,8 +503,29 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
         return;
       }
       const text = e.document.getText();
+      // Read before this text is remembered, so the newest text on record is still
+      // Sheaf's own save and the one before it is what a write crossing that save read.
+      const writerBase = this.textTheWriterRead();
+      // A document that is clean after a change is one VS Code has just brought into
+      // line with the file: reloaded because the file moved while nothing was unsaved,
+      // or reverted. Either way this is the file, and it is the base a later merge needs.
+      if (!e.document.isDirty) {
+        this.rememberFile(text);
+      }
       const outside = this.cameFromOutsideTheWebview(text);
-      const arriving = this.keepTheLineBeingTyped(text);
+      const asItArrived = this.keepTheLineBeingTyped(text);
+      let arriving = asItArrived;
+      if (outside) {
+        arriving = this.keepTypingTheWriteCouldNotHaveSeen(writerBase, arriving, e.document);
+        if (arriving !== asItArrived) {
+          // Showing the page the merged text is not the same as the file getting it. The
+          // document still holds what VS Code reloaded, and the save that follows writes the
+          // document, so without this the letter stays on screen and never reaches disk:
+          // the screen and the file disagree with nothing said, which is worse than the loss
+          // it replaced, because that at least announced itself and offered Undo.
+          void this.writeMergedIntoDocument(e.document, arriving);
+        }
+      }
       // Read before the push, because pushing is what replaces the webview's text.
       const lost = outside ? this.typing.dropped(this.webviewText, toWebviewText(arriving)) : undefined;
       // The other way a write undoes the person's work: it puts back what they deleted.
@@ -591,11 +614,15 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
         case 'clipboardWrite':
           void vscode.env.clipboard.writeText(message.text);
           break;
-        case 'clipboardRead':
-          void vscode.env.clipboard.readText().then((text) => this.postMessage({ type: 'clipboardText', id: message.id, text }));
-          break;
         case 'workspaceFilesRead':
           void this.workspaceFiles().then((files) => this.postMessage({ type: 'workspaceFiles', id: message.id, files }));
+          break;
+        case 'docTitleRead':
+          // Always answered, with nothing when the path names nothing to link, so the page
+          // never waits out its timeout for a paste it could have made plain at once.
+          void this.docTitle(document.uri, message.path).then((answer) =>
+            this.postMessage({ type: 'docTitle', id: message.id, ...answer })
+          );
           break;
         case 'tableWidthsRead': {
           // Always answered, with nothing when nothing is kept, so the page never waits.
@@ -640,6 +667,37 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
           );
           break;
         }
+        case 'frontMatterStateRead': {
+          // Answered like the widths and the folds: always, with null when this
+          // document has no state of its own, so the page never waits.
+          const kept = this.context.workspaceState?.get<unknown>(frontMatterKey(document.uri));
+          const state = kept === 'shown' || kept === 'collapsed' || kept === 'hidden' ? kept : null;
+          this.postMessage({ type: 'frontMatterState', id: message.id, state });
+          break;
+        }
+        case 'frontMatterStateWrite': {
+          // Null is the page saying this document should follow the setting again.
+          const value = message.state;
+          void this.context.workspaceState?.update(
+            frontMatterKey(document.uri),
+            value === 'shown' || value === 'collapsed' || value === 'hidden' ? value : undefined
+          );
+          break;
+        }
+        case 'outlineStateRead': {
+          const kept = this.context.workspaceState?.get<unknown>(outlineKey(document.uri));
+          const state = kept === 'shown' || kept === 'collapsed' || kept === 'hidden' ? kept : null;
+          this.postMessage({ type: 'outlineState', id: message.id, state });
+          break;
+        }
+        case 'outlineStateWrite': {
+          const value = message.state;
+          void this.context.workspaceState?.update(
+            outlineKey(document.uri),
+            value === 'shown' || value === 'collapsed' || value === 'hidden' ? value : undefined
+          );
+          break;
+        }
         case 'dataFileRead':
           if (typeof message.path === 'string') void this.answerDataFile(document.uri, docDir, message.path, message.id);
           break;
@@ -660,8 +718,14 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
         case 'openLink':
           void this.openLink(document.uri, docDir, message.address);
           break;
+        case 'setLineNumbers':
+          void setLineNumbers(message.on);
+          break;
         case 'setTableOfContents':
           void setTableOfContents(message.on);
+          break;
+        case 'setFrontMatter':
+          void setFrontMatter(message.state);
           break;
         case 'selection':
           this.selectedRanges = message.ranges;
@@ -790,7 +854,7 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
       await this.sendDataFile(path, target.uri);
       return;
     }
-    if (!wasDirty && readConfig().autoSave) await file.save();
+    if (!wasDirty && autoSaveOn()) await file.save();
     // A file not watched yet (an edit arriving before its read) is still sent back.
     if (!this.dataFiles.has(path)) await this.sendDataFile(path, target.uri);
   }
@@ -903,6 +967,46 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
       .catch(() => []);
     this.filesSearch = { at: now, files };
     return files;
+  }
+
+  /**
+   * What a pasted path names: the target written as an address relative to `from`, and the
+   * target's own title.
+   *
+   * Only the host can answer this. The page cannot read another file, and it cannot work out
+   * what a relative path is relative to — its own origin is `vscode-webview://`, which reaches
+   * nothing.
+   *
+   * Nothing is answered for a path that leaves the workspace, names something that is not
+   * Markdown, or names a file that is not there, and the editor pastes the text as text. The
+   * workspace boundary is the one that matters: a path outside it resolves, reads and links
+   * fine, and the link is then broken for everybody who clones the repository.
+   */
+  private async docTitle(from: vscode.Uri, pasted: string): Promise<{ address?: string; title?: string }> {
+    const raw = pasted.trim();
+    if (!/\.(md|markdown)$/i.test(raw)) return {};
+    let target: vscode.Uri;
+    try {
+      if (/^file:/i.test(raw)) target = vscode.Uri.parse(raw);
+      else if (/^(\/|[A-Za-z]:[\\/])/.test(raw)) target = vscode.Uri.file(raw);
+      // `..` from the document itself is the folder it sits in, which is what a relative
+      // path in a document is relative to.
+      else target = vscode.Uri.joinPath(from, '..', raw.replace(/\\/g, '/'));
+    } catch {
+      return {};
+    }
+    if (!vscode.workspace.getWorkspaceFolder(target)) return {};
+    let text: string;
+    try {
+      // Through the workspace rather than the file system, so a target already open with
+      // unsaved changes gives the title it now has rather than the one on disk.
+      const open = vscode.workspace.textDocuments.find((d) => d.uri.toString() === target.toString());
+      text = open ? open.getText() : new TextDecoder().decode(await vscode.workspace.fs.readFile(target));
+    } catch {
+      return {};
+    }
+    const address = relativeLink(from.path, target.path);
+    return { address, title: documentTitle(text, target.path) };
   }
 
   /**
@@ -1061,12 +1165,56 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
    * written too, Undo leaves the person reading one document while the file on disk
    * still holds the edit they took back.
    *
-   * Two changes are Sheaf's own and must not schedule a second save. An edit of this
-   * webview's arrives holding exactly the text the webview already has, and a trim by
-   * a save participant arrives while that save is still running.
+   * Three changes are Sheaf's own and must not schedule a second save. An edit of
+   * this webview's arrives holding exactly the text the webview already has, a trim
+   * by a save participant arrives while that save is still running, and a change
+   * written to the file arrives put together with what the person typed.
+   *
+   * That last one carries somebody else's work, so it is news to the webview and is
+   * pushed there like any other. What it is not is a write that cost the person
+   * anything: it is the merge, and the merge keeps their text by construction. Read
+   * as an outside write it says the opposite, because their typing sits between the
+   * two places an agent changed and the span from one to the other covers it. That
+   * notice would be wrong every single time.
+   *
+   * A save being outstanding is not on that list, and reading it as though it were
+   * took typed text off the screen with nothing said. The window between a save's
+   * write landing and Sheaf hearing that its own save is done is real: the write and
+   * the watcher event that follows it are separate turns of the event loop, so a
+   * write from an agent a moment later is reported inside that window. Called an echo
+   * of Sheaf's own save, it went into the webview unopposed, no notice was worked out
+   * because none is worked out for Sheaf's own changes, and no save was scheduled to
+   * carry anything back, so a letter the person had just typed was gone from the
+   * screen and from the file at once. What makes a change the echo of a save is that
+   * it holds the text handed to that save, give or take a participant's trim, and
+   * nothing else does.
    */
   private cameFromOutsideTheWebview(text: string): boolean {
-    return this.savingText === undefined && toWebviewText(text) !== this.webviewText;
+    if (this.mergingOutsideChange || toWebviewText(text) === this.webviewText) {
+      return false;
+    }
+    return !this.isOurSavesTrim(text);
+  }
+
+  /**
+   * True when `text` is the text a save handed over with trailing whitespace taken off,
+   * which is a save participant's edit and so Sheaf's own work rather than news.
+   *
+   * Two callers ask this, and they are the same question with different consequences, which
+   * is why it is one function rather than two copies of the comparison.
+   * `cameFromOutsideTheWebview` asks it to decide whether a change is news, which governs
+   * the notice, the save it would schedule, and whether the record of recent typing is
+   * thrown away. `keepTheLineBeingTyped` asks it to decide what text the webview is given.
+   *
+   * Both are load-bearing, measured rather than assumed. Making the first answer false
+   * always fails "a save of their own does not throw away the record of what they typed",
+   * because the record of what the person typed is what lets the *next* write be recognised
+   * as taking it. Removing the second fails two trailing-whitespace checks, because the
+   * space under the person's own cursor disappears mid-word.
+   */
+  private isOurSavesTrim(text: string): boolean {
+    const saving = this.savingText;
+    return saving !== undefined && trimTrailingWhitespace(text) === trimTrailingWhitespace(saving);
   }
 
   /**
@@ -1077,7 +1225,7 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
    * files.autoSave apply).
    */
   private scheduleAutoSave(document: vscode.TextDocument): void {
-    if (!readConfig().autoSave) {
+    if (!autoSaveOn()) {
       return;
     }
     if (this.autoSaveTimer) {
@@ -1085,8 +1233,242 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
     }
     this.autoSaveTimer = setTimeout(() => {
       this.autoSaveTimer = undefined;
-      this.save(document);
+      void this.saveKeepingOutsideChange(document);
     }, AUTOSAVE_DEBOUNCE_MS);
+  }
+
+  /**
+   * The debounced save, with anything written to the file meanwhile kept.
+   *
+   * Only this path reads the file first. The flush on losing focus and on dispose
+   * stays as it is, because it runs in the moments before a document closes and its
+   * whole reason for existing is to get the write in before VS Code asks about it;
+   * waiting on a file read there would put the dialog back.
+   */
+  private async saveKeepingOutsideChange(document: vscode.TextDocument): Promise<void> {
+    await this.keepOutsideChange(document);
+    this.save(document);
+  }
+
+  /**
+   * The save VS Code refused, done by hand.
+   *
+   * VS Code notes a file's modification time when it loads or saves a document, and
+   * refuses to write one whose file has moved since: "The content of the file is
+   * newer." It only ever brings that note up to date by reading the file again, and
+   * it will not read the file into a document that has unsaved changes. So once
+   * anything writes the file while somebody is typing, every save of that document
+   * fails from then on. Auto-save is on, the tab says unsaved, closing it asks, and
+   * none of it has anything to do with the person at the keyboard.
+   *
+   * What makes this safe to resolve without asking is that the write is read in
+   * first. The refusal is itself the news that the file has moved, and it may have
+   * moved after the last read, which is exactly why the save was refused, so the
+   * file is read and put into the document again here before anything is written
+   * over it. Only then is the document the file plus the letters typed since, rather
+   * than a rival version of it.
+   *
+   * Reading first is not a precaution. Without it this wrote the document's own text
+   * over whatever had just arrived, so a paragraph an agent deleted came back, in the
+   * file and on screen, with nothing said: the very loss the merge exists to prevent,
+   * reintroduced by the thing meant to finish the job.
+   *
+   * Then the document is reverted, which is what brings VS Code's note up to date.
+   * The revert changes no text, because the file was just made to match, and the
+   * person's own Undo is CodeMirror's inside the page rather than the document's
+   * stack.
+   *
+   * Two things are left alone deliberately. The write goes ahead only while the
+   * document still holds the text the refused save carried, so a keystroke that
+   * arrived meanwhile is never written over: the next save carries it instead. And
+   * the revert needs this editor to be the active one, because the command works on
+   * whatever the person is looking at. When it is not, the file has still been
+   * written and only the unsaved mark is left over, which the next save clears.
+   */
+  private async writeOverTheMovedFile(document: vscode.TextDocument, text: string): Promise<void> {
+    if (document.isClosed || document.getText() !== text) {
+      return;
+    }
+    await this.keepOutsideChange(document);
+    if (document.isClosed) {
+      return;
+    }
+    // The document after the merge, which is what the file is given: the write that
+    // was refused carried the text from before it.
+    const merged = document.getText();
+    try {
+      /*
+       * A byte-order mark is not part of a document's text, so writing the text alone
+       * would take the mark off a file that had one. VS Code's own save keeps it, and
+       * a mark disappearing from a file nobody edited is exactly the kind of change
+       * that turns a one-word edit into a whole-file diff.
+       */
+      const had = await vscode.workspace.fs.readFile(document.uri);
+      // Read again after the merge, because writing is only safe over a file this
+      // editor has read. A file that moved once can move twice, and the list of what
+      // it has held is what says whether this is still the write just merged in.
+      const hadText = new TextDecoder('utf-8', { ignoreBOM: true }).decode(had);
+      if (!this.fileHasHeld.some((held) => held.text === hadText)) {
+        return; // Moved again. The next save reads that one in the same way.
+      }
+      const mark = had[0] === 0xef && had[1] === 0xbb && had[2] === 0xbf;
+      const keeping = mark && !merged.startsWith('﻿') ? `﻿${merged}` : merged;
+      await vscode.workspace.fs.writeFile(document.uri, new TextEncoder().encode(keeping));
+      this.rememberFile(keeping);
+    } catch {
+      return; // Not writable by us either. VS Code has already said so.
+    }
+    this.fileMovedUnderTheRecord = true;
+    if (document.isClosed || document.getText() !== merged || this.panel?.active !== true) {
+      return;
+    }
+    await vscode.commands.executeCommand('workbench.action.files.revert');
+    // The revert read the file, so what VS Code noted about it is current again and
+    // ordinary saves work from here.
+    if (!document.isDirty) {
+      this.fileMovedUnderTheRecord = false;
+    }
+  }
+
+  /**
+   * Whether the file holds `text`, read back from disk.
+   *
+   * Compared in the webview's line endings, as every comparison between two of these
+   * texts is, and with a byte-order mark ignored: the mark belongs to the file rather
+   * than to the document's text, and VS Code puts it back on every save. Counting
+   * either of those as a difference would send every save of a CRLF file, or of one
+   * with a mark, down the path meant for a file something else has written.
+   *
+   * A file that cannot be read is not reported as a mismatch. Whatever is wrong with
+   * it, writing over it by hand is not the answer, and the save itself has already
+   * said so.
+   */
+  private async fileHolds(document: vscode.TextDocument, text: string): Promise<boolean> {
+    try {
+      const onDisk = new TextDecoder('utf-8', { ignoreBOM: true }).decode(
+        await vscode.workspace.fs.readFile(document.uri)
+      );
+      return toWebviewText(onDisk.replace(/^﻿/, '')) === toWebviewText(text.replace(/^﻿/, ''));
+    } catch {
+      return true;
+    }
+  }
+
+  /** Take back the newest remembered text, when a save of it was refused. */
+  private forgetFile(text: string): void {
+    if (this.fileHasHeld[this.fileHasHeld.length - 1]?.text === text) {
+      this.fileHasHeld.pop();
+    }
+  }
+
+  /** Remember a text the file holds or is being given, as the newest one. */
+  private rememberFile(text: string): void {
+    if (this.fileHasHeld[this.fileHasHeld.length - 1]?.text === text) {
+      return;
+    }
+    this.fileHasHeld.push({ text, at: Date.now() });
+    // Enough to cover the saves that can be in flight at once while somebody types.
+    if (this.fileHasHeld.length > 8) {
+      this.fileHasHeld.shift();
+    }
+  }
+
+  /**
+   * What the file held before the text it holds now, while that text is new enough
+   * that something writing the file cannot be assumed to have known about it.
+   *
+   * This is the base a write was made from when the write and Sheaf's own save cross.
+   * A tool reads the file, Sheaf saves the person's letter, and the tool writes back
+   * what it read plus its own change. Measured against the newest text Sheaf wrote,
+   * that write reads as deliberately removing the letter. Measured against what the
+   * tool actually read, it is one change to one other line and the letter stands.
+   *
+   * The bound is a judgement and not a fact, and it is the whole of what keeps this
+   * from resurrecting text on an ordinary reload. It models "the person could not
+   * have known the file had moved": their own save is still the last thing that
+   * happened, so they are still owed the letter it carried. Past it, a write that
+   * removes text is taken at its word, because a write derived from an older copy and
+   * a write that deliberately deletes are the same bytes and nothing here can tell
+   * them apart. Wider than the auto-save debounce it has to cover, and far short of
+   * how long a document stays open.
+   */
+  /**
+   * The arriving document with typing put back that the write cannot have known about.
+   *
+   * Sheaf already keeps typing a write lands on top of while it is still unsaved. This
+   * is the same promise one moment later, once the person's own save has carried the
+   * letter to disk: there is then nothing unsaved to protect, and without this the file
+   * is taken whole and the letter goes with a notice.
+   *
+   * Which side of the auto-save debounce the write falls on is invisible to the person
+   * and decides nothing they could reason about, so the answer is the same on both.
+   *
+   * Refused where the merge keeps nothing of the write, which leaves today's behaviour
+   * exactly as it is: the file stands and the notice says what it took. Taking a write
+   * out of the document instead would be the other half of this race, and a worse
+   * failure than the one being fixed here.
+   */
+  private keepTypingTheWriteCouldNotHaveSeen(
+    base: string | undefined,
+    arriving: string,
+    document: vscode.TextDocument
+  ): string {
+    if (base === undefined) {
+      return arriving;
+    }
+    const mine = this.webviewText;
+    const theirs = toWebviewText(arriving);
+    if (mine === theirs) {
+      return arriving;
+    }
+    const { text: together } = mergeOutsideChange(toWebviewText(base), mine, theirs);
+    if (together === mine || together === theirs) {
+      return arriving;
+    }
+    // Back into the document's own line endings. Every newline in the merged text is
+    // the webview's, because all three texts it was made from are, and VS Code gives a
+    // document one ending whatever the file mixes.
+    return document.eol === vscode.EndOfLine.CRLF ? together.replace(/\n/g, '\r\n') : together;
+  }
+
+  /**
+   * Bring the document itself to the merged text, as one edit over what it changed.
+   *
+   * The merge that keeps a letter a write could not have seen happens while handling the
+   * document's own change, and what it produces goes to the page. The document is not the
+   * page: it holds whatever VS Code reloaded from the file, and it is the document that the
+   * next save writes. So the merged text has to land here too, or the letter is kept on
+   * screen and lost from the file with nothing said.
+   *
+   * `mergingOutsideChange` is held across the edit so the change this causes is not read as
+   * news arriving from outside, which would work the merge a second time against itself.
+   */
+  private async writeMergedIntoDocument(document: vscode.TextDocument, merged: string): Promise<void> {
+    const plan = planEdit(document.getText(), toWebviewText(merged), document.eol === vscode.EndOfLine.CRLF);
+    if (!plan) {
+      return;
+    }
+    const edit = new vscode.WorkspaceEdit();
+    edit.replace(
+      document.uri,
+      new vscode.Range(document.positionAt(plan.start), document.positionAt(plan.end)),
+      plan.replacement
+    );
+    this.mergingOutsideChange = true;
+    try {
+      await vscode.workspace.applyEdit(edit);
+    } finally {
+      this.mergingOutsideChange = false;
+    }
+  }
+
+  private textTheWriterRead(): string | undefined {
+    const newest = this.fileHasHeld[this.fileHasHeld.length - 1];
+    const before = this.fileHasHeld[this.fileHasHeld.length - 2];
+    if (newest === undefined || before === undefined) {
+      return undefined;
+    }
+    return Date.now() - newest.at <= KEEP_AFTER_OWN_SAVE_MS ? before.text : undefined;
   }
 
   /**
@@ -1099,10 +1481,182 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
     if (!writable(document)) {
       return;
     }
-    this.savingText = document.getText();
-    void Promise.resolve(document.save()).finally(() => {
-      this.savingText = undefined;
-    });
+    const handedOver = document.getText();
+    this.savingText = handedOver;
+    this.rememberFile(handedOver);
+    if (this.fileMovedUnderTheRecord) {
+      // Asking VS Code to write this would fail and put its own notice on screen,
+      // about changes being lost, at a moment when nothing is being lost at all.
+      void this.writeOverTheMovedFile(document, handedOver).finally(() => {
+        this.savingText = undefined;
+      });
+      return;
+    }
+    void Promise.resolve(document.save())
+      .then(async (written) => {
+        if (!written) {
+          // Refused, so the file never held this text and must stop being remembered
+          // as though it had. What it does hold is somebody else's write, and the last
+          // text still on the list is the one they made it from, which is the base a
+          // merge needs.
+          this.forgetFile(handedOver);
+          return this.writeOverTheMovedFile(document, handedOver);
+        }
+        /*
+         * A save that reported success is not proof the file holds what was handed over.
+         *
+         * VS Code refuses a save whose file has moved since it last read it, and that
+         * refusal is what the branch above recovers from. It only refuses when it noticed.
+         * A write landing in the same handful of milliseconds as the save is not noticed
+         * at all: the two reach the filesystem in whichever order they reach it, the later
+         * one wins, and `save()` still answers true. Measured over four attempts in a real
+         * window, with a write aimed at the moment of the save: one was refused and
+         * recovered correctly, and in the other three the save reported success while the
+         * file ended up holding one change or the other, never both, and nothing said so.
+         *
+         * Which one was lost varied. Twice the person's letter went, while the editor went
+         * on showing it, so the screen and the file disagreed for as long as the document
+         * stayed open. Once it was the agent's line, which is worse, because an agent does
+         * not read its own write back and nothing else was ever going to notice.
+         *
+         * So the file is read back and compared. When it does not match, the save was
+         * overtaken, and that is the same situation as a refusal: the remembered text is
+         * withdrawn and the hand-written path merges what is actually there. Remembering it
+         * is what would otherwise make the next read of the file look like Sheaf's own work.
+         */
+        if (document.isDirty) {
+          // Typed into since the save began, so the document is ahead of the file by the
+          // person's own letters and reading a difference as somebody else's write would be
+          // wrong. There is nothing to settle here: the next save runs `keepOutsideChange`
+          // first, and a dirty document is exactly the case that path is for.
+          return undefined;
+        }
+        // What a participant's trim left, which is what actually reached the file, and so
+        // what the file is compared against. Not the text handed over: with
+        // `files.trimTrailingWhitespace` on, the two differ by design on every save.
+        const reached = document.getText();
+        if (!(await this.fileHolds(document, reached))) {
+          this.forgetFile(handedOver);
+          return this.writeOverTheMovedFile(document, reached);
+        }
+        this.rememberFile(reached);
+        return undefined;
+      }, () => undefined)
+      .finally(() => {
+        this.savingText = undefined;
+      });
+  }
+
+  /**
+   * A change written to the file while the person was typing, put into the document
+   * before the next save writes over it.
+   *
+   * `DocumentSync` already does this for the browser host, where the editor and the
+   * file are the same process and a write to the file is a write to the document.
+   * VS Code is not that. It reloads a document that changed on disk only while the
+   * document is clean, and one being typed into never is, so the document never
+   * learns the file moved at all: `getText()` keeps answering with text read before
+   * the write, and the next auto-save puts that text back over it. Nothing warns
+   * anybody, and the agent's work is simply not there any more.
+   *
+   * So the file is read here, at the last moment before it is written. Where the two
+   * changed different lines both are kept. Where they changed the same line the person
+   * at the keyboard keeps theirs, and if that leaves nothing at all of what was
+   * written, they are told, because they are about to save over a change they have
+   * never seen.
+   */
+  private async keepOutsideChange(document: vscode.TextDocument): Promise<void> {
+    const base = this.fileHasHeld[this.fileHasHeld.length - 1]?.text;
+    if (base === undefined || document.isClosed) {
+      return;
+    }
+    let onDisk: string;
+    try {
+      // `ignoreBOM` keeps a byte-order mark as a character rather than dropping it,
+      // which is what makes this comparable with the text that was written. Decoded
+      // the other way, every file with a mark reads back as different from what it
+      // was given, and the mark is then quietly dropped from the next write.
+      onDisk = new TextDecoder('utf-8', { ignoreBOM: true }).decode(
+        await vscode.workspace.fs.readFile(document.uri)
+      );
+    } catch {
+      return; // Gone, or never written. The save itself reports that.
+    }
+    if (document.isClosed) {
+      return;
+    }
+    const mine = document.getText();
+    // Compared in the webview's line endings, as every comparison between two of these
+    // texts is. VS Code gives a document one line ending, whatever the file mixes, so
+    // a file read straight back from disk can differ from the text that was written to
+    // it in nothing but its endings, and reading that as a rewrite is how the document
+    // ends up being put back to what the file held.
+    const shown = toWebviewText(mine);
+    const shownDisk = toWebviewText(onDisk);
+    /*
+     * Anything the file has held through this editor is Sheaf's own, whether that is
+     * the save that just landed or one that has not caught up yet. Only a text from
+     * nowhere in that list was written by something else.
+     */
+    if (this.fileHasHeld.some((held) => toWebviewText(held.text) === shownDisk)) {
+      return;
+    }
+    if (shownDisk === shown) {
+      // The same document, written with other line endings. Nothing to put together,
+      // and the save about to run settles which endings the file keeps.
+      this.rememberFile(onDisk);
+      return;
+    }
+    /*
+     * Nothing of the person's is waiting, so there is nothing here to protect. What is
+     * on disk is then either news, which VS Code brings into a document itself, or a
+     * save of ours that has not landed yet, and telling those apart from here is
+     * guesswork. Writing the file's text into the document on a guess is how a save
+     * still on its way gets read as an outside change and takes back the letters it
+     * was carrying.
+     */
+    if (shown === toWebviewText(base)) {
+      return;
+    }
+    const { text: together, dropped } = mergeOutsideChange(toWebviewText(base), shown, shownDisk);
+    /*
+     * Said only when none of the write survived, rather than whenever any of it was
+     * dropped.
+     *
+     * A write from something that read the file a moment ago is behind on the line
+     * being typed in, always: the letters typed since are not in its copy, so its
+     * version of that line reads as a change to it and is dropped. Saying so every
+     * time would put a notice on screen for every agent that ever writes while
+     * somebody types, and what it would be reporting is the person's own letters
+     * being kept. What deserves a notice is the write that is wholly gone, because
+     * everything it touched is where the typing is.
+     */
+    if (dropped && together === shown) {
+      void vscode.window.showWarningMessage(noticeAboutOutsideChangeLost());
+    }
+    // What the file holds is now part of the document, so a later read of it is not
+    // news even if the save about to run has not landed by then.
+    this.rememberFile(onDisk);
+    // Something else wrote this file, which is what VS Code refuses to write over.
+    // Knowing it now means the save can take the path that works rather than the one
+    // that fails and says the person's changes are about to be lost.
+    this.fileMovedUnderTheRecord = true;
+    const plan = planEdit(mine, together, document.eol === vscode.EndOfLine.CRLF);
+    if (!plan) {
+      return;
+    }
+    const edit = new vscode.WorkspaceEdit();
+    edit.replace(
+      document.uri,
+      new vscode.Range(document.positionAt(plan.start), document.positionAt(plan.end)),
+      plan.replacement
+    );
+    this.mergingOutsideChange = true;
+    try {
+      await vscode.workspace.applyEdit(edit);
+    } finally {
+      this.mergingOutsideChange = false;
+    }
   }
 
   /**
@@ -1131,7 +1685,7 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
     }
     // Anything but trailing whitespace means the participants did something else,
     // and whatever that was belongs in the webview as it stands.
-    if (trimTrailingWhitespace(text) !== trimTrailingWhitespace(before)) {
+    if (!this.isOurSavesTrim(text)) {
       return text;
     }
     return withLineFrom(text, before, this.caretLine);
@@ -1174,6 +1728,9 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
       `img-src ${webview.cspSource} https: data:`,
       `style-src ${webview.cspSource} 'unsafe-inline'`,
       `font-src ${webview.cspSource}`,
+      // Mermaid's module, imported from `media/mermaid/` when a document has a
+      // diagram, needs nothing more: a module imported by a script that carries
+      // the nonce is fetched with that nonce, and so are its chunks.
       `script-src 'nonce-${nonce}'`,
     ].join('; ');
 
@@ -1191,7 +1748,13 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
     <div id="toolbar" class="sheaf-toolbar" role="toolbar" aria-label="Formatting"></div>
     <div id="editor" class="sheaf-root"></div>
   </div>
-  <script nonce="${nonce}" src="${scriptUri}"></script>
+  <!--
+    A module, because the editor is split into chunks and only fetches a grammar when a
+    fence asks for it. The nonce is what lets the chunks through: a module imported by a
+    script carrying one is fetched with that nonce, and so are its own imports, which is
+    the same path mermaid already takes from the media folder.
+  -->
+  <script type="module" nonce="${nonce}" src="${scriptUri}"></script>
 </body>
 </html>`;
   }

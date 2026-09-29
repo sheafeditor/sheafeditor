@@ -402,6 +402,7 @@ export const scenarios = [
   },
   {
     id: 'blocks.drag.e10',
+    known: 'the page is told nothing when the button comes up outside it, so the drag ends at the next click instead',
     feature: 'blocks.drag',
     name: 'Releasing a drag over the VS Code sidebar drops at the shown slot or cancels, and leaves the editor ready: no dimmed block, grip back, clicks move nothing',
     run: async (S) => {

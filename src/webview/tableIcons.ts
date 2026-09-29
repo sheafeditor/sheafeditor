@@ -61,8 +61,24 @@ const PATHS = {
   // document for a file of their own.
   moveToFile: '<path d="M14 3H7a2 2 0 0 0-2 2v4"/><path d="M14 3v5h5"/><path d="M19 8v11a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2v-2"/><path d="M3 13h9"/><path d="m9 10 3 3-3 3"/>',
 
+  // A view: the table it reads, and a smaller shape beside it holding some of the
+  // same rows. The funnel says which part, in the same two-shape idea the row and
+  // column families use.
+  createView: '<rect x="3" y="4" width="8" height="16" rx="1.5"/><path d="M14 6h7l-3 4v5l-1.5-1v-4z"/>',
   source: BOXED_BRACKETS,
   // The rest of the commands, behind one button.
+  /*
+   * Copy ref and Send to terminal, the two rows of the right-click menu that had no glyph.
+   *
+   * A menu where most rows carry an icon and two do not is worse than one where none does: the
+   * eye reads the gap as meaning something. These exist so the menu has no holes in it.
+   *
+   * `copyRef` is two sheets with a corner turned, which is the clipboard idea every product
+   * draws that way. `terminal` is a prompt and a caret, which is what a terminal looks like at
+   * 24 pixels and reads as nothing else.
+   */
+  copyRef: '<rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
+  terminal: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="m7 9 3 3-3 3"/><path d="M13 15h4"/>',
   overflow: '<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>',
   // The mark on a column header and a row number that opens that axis's menu.
   chevron: '<path d="m6 9 6 6 6-6"/>',

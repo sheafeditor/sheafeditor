@@ -302,4 +302,127 @@ export const scenarios = [
       return { ok, detail: `a board first ${wasBoard}; after the column went ${j(seen)}` };
     },
   },
+  {
+    id: 'tables.datatables.edges.e14',
+    feature: 'tables.datatables',
+    name: 'Create view on a named table inside a quote writes the view inside the quote, not out of it',
+    run: async (S) => {
+      const text = 'Plan.\n\n> Notes:\n>\n> ```csv id=quoted\n> feature,status\n> Search,Open\n> ```\n\nAfter.\n';
+      await S.fresh('edges-view-in-quote', text);
+      await S.sleep(800);
+      await S.click({ sel: '.sheaf-table-grid td[data-r="0"][data-c="0"]' });
+      await S.click({ sel: '.sheaf-table-ctrl[data-cmd="overflow"]' });
+      await S.sleep(200);
+      await S.click({ sel: '.sheaf-table-menu-item[data-cmd="table.createView"]' });
+      await S.sleep(900);
+      const disk = await S.disk();
+      const added = disk.split('\n').slice(7, 11);
+      const views = await S.eval(() => document.querySelectorAll('.sheaf-view').length);
+      // Every line of the written view carries the quote's marker, or the view is a block of
+      // its own below the quote and the quote has lost its closing part.
+      const ok = added.every((l) => l === '' || l.startsWith('>')) && disk.includes('> from: #quoted') && views === 1 && disk.endsWith('After.\n');
+      return { ok, detail: `the lines written ${j(added)}; views drawn ${views}; file ${j(disk)}` };
+    },
+  },
+  {
+    id: 'tables.datatables.edges.e15',
+    feature: 'tables.datatables',
+    name: 'Create view on a named table inside a list item writes the view at the item\'s indent',
+    run: async (S) => {
+      const text = 'Plan.\n\n- Item one:\n\n  ```csv id=inlist\n  feature,status\n  Search,Open\n  ```\n\n- Item two.\n';
+      await S.fresh('edges-view-in-list', text);
+      await S.sleep(800);
+      await S.click({ sel: '.sheaf-table-grid td[data-r="0"][data-c="0"]' });
+      await S.click({ sel: '.sheaf-table-ctrl[data-cmd="overflow"]' });
+      await S.sleep(200);
+      await S.click({ sel: '.sheaf-table-menu-item[data-cmd="table.createView"]' });
+      await S.sleep(900);
+      const disk = await S.disk();
+      const written = disk.split('\n').filter((l) => l.includes('```view') || l.includes('from: #inlist'));
+      const views = await S.eval(() => document.querySelectorAll('.sheaf-view').length);
+      const bullets = await S.eval(() => [...document.querySelectorAll('.cm-line')].filter((l) => l.textContent.includes('Item ')).length);
+      const ok = written.length === 1 + 1 && written.every((l) => l.startsWith('  ')) && views === 1 && bullets === 2 && disk.endsWith('- Item two.\n');
+      return { ok, detail: `the view lines written ${j(written)}; views drawn ${views}; item lines ${bullets}; file ${j(disk)}` };
+    },
+  },
+  {
+    id: 'tables.datatables.edges.e16',
+    feature: 'tables.datatables',
+    name: 'A name with a space in it is refused with the reason, and nothing is written to the file',
+    run: async (S) => {
+      const text = 'Plan.\n\n```csv\nfeature,status\nSearch,Open\n```\n';
+      await S.fresh('edges-bad-name', text);
+      await S.sleep(800);
+      await S.hover({ sel: '.sheaf-table' });
+      await S.sleep(300);
+      await S.click({ sel: '.sheaf-table-name-it' });
+      await S.sleep(300);
+      await S.type('my table');
+      await S.press('Enter');
+      await S.sleep(500);
+      const said = await S.eval(() => {
+        const e = document.querySelector('.sheaf-table-error');
+        return e && !e.hidden ? e.textContent : null;
+      });
+      const still = await S.eval(() => !!document.querySelector('.sheaf-table-caption input, .sheaf-table input'));
+      const disk = await S.disk();
+      const ok = disk === text && !!said && said.includes('cannot be a name') && still;
+      return { ok, detail: `it said ${j(said)}; the field is still open ${still}; file unchanged ${disk === text}` };
+    },
+  },
+  {
+    id: 'tables.datatables.edges.e17',
+    feature: 'tables.datatables',
+    name: "Show as board on a view's head writes layout and group together, and Show as table takes both out together",
+    run: async (S) => {
+      const text = `Plan.\n\n${TASKS}\n\n\`\`\`view\nfrom: #tasks\nwhere: status != Done\n\`\`\`\n`;
+      await S.fresh('edges-view-layout', text);
+      await S.sleep(800);
+      const label = () => S.eval(() => document.querySelector('.sheaf-view-layout')?.textContent ?? null);
+      const before = await label();
+      await S.click({ sel: '.sheaf-view-layout' });
+      await S.sleep(400);
+      const asked = await S.eval(() => ({
+        title: document.querySelector('.sheaf-view-menu-title')?.textContent ?? null,
+        columns: [...document.querySelectorAll('.sheaf-view-menu-apply')].map((b) => b.textContent),
+      }));
+      await S.click({ sel: '.sheaf-view-menu-apply:nth-of-type(2)' });
+      await S.sleep(700);
+      const asBoard = await S.disk();
+      const cards = await S.eval(() => document.querySelectorAll('.sheaf-board-card').length);
+      const middle = await label();
+      await S.click({ sel: '.sheaf-view-layout' });
+      await S.sleep(700);
+      const asTable = await S.disk();
+      const rows = await S.eval(() => document.querySelectorAll('.sheaf-view tbody tr').length);
+      const want = text.replace('where: status != Done\n', 'where: status != Done\nlayout: board\ngroup: status\n');
+      const ok =
+        before === 'Show as board' && asked.title === 'Group the board by' && j(asked.columns) === j(['feature', 'status', 'estimate']) &&
+        asBoard === want && cards > 0 && middle === 'Show as table' && asTable === text && rows > 0;
+      return {
+        ok,
+        detail: `the button read ${j(before)} then ${j(middle)}; it asked ${j(asked)}; as a board the query gained ${j(asBoard.split('```view')[1])}; back to a table the file is ${asTable === text ? 'as it was' : j(asTable)}; cards ${cards}, rows ${rows}`,
+      };
+    },
+  },
+  {
+    id: 'tables.datatables.edges.e18',
+    feature: 'tables.datatables',
+    name: 'A view whose rows cannot be read offers neither Show as board nor Bring inline',
+    run: async (S) => {
+      const text = 'Plan.\n\n```view\nfrom: #nosuchtable\n```\n';
+      await S.fresh('edges-view-unreadable', text);
+      await S.sleep(900);
+      const head = await S.eval(() => {
+        const usable = (sel) => {
+          const b = document.querySelector(sel);
+          return !b ? 'absent' : b.hidden ? 'hidden' : b.getAttribute('aria-disabled') === 'true' ? 'disabled' : 'offered';
+        };
+        return { layout: usable('.sheaf-view-layout'), inline: usable('.sheaf-view-inline'), said: [...document.querySelectorAll('.sheaf-view-notes p')].map((p) => p.textContent) };
+      });
+      const disk = await S.disk();
+      const ok = head.layout !== 'offered' && head.inline !== 'offered' && head.said.some((t) => t.includes('nosuchtable')) && disk === text;
+      return { ok, detail: `the head offers ${j(head)}; file unchanged ${disk === text}` };
+    },
+  },
 ];

@@ -5,6 +5,7 @@ import { EditorSelection } from '@codemirror/state';
 import { mountProse } from '../../harness';
 import { setLivePreviewConfig, setReveal, revealField } from '../../../src/webview/livePreview';
 import { toggleBlockReveal } from '../../../src/webview/revealBlock';
+import { setFrontMatterMode } from '../../../src/webview/frontMatterView';
 import { blockSelectionOf } from '../../../src/webview/blockModel';
 
 type Result = boolean | { ok: boolean; detail?: string };
@@ -25,6 +26,19 @@ function mount(doc: string, revealSyntaxOnLine = false): P {
   const p = mountProse(doc);
   // A caret at the very end, outside any block under test, the way a freshly opened file has none in it.
   return p;
+}
+
+/**
+ * The same, with the front matter drawn in full. Collapsed is the default, so a
+ * scenario about how those lines are drawn has to ask for them.
+ */
+function withShownFrontMatter(doc: string, fn: (p: P) => Result): Result {
+  setFrontMatterMode('shown');
+  try {
+    return withDoc(doc, fn);
+  } finally {
+    setFrontMatterMode('collapsed');
+  }
 }
 
 /** Run `fn` against a mounted doc and always destroy it. */
@@ -276,7 +290,11 @@ export const scenarios: Scenario[] = [
     run: () =>
       withDoc('x\n\n- dash\n\n* star\n\n+ plus', (p) => {
         const got = [3, 5, 7].map((n) => lineText(p, n));
-        return check(got.every((t) => /^•\s+(dash|star|plus)$/.test(t)), got);
+        // No space between the bullet and the word: the marker takes the source space after
+        // the `-` with it, and the gap a reader sees is drawn by the box the bullet sits in
+        // rather than typed into the line. Where that box puts the word is geometry, measured
+        // by scripts/check-indent.mjs.
+        return check(got.every((t) => /^•(dash|star|plus)$/.test(t)), got);
       }),
   },
   {
@@ -286,7 +304,10 @@ export const scenarios: Scenario[] = [
     run: () =>
       withDoc('x\n\n7. seven\n8. eight\n\n1) paren', (p) => {
         const got = [3, 4, 6].map((n) => lineText(p, n));
-        return check(got[0] === '7. seven' && got[1] === '8. eight' && got[2] === '1) paren', got);
+        // The number and its delimiter are still the document's own text, as this feature
+        // requires; what has gone is the space after them, which the marker now takes with it
+        // so that the digits cannot move the words. The gap is drawn by the box instead.
+        return check(got[0] === '7.seven' && got[1] === '8.eight' && got[2] === '1)paren', got);
       }),
   },
   {
@@ -727,7 +748,7 @@ export const scenarios: Scenario[] = [
     feature: 'render.front-matter',
     name: 'A short YAML front matter block reads as metadata, not as a rule and a heading',
     run: () =>
-      withDoc('---\ntitle: Hello\ndraft: true\n---\n\n# Body\n\ntext', (p) => {
+      withShownFrontMatter('---\ntitle: Hello\ndraft: true\n---\n\n# Body\n\ntext', (p) => {
         p.select(p.doc().length);
         const got = {
           l1: lineText(p, 1),
@@ -777,7 +798,7 @@ export const scenarios: Scenario[] = [
     feature: 'render.front-matter',
     name: 'Front matter closed with ... reads as metadata, not a paragraph run together',
     run: () =>
-      withDoc('---\ntitle: Dots\n...\n\nbody', (p) => {
+      withShownFrontMatter('---\ntitle: Dots\n...\n\nbody', (p) => {
         p.select(p.doc().length);
         const got = { l1hr: !!lineEl(p, 1)?.querySelector('hr.md-hr'), l2: lineText(p, 2) };
         return check(!got.l1hr && got.l2 === 'title: Dots', got);
@@ -910,6 +931,56 @@ export const scenarios: Scenario[] = [
         // The inner pair is a complete pair and may draw; the outer one is the guess.
         const t = lineText(p, 3);
         return check(t.startsWith('See <b>outer ') && t.endsWith(' rest</b> end.'), t);
+      }),
+  },
+
+  // ---------------------------------------------------------------- emoji shortcodes
+  {
+    id: 'render.emoji.u01',
+    feature: 'render.emoji',
+    name: 'A shortcode draws as its character, and Edit Markdown brings the name back',
+    run: () =>
+      withDoc('x\n\nBuild passed :white_check_mark: and the deploy is :rocket: queued.', (p) => {
+        const drawn = lineText(p, 3);
+        const chars = within(p, '.tok-emoji');
+        const l = p.view.state.doc.line(3);
+        p.view.dispatch({ effects: setReveal.of({ from: l.from, to: l.to }), selection: { anchor: l.from + 3 } });
+        const revealed = lineText(p, 3);
+        const ok =
+          drawn === 'Build passed ✅ and the deploy is 🚀 queued.' &&
+          chars.join('|') === '✅|🚀' &&
+          revealed === 'Build passed :white_check_mark: and the deploy is :rocket: queued.' &&
+          within(p, '.tok-emoji').length === 0;
+        return check(ok, { drawn, chars, revealed });
+      }),
+  },
+  {
+    id: 'render.emoji.u02',
+    feature: 'render.emoji',
+    name: 'A name with a plus or a hyphen draws, which GFM own emoji rule cannot reach',
+    run: () =>
+      withDoc('x\n\nShip it :+1: not :-1:, mail :e-mail:, and :t-rex: drinks :non-potable_water:.', (p) => {
+        const t = lineText(p, 3);
+        return check(t === 'Ship it 👍 not 👎, mail 📧, and 🦖 drinks 🚱.' && within(p, '.tok-emoji').join('|') === '👍|👎|📧|🦖|🚱', t);
+      }),
+  },
+  {
+    id: 'render.emoji.u03',
+    feature: 'render.emoji',
+    name: 'A colon-word that is no shortcode stays as typed, and typing one draws it without changing the file',
+    run: () =>
+      withDoc('x\n\nDocked 10:30:45, :not_a_shortcode: and :30: stay.', (p) => {
+        const before = lineText(p, 3);
+        const at = p.view.state.doc.line(3).to;
+        typeAt(p, at, ' :coffee:');
+        p.select(0);
+        const after = lineText(p, 3);
+        const ok =
+          before === 'Docked 10:30:45, :not_a_shortcode: and :30: stay.' &&
+          within(p, '.tok-emoji').join('|') === '☕' &&
+          after === 'Docked 10:30:45, :not_a_shortcode: and :30: stay. ☕' &&
+          p.doc() === 'x\n\nDocked 10:30:45, :not_a_shortcode: and :30: stay. :coffee:';
+        return check(ok, { before, after, doc: p.doc() });
       }),
   },
 
@@ -1101,7 +1172,21 @@ export const scenarios: Scenario[] = [
         (p) => {
           p.select(p.view.state.doc.line(3).from + 4);
           const got = [3, 4].map((n) => lineText(p, n));
-          return check(got[0].startsWith('>') && got[1].startsWith('>'), got);
+          /*
+           * The whole block reveals, which is what this is for, and the asterisks on both lines are
+           * what says so: the caret is on the first, and the second showing its markers too is the
+           * property being held.
+           *
+           * It used to read that from a leading `>` on each line. A quote's `>` is now the one
+           * marker kept hidden on the caret's line, because its width is already in the quote's
+           * computed indent and drawing it moved the words sideways as the caret arrived. So the
+           * indicator changed and the property did not. An alert's marker line still shows byte for
+           * byte, `>` included, since the whole line is syntax there.
+           */
+          return check(
+            got.every((t) => t.includes('**line**')) && got.every((t) => !t.startsWith('>')),
+            got
+          );
         },
         true
       ),

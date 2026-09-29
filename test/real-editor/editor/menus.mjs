@@ -136,13 +136,18 @@ export const scenarios = [
   {
     id: 'menus.context-prose.e03',
     feature: 'menus.context-prose',
-    name: 'Right-click a link and choose Remove link: the text stays and the address goes',
+    name: "Right-click a link and press Remove link on its panel: the text stays and the address goes",
     run: async (S) => {
+      // A right-click on a link opens the panel rather than the menu, so Remove link is
+      // pressed there. It is the same command; only the surface it is reached from moved.
       await S.fresh('ctx-unlink', 'Go to the [site](https://a.io) now.\n');
       await S.rightClick({ text: 'site', offset: 2 });
-      await S.menu('Remove link');
+      await S.sleep(300);
+      const shown = await S.eval(() => !!document.querySelector('.sheaf-linkpop'));
+      await S.click({ sel: '.sheaf-linkpop [data-action="remove"]' });
+      await S.sleep(600);
       const d = await S.disk();
-      return { ok: d === 'Go to the site now.\n', detail: show(d) };
+      return { ok: shown && d === 'Go to the site now.\n', detail: `panel ${shown}; ${show(d)}` };
     },
   },
   {
@@ -283,14 +288,55 @@ export const scenarios = [
   {
     id: 'menus.context-prose.e12',
     feature: 'menus.context-prose',
-    name: 'Right-click a link written with an angle-bracket address and choose Copy link address: the clipboard holds the address without brackets',
+    name: "Right-click a link written with an angle-bracket address and copy it from its panel: no brackets",
     run: async (S) => {
       await S.fresh('ctx-angle', 'See [the notes](<my notes.md>) here.\n');
       await S.rightClick({ text: 'notes', offset: 2 });
+      await S.sleep(300);
       await S.clipboard.write('SENTINEL-angle');
-      await S.menu('Copy link address');
+      await S.click({ sel: '.sheaf-linkpop [data-action="copy"]' });
       const clip = await clipboardAfter(S, 'SENTINEL-angle');
       return { ok: clip === 'my notes.md', detail: show(clip) };
+    },
+  },
+  {
+    id: 'menus.context-cell.e01',
+    feature: 'menus.context-cell',
+    name: "Right-click inside an open table cell: Sheaf's own menu opens for that cell, with no block kinds and no row actions",
+    run: async (S) => {
+      const doc = 'Intro.\n\n| Role | Note |\n| --- | --- |\n| pilot | **start**. hello |\n| drone | second row |\n\nAfter.\n';
+      await S.fresh('ctx-cell', doc);
+      await S.sleep(600);
+      // Open the cell first: a right-click on a closed cell is a click on the grid, and
+      // that is the table's own menu, which this scenario is not about.
+      await S.dblclick({ sel: '.sheaf-table [data-r="0"][data-c="1"]' });
+      await S.sleep(400);
+      await S.rightClick({ text: 'hello', within: '.sheaf-table-input', offset: 2 });
+      await S.sleep(300);
+      const items = await menuItems(S);
+      const labels = items.map((i) => i.label);
+      await S.shot('ctx-cell');
+      // Edit Markdown from the menu shows that one cell's source and leaves the rest drawn.
+      await S.menu('Edit Markdown');
+      await S.sleep(400);
+      // The open cell's own editor, not the td: the td holds the rendered layer under it too,
+      // so reading the cell gives the drawn value and the edited one run together.
+      const after = await S.eval(() => ({
+        open: document.querySelector('.sheaf-table-input .cm-content')?.textContent.trim() ?? null,
+        below: document.querySelector('.sheaf-table [data-r="1"][data-c="1"]')?.textContent.trim() ?? null,
+      }));
+      await S.shot('ctx-cell-revealed');
+      const d = await S.disk();
+      const ok =
+        labels[0] === 'Edit Markdown' &&
+        labels[1] === 'Copy ref' &&
+        !labels.includes('Turn into') &&
+        !labels.includes('Insert row above') &&
+        labels.includes('Clear formatting') &&
+        after.open === '**start**. hello' &&
+        after.below === 'second row' &&
+        d === doc;
+      return { ok, detail: `items ${j(labels)}; after ${j(after)}${d === doc ? '' : '; the file changed'}` };
     },
   },
   {
@@ -375,7 +421,7 @@ export const scenarios = [
   {
     id: 'menus.context-keyboard.e01',
     feature: 'menus.context-keyboard',
-    name: 'Click inside a word, press Shift+F10: the menu opens at the caret with Turn into focused; Escape closes it and typing lands at the caret',
+    name: 'Click inside a word, press Shift+F10: the menu opens at the caret with Edit Markdown focused; Escape closes it and typing lands at the caret',
     run: async (S) => {
       await S.fresh('kb-open', 'Say hello to the world today.\n');
       await S.caret('world', 2);
@@ -391,7 +437,7 @@ export const scenarios = [
       const d = await S.disk();
       const near = menu && word && Math.abs(menu.top - word.bottom) < 30 && Math.abs(menu.left - (word.left + (word.right - word.left) * 0.4)) < 40;
       return {
-        ok: open && focused === 'Turn into' && !!near && closed && d === 'Say hello to the woZrld today.\n',
+        ok: open && focused === 'Edit Markdown' && !!near && closed && d === 'Say hello to the woZrld today.\n',
         detail: `open ${open} focused ${focused} menu ${j(menu)} word ${j(word)} closed ${closed} editorFocused ${st.focused}; ${show(d)}`,
       };
     },
@@ -401,38 +447,60 @@ export const scenarios = [
     feature: 'menus.context-keyboard',
     name: 'Drag-select a word, press Shift+F10, arrow down to Highlight and press Enter: the word is highlighted and the editor has focus again',
     run: async (S) => {
-      // Two steps from Turn into: Edit Markdown, then Highlight.
+      /*
+       * Stepped down until Highlight has focus, rather than a fixed number of times. The
+       * question is whether the arrow keys reach it and Enter runs it; how many items sit
+       * above it is the menu's business and changes when the menu is reordered. A fixed
+       * count made this scenario fail for a reorder that broke nothing, which is the kind
+       * of failure that teaches people to ignore the suite.
+       *
+       * The path is in the detail either way, so a reorder is still visible here.
+       */
       await S.fresh('kb-mark', 'Say hello to the world today.\n');
       await S.select('world');
       await S.press('Shift+F10');
       const path = [await focusedLabel(S)];
-      for (let i = 0; i < 2; i++) {
+      for (let i = 0; i < 12 && path[path.length - 1] !== 'Highlight'; i++) {
         await S.press('ArrowDown');
         path.push(await focusedLabel(S));
       }
+      const reached = path[path.length - 1] === 'Highlight';
       await S.press('Enter');
       const d = await S.disk();
       const st = await S.state();
-      return { ok: d === 'Say hello to the ==world== today.\n' && st.focused, detail: `${path.join('>')} focused ${st.focused}; ${show(d)}` };
+      return {
+        ok: reached && d === 'Say hello to the ==world== today.\n' && st.focused,
+        detail: `${path.join('>')} reached ${reached} in ${path.length - 1} steps, focused ${st.focused}; ${show(d)}`,
+      };
     },
   },
   {
     id: 'menus.context-keyboard.e03',
     feature: 'menus.context-keyboard',
-    name: 'Click in a line, Shift+F10, Home, Right, Down, Enter: the line becomes Heading 1',
+    name: 'Click in a line, Shift+F10, then Home and the arrows into Turn into: the line becomes Heading 1',
     run: async (S) => {
       await S.fresh('kb-turn', 'Top words\n\nLast line\n');
       await S.caret('Last line', 2);
       await S.press('Shift+F10');
-      // Home, not End: Turn into leads the menu, and End reaches Copy ref at the bottom.
+      // Home goes to the top of the menu, wherever Turn into happens to sit, and then down
+      // to it by label. This is about a submenu opening with ArrowRight and taking the keys,
+      // not about Turn into's position.
       await S.press('Home');
-      const onTurn = await focusedLabel(S);
+      const path = [await focusedLabel(S)];
+      for (let i = 0; i < 12 && path[path.length - 1] !== 'Turn into'; i++) {
+        await S.press('ArrowDown');
+        path.push(await focusedLabel(S));
+      }
+      const onTurn = path[path.length - 1];
       await S.press('ArrowRight');
       await S.press('ArrowDown');
       const onH1 = await focusedLabel(S);
       await S.press('Enter');
       const d = await S.disk();
-      return { ok: d === 'Top words\n\n# Last line\n', detail: `${onTurn} > ${onH1}; ${show(d)}` };
+      return {
+        ok: onTurn === 'Turn into' && d === 'Top words\n\n# Last line\n',
+        detail: `${path.join('>')} then submenu ${onH1}; ${show(d)}`,
+      };
     },
   },
   {
@@ -455,23 +523,25 @@ export const scenarios = [
     feature: 'menus.context-keyboard',
     name: 'Right-click with the mouse, then press Down and Enter: focus moves into the menu and Edit Markdown runs on the block',
     run: async (S) => {
-      // One step down from Turn into. Paste is no longer in this menu, so the command that proves
-      // the keys reached it is the one under the first item.
+      /*
+       * Paste is no longer in this menu, so the command that proves the keys reached it has
+       * to be one with a visible effect. Edit Markdown leads the menu and reveals the
+       * block's source, which shows on screen without touching the file: the item under it
+       * is Copy ref, whose whole effect is on the clipboard, and Enter on that would have
+       * proved nothing.
+       */
       await S.fresh('kb-mouse-then-keys', 'Say **hello** to the world today.\n');
       await S.rightClick({ text: 'world', offset: 2 });
-      // The first Down moves focus into the menu, onto its first item; the second steps to the one
-      // under it.
+      // The first Down moves focus from the document into the menu, onto its first item.
       await S.press('ArrowDown');
       const entered = await focusedLabel(S);
-      await S.press('ArrowDown');
-      const focused = await focusedLabel(S);
       await S.press('Enter');
       await S.sleep(700);
       const shown = await S.rendered();
       const d = await S.disk();
       return {
-        ok: entered === 'Turn into' && focused === 'Edit Markdown' && shown.includes('**hello**') && d === 'Say **hello** to the world today.\n',
-        detail: `entered on ${entered}, then ${focused}; on screen ${show(shown)}; ${show(d)}`,
+        ok: entered === 'Edit Markdown' && shown.includes('**hello**') && d === 'Say **hello** to the world today.\n',
+        detail: `entered on ${entered}; on screen ${show(shown)}; ${show(d)}`,
       };
     },
   },
@@ -603,15 +673,23 @@ export const scenarios = [
   {
     id: 'menus.selection-toolbar.e09',
     feature: 'menus.selection-toolbar',
-    name: 'Select a word inside a link: the Link button reads Remove link, and clicking it keeps the text',
+    name: 'Select a word inside a link: the Link button reads Edit link, and clicking it opens the popover rather than writing anything',
     run: async (S) => {
-      await S.fresh('seltb-unlink', 'Go to the [home page](https://a.io) now.\n');
+      const doc = 'Go to the [home page](https://a.io) now.\n';
+      await S.fresh('seltb-unlink', doc);
       await S.select('page');
       await waitFor(S, '.sheaf-seltb');
       const label = await S.eval(() => document.querySelector('.sheaf-seltb [data-cmd="link"]')?.getAttribute('aria-label'));
       await S.click({ sel: '.sheaf-seltb [data-cmd="link"]' });
+      // The popover takes the toolbar's place, since the button that opened it is on the toolbar.
+      const opened = await waitFor(S, '.sheaf-linkpop');
+      const gone = await waitFor(S, '.sheaf-seltb', false, 1500);
+      const field = await S.eval(() => document.querySelector('.sheaf-linkpop-url')?.value);
       const d = await S.disk();
-      return { ok: label === 'Remove link' && d === 'Go to the home page now.\n', detail: `label ${j(label)}; ${show(d)}` };
+      return {
+        ok: label === 'Edit link (⌘K)' && opened && gone && field === 'https://a.io' && d === doc,
+        detail: `label ${j(label)}; popover ${opened}, toolbar gone ${gone}, address field ${j(field)}; ${show(d)}`,
+      };
     },
   },
   {
@@ -654,7 +732,10 @@ export const scenarios = [
           rows: [...new Set(rows)].length,
           width: Math.round(tb.getBoundingClientRect().width),
           pane: Math.round(document.querySelector('.cm-scroller').getBoundingClientRect().width),
-          separatorAfterFirst: first.nextElementSibling?.getAttribute('role') === 'separator',
+          // Edit Markdown and Copy ref are one group: the separator comes after the pair, not
+          // after Edit Markdown alone (they were put together when Copy ref reached this bar).
+          secondLabel: controls[1]?.getAttribute('aria-label') ?? null,
+          separatorAfterGroup: (controls[1]?.nextElementSibling ?? first.nextElementSibling)?.getAttribute('role') === 'separator',
         };
       });
       await S.click({ sel: '.sheaf-seltb button' });
@@ -665,13 +746,124 @@ export const scenarios = [
       return {
         ok:
           /^Edit Markdown/.test(bar.firstLabel ?? '') &&
-          bar.separatorAfterFirst &&
+          /^Copy ref/.test(bar.secondLabel ?? '') &&
+          bar.separatorAfterGroup &&
           bar.rows === 1 &&
           shown.includes('**hello**') &&
           gone &&
           d === 'Intro line\n\nSay **hello** to the world today.\n',
-        detail: `first ${j(bar.firstLabel)} title ${j(bar.firstTitle)}; ${bar.buttons} buttons on ${bar.rows} row(s), bar ${bar.width}px in a ${bar.pane}px pane; separator after it ${bar.separatorAfterFirst}; on screen ${show(shown)}; bar gone ${gone}`,
+        detail: `first ${j(bar.firstLabel)} title ${j(bar.firstTitle)}; ${bar.buttons} buttons on ${bar.rows} row(s), bar ${bar.width}px in a ${bar.pane}px pane; second ${j(bar.secondLabel)}; separator after the pair ${bar.separatorAfterGroup}; on screen ${show(shown)}; bar gone ${gone}`,
       };
+    },
+  },
+
+  {
+    id: 'menus.context-table.e01',
+    feature: 'menus.context-table',
+    name: "Right-click a table cell: every row of the menu carries a glyph, in one column, and the labels line up",
+    run: async (S) => {
+      await S.fresh('ctx-table-icons', 'Intro.\n\n| Fruit | Qty |\n| --- | --- |\n| kiwi | 3 |\n| plum | 5 |\n');
+      await S.sleep(600);
+      await S.rightClick({ sel: '.sheaf-table [data-r="0"][data-c="0"]' });
+      await S.sleep(400);
+      const read = await S.eval(() => {
+        const menu = [...document.querySelectorAll('.sheaf-ctx-menu')].find((m) => !m.hidden);
+        if (!menu) return null;
+        const rows = [...menu.querySelectorAll('.sheaf-ctx-item')].map((b) => {
+          const svg = b.querySelector('svg');
+          const label = b.querySelector('.sheaf-ctx-label');
+          const r = svg?.getBoundingClientRect();
+          return {
+            label: label?.textContent ?? '',
+            glyph: !!svg,
+            // Where the glyph and the label start, so "in one column" is measured rather
+            // than assumed: an icon that pushed its label along would pass a count.
+            iconLeft: r ? Math.round(r.left) : null,
+            labelLeft: label ? Math.round(label.getBoundingClientRect().left) : null,
+            hidden: svg?.getAttribute('aria-hidden') ?? null,
+            // The accessible name has to stay the label alone, with no glyph in it.
+            name: (b.textContent ?? '').trim(),
+          };
+        });
+        return { rows, size: rows[0] && document.querySelector('.sheaf-ctx-item svg') ? Math.round(document.querySelector('.sheaf-ctx-item svg').getBoundingClientRect().width) : null };
+      });
+      await S.shot('ctx-table-icons');
+      await S.press('Escape');
+      if (!read || !read.rows.length) return { ok: false, detail: 'no table menu opened' };
+      const bare = read.rows.filter((r) => !r.glyph).map((r) => r.label);
+      const icons = [...new Set(read.rows.filter((r) => r.iconLeft !== null).map((r) => r.iconLeft))];
+      const labels = [...new Set(read.rows.map((r) => r.labelLeft))];
+      const exposed = read.rows.filter((r) => r.glyph && r.hidden !== 'true').map((r) => r.label);
+      const detail = `${read.rows.length} rows, ${bare.length} bare; glyphs at ${j(icons)}, labels at ${j(labels)}, glyph ${read.size}px`;
+      if (bare.length) return { ok: false, detail: `${detail}; no glyph on ${j(bare)}` };
+      if (icons.length !== 1 || labels.length !== 1) return { ok: false, detail: `${detail}; they do not line up in one column` };
+      if (exposed.length) return { ok: false, detail: `${detail}; ${j(exposed)} are not aria-hidden, so a screen reader reads them` };
+      return { ok: read.size === 16, detail };
+    },
+  },
+
+  /* ==== menus.link-click ==== */
+  {
+    id: 'menus.link-click.e01',
+    feature: 'menus.link-click',
+    name: 'A plain click on a link in prose opens it, and a drag that starts on one selects instead',
+    run: async (S) => {
+      await S.fresh('link-click', 'Read the [guide](docs/guide.md) and then the rest of it.\n');
+      await S.sleep(500);
+      const before = await S.disk();
+      await S.click({ text: 'guide', offset: 2 });
+      await S.sleep(900);
+      // A relative `.md` opens in the editor, so the proof is a second Sheaf tab on that file.
+      const opened = await S.eval(() => document.title || '');
+      const tabs = await S.openTabs?.();
+      /*
+       * And a drag that begins on the link selects rather than opening. The press is also the
+       * start of a selection, so taking it would make dragging through a link impossible.
+       */
+      await S.drag({ text: 'guide', offset: 0 }, { text: 'rest', offset: 4 });
+      await S.sleep(400);
+      const picked = await S.eval(() => String(getSelection() ?? ''));
+      const d = await S.disk();
+      return {
+        ok: picked.includes('guide') && picked.includes('rest') && d === before,
+        detail: `after the click ${j(opened)}${tabs ? `; tabs ${j(tabs)}` : ''}; the drag picked ${j(picked)}; file unchanged: ${d === before}`,
+      };
+    },
+  },
+  {
+    id: 'menus.link-click.e02',
+    feature: 'menus.link-click',
+    name: 'A right-click on a link opens its panel with the words and the address, and a right-click on prose still opens the menu',
+    run: async (S) => {
+      await S.fresh('link-right', 'Read the [guide](https://a.io/g) and the rest of it.\n');
+      await S.sleep(500);
+      const before = await S.disk();
+      await S.rightClick({ text: 'guide', offset: 2 });
+      await S.sleep(400);
+      const onLink = await S.eval(() => ({
+        popover: !!document.querySelector('.sheaf-linkpop'),
+        url: document.querySelector('.sheaf-linkpop-url')?.value ?? null,
+        text: document.querySelector('.sheaf-linkpop-text')?.value ?? null,
+        menu: [...document.querySelectorAll('.sheaf-ctx-menu')].some((m) => !m.hidden),
+      }));
+      await S.press('Escape');
+      await S.sleep(300);
+      /*
+       * The control, and the one this must not trade away. A change that sent every right-click
+       * to the popover would pass the reading above and take the context menu away from the
+       * whole document.
+       */
+      await S.rightClick({ text: 'rest', offset: 2 });
+      await S.sleep(400);
+      const onProse = await S.eval(() => ({
+        popover: !!document.querySelector('.sheaf-linkpop'),
+        menu: [...document.querySelectorAll('.sheaf-ctx-menu')].some((m) => !m.hidden),
+      }));
+      await S.press('Escape');
+      const d = await S.disk();
+      const ok =
+        onLink.popover && onLink.url === 'https://a.io/g' && onLink.text === 'guide' && !onLink.menu && !onProse.popover && onProse.menu && d === before;
+      return { ok, detail: `on the link ${j(onLink)}; on prose ${j(onProse)}; file unchanged: ${d === before}` };
     },
   },
 
@@ -829,7 +1021,10 @@ export const scenarios = [
       await S.menu('Heading 2');
       await S.type('Title');
       const d = await S.disk();
-      return { ok: shown && count === 15 && d === 'Top words\n\n## Title', detail: `shown ${shown} items ${count}; ${show(d)}` };
+      // The count is here to catch an item disappearing by accident, so it is a number
+      // rather than a floor, and adding one on purpose means changing it here. It went
+      // from 15 to 16 when the menu started offering a view of a table.
+      return { ok: shown && count === 16 && d === 'Top words\n\n## Title', detail: `shown ${shown} items ${count}; ${show(d)}` };
     },
   },
   {
@@ -1062,6 +1257,44 @@ export const scenarios = [
           oneLine &&
           hinted.every((r) => r.hintColour !== r.labelColour),
         detail: `${rows.length} rows; label column at ${j(lefts)}; ${hinted.length} carry Markdown; flush right ${flush}; heights ${j([...new Set(rows.map((r) => r.height))])}; hint colour ${hinted[0] && hinted[0].hintColour} against label ${hinted[0] && hinted[0].labelColour}; ${j(rows.map((r) => [r.label, r.hint]))}`,
+      };
+    },
+  },
+  {
+    id: 'menus.slash.e12',
+    feature: 'menus.slash',
+    name: 'A small scroll with the slash menu open keeps it beside the line, rather than where it opened',
+    run: async (S) => {
+      /*
+       * The half of e08 a large scroll cannot ask about. Scrolled far enough, the
+       * editor redraws for its own reasons and the menu is measured again on the way;
+       * a nudge of the wheel need not make it redraw at all, and then the menu stays
+       * at the height it opened at while the text slides out from under it. Same bug,
+       * and the one a stray flick of a trackpad actually produces.
+       */
+      await S.fresh('slash-small-scroll', LONG);
+      await S.caret('Line 5 holds', 'Line 5 holds '.length);
+      await S.type('/');
+      await waitFor(S, '.sheaf-slash-menu');
+      const before = await boxOf(S, '.sheaf-slash-menu');
+      await S.hover({ text: 'Line 3 holds', offset: 2 });
+      await S.page.mouse.wheel(0, 60);
+      await S.sleep(600);
+      const menu = await boxOf(S, '.sheaf-slash-menu');
+      const word = await textBox(S, 'Line 5 holds');
+      await S.shot('slash-small-scroll');
+      // The line is still on screen, so closing would be losing the menu for no
+      // reason: it has to have moved with the line instead.
+      const ok =
+        !!menu &&
+        !!word &&
+        word.bottom > 0 &&
+        !!before &&
+        Math.abs(menu.top - before.top) > 20 &&
+        Math.abs(menu.top - word.bottom) < 40;
+      return {
+        ok,
+        detail: `menu opened at ${before && before.top}, now ${menu && menu.top}; line bottom now ${word && word.bottom}`,
       };
     },
   },

@@ -555,13 +555,22 @@ export const scenarios = [
   {
     id: 'host.open-in-sheaf.e02',
     feature: 'host.open-in-sheaf',
-    name: 'Right-clicking a .txt file does not offer Open in Sheaf',
+    name: 'A .txt file offers Open in Sheaf, and double-clicking it still opens the plain text editor',
     run: async (S) => {
+      // A .txt can be asked for in Sheaf, for notes that are Markdown in everything but the
+      // name. What must not change is the double-click: a log or a fixture opens in the text
+      // editor as it always did.
       await rootFile(S, 'ois-two.txt', 'plain\n');
       await clickExplorer(S, 'ois-two.txt', { button: 'right' });
       const items = await contextItems(S);
       await S.page.keyboard.press('Escape');
-      return { ok: items.length > 3 && !items.includes('Open in Sheaf'), detail: j(items) };
+      await S.sleep(200);
+      await clickExplorer(S, 'ois-two.txt');
+      const ed = await activeEditor(S);
+      return {
+        ok: items.includes('Open in Sheaf') && ed.kind === 'text',
+        detail: `the menu offers ${j(items.filter((i) => i.includes('Sheaf')))}; a click opened ${ed.kind}`,
+      };
     },
   },
   {
@@ -1135,6 +1144,13 @@ export const scenarios = [
     id: 'host.autosave.e05',
     feature: 'host.autosave',
     name: 'Typing and closing the tab straight away saves the typing and asks nothing',
+    /*
+     * Marked because it reproduces an open issue character for character, and having no marker
+     * cost more than the bug does: this is the largest area in the suite, so it failed every run
+     * of it, and every reader who met the red traced it back to an already-filed issue before
+     * finding that out. A standing failure with nothing saying it is expected reads as news.
+     */
+    known: 'typing and closing the tab straight away raises the save dialog, because the close outruns the debounced save',
     run: async (S) => {
       const path = await S.fresh('as-five', 'Some words.\n');
       await S.caret('words', 2);
@@ -1159,6 +1175,59 @@ export const scenarios = [
         if (sb) await S.page.mouse.click(sb.x + sb.width / 2, sb.y + sb.height / 2);
       }
       return { ok: !dlg && d === 'Some woZrds.\n', detail: `dialog ${dlg} ${show(msg.slice(0, 120))}; disk ${show(d)}` };
+    },
+  },
+  {
+    id: 'host.autosave.e12',
+    feature: 'host.autosave',
+    name: 'Whatever is asked when a tab closes, the typing is already on disk, so Don\'t Save costs nothing',
+    run: async (S) => {
+      /*
+       * The scenario above asks for the prompt to be gone. This one asks for the thing that
+       * decides whether the prompt is a nuisance or a loss, and it is the more important of the
+       * two: while the dialog is on screen the file already holds the letter, and pressing the
+       * most dangerous button leaves it there.
+       *
+       * Measured rather than assumed, and the first reading was wrong in an instructive way. Sheaf
+       * does flush its pending save when the page reports focus leaving, on the press rather than
+       * the release, and that save resolves about 10ms later. But taking that flush away leaves
+       * this passing, because the ordinary debounce fires well inside the wait below anyway. So
+       * what this holds is the property rather than the mechanism: by the time anyone can answer,
+       * the file already agrees with the document, whichever save got there first.
+       *
+       * The control is auto-saving not happening at all, which fails it: the file reads "Some
+       * words." while the dialog is open and still does after Don't Save, which is the loss the
+       * issue described and which does not otherwise occur.
+       *
+       * Kept separate from the prompt itself, because the prompt needs a design change to remove
+       * and this does not. If a change ever lets the prompt be answered before any save lands, the
+       * nuisance becomes data loss, and this is what says so.
+       */
+      const path = await S.fresh('as-eleven', 'Some words.\n');
+      await S.caret('words', 2);
+      await S.type('Z');
+      const tab = S.page.locator('.tab.active .tab-actions .action-label').first();
+      const b = await tab.boundingBox();
+      // The press and the release a tenth of a second apart, as a hand makes it.
+      await S.page.mouse.move(b.x + b.width / 2, b.y + b.height / 2);
+      await S.page.mouse.down();
+      await S.sleep(100);
+      await S.page.mouse.up();
+      await S.sleep(900);
+      const dlg = await dialogUp(S);
+      // The reading that matters: what the file holds while the question is still open.
+      const whileAsking = readFileSync(path, 'utf8');
+      if (dlg) {
+        const dont = S.page.locator('.monaco-dialog-box .monaco-button', { hasText: /Don't Save/ }).first();
+        const db = await dont.boundingBox().catch(() => null);
+        if (db) await S.page.mouse.click(db.x + db.width / 2, db.y + db.height / 2);
+        await S.sleep(1200);
+      }
+      const after = readFileSync(path, 'utf8');
+      return {
+        ok: whileAsking === 'Some woZrds.\n' && after === 'Some woZrds.\n',
+        detail: `dialog ${dlg}; file while it was asking ${show(whileAsking)}; file after ${dlg ? "Don't Save" : 'the close'} ${show(after)}`,
+      };
     },
   },
   {
@@ -1847,6 +1916,75 @@ export const scenarios = [
     },
   },
 
+  {
+    id: 'host.outside-change.e15',
+    feature: 'host.outside-change',
+    name: 'A write landing while the typing is still unsaved keeps both the write and the typing',
+    run: async (S) => {
+      // The case an agent actually hits. VS Code brings a document into line with the
+      // file only while that document is clean, and one being typed into never is, so
+      // the write lands where nothing will pick it up and the next auto-save puts the
+      // editor's own text straight back over it.
+      //
+      // No wait for auto-save here, unlike the checks above: the whole point is that
+      // the file changes while the document is still dirty.
+      // The write is stale on the line being typed, because the letters typed since
+      // are not in the copy it was made from, and current on the line above. The one
+      // it is behind on is the person's; the one it is not is kept.
+      const path = await S.fresh('oc-fifteen', 'Top line.\n\nMiddle line.\n\nBottom line.\n');
+      await S.caret('Middle', 2);
+      await S.type('ZZ');
+      writeFileSync(path, 'Top line changed by an agent.\n\nMiddle line.\n\nBottom line.\n');
+      await S.type('YY');
+      await S.sleep(2500);
+      const shown = (await S.state()).doc;
+      return all(
+        {
+          keptTheWrite: shown.includes('Top line changed by an agent.'),
+          keptTheTyping: shown.includes('MiZZYYddle'),
+          // Nothing of the write was really lost, so there is nothing to say. The
+          // line it was behind on is the one the person is typing in.
+          silent: (await toasts(S)).every((t) => !t.startsWith('Sheaf:')),
+        },
+        { shown }
+      );
+    },
+  },
+
+  {
+    id: 'host.outside-change.e16',
+    feature: 'host.outside-change',
+    name: 'The file itself ends up holding both the write and the typing, with nothing left unsaved',
+    run: async (S) => {
+      // e15 asks what the editor holds; this asks what the file holds. VS Code records
+      // a file's modification time when it loads or saves a document and refuses to
+      // write one that has moved since, and it never reloads a dirty document, so that
+      // recorded time has no way to catch up. Auto-save is on and yet nothing reaches
+      // the file: the tab stays unsaved and closing it asks.
+      const path = await S.fresh('oc-sixteen', 'Top line.\n\nMiddle line.\n\nBottom line.\n');
+      await S.caret('Middle', 2);
+      await S.type('ZZ');
+      writeFileSync(path, 'Top line changed by an agent.\n\nMiddle line.\n\nBottom line.\n');
+      await S.type('YY');
+      const d = await S.disk(path);
+      const ed = await activeEditor(S);
+      // And none of VS Code's own alarm about it. Asking it to write a file that has
+      // moved fails and puts "your changes will be lost" on screen, which is the
+      // opposite of what is happening, so the save has to take the path that works
+      // rather than the one that fails and then gets cleaned up after.
+      const said = await S.errors();
+      return all(
+        {
+          keptTheWrite: d.includes('Top line changed by an agent.'),
+          keptTheTyping: d.includes('MiZZYYddle'),
+          nothingUnsaved: !!ed.tabs[0] && !ed.tabs[0].dirty,
+          nothingAlarming: !said.some((t) => /Unable to write file|content of the file is newer/.test(t)),
+        },
+        { d, tabs: ed.tabs, said }
+      );
+    },
+  },
+
   // ---------------------------------------------------------------- host.split-editors
   {
     id: 'host.split-editors.e01',
@@ -2268,5 +2406,31 @@ export const scenarios = [
         const hover = await S.eval(() => { const b = [...document.querySelectorAll('#toolbar button')].find((x) => (x.title || '').startsWith('Italic')); const cs = getComputedStyle(b); return `${cs.backgroundColor}|${cs.outlineStyle}|${cs.outlineColor}|${cs.borderColor}`; });
         return { ok: idle !== hover, detail: `idle ${idle} hover ${hover}` };
       }),
+  },
+  {
+    id: 'host.about.e01',
+    feature: 'host.about',
+    name: 'Sheaf: About names the build in a notification, with a button to copy it',
+    run: async (S) => {
+      // Read from the workbench rather than the webview: a notification is VS Code's
+      // own furniture, and jsdom has no workbench to put one in, so this half exists
+      // nowhere else. It is also the only check that the command reaches the palette
+      // under the title the manifest gives it.
+      await S.fresh('about', 'A document, so a window is open.\n');
+      await S.command('Sheaf: About');
+      await S.sleep(600);
+      // The message element, not the toast container: the container's text drags in the
+      // style elements Monaco injects into its list, so a failure printed 3 KB of CSS
+      // around the one sentence anybody wanted to read.
+      const message = S.page.locator('.notifications-toasts .notification-list-item-message').first();
+      const text = await message.textContent().catch(() => '');
+      const buttons = await S.page.locator('.notifications-toasts a.monaco-button, .notifications-toasts .monaco-button').allTextContents().catch(() => []);
+      const ok =
+        /Sheaf \d+\.\d+\.\d+/.test(text) &&
+        /\b[0-9a-f]{7}\b/.test(text) &&
+        /Visual Studio Code \d+\./.test(text) &&
+        buttons.some((b) => b.trim() === 'Copy');
+      return { ok, detail: `notification ${JSON.stringify(text)} buttons ${JSON.stringify(buttons)}` };
+    },
   },
 ];

@@ -15,6 +15,7 @@
  */
 
 import { EditorView, KeyBinding } from '@codemirror/view';
+import { EditorState, Text } from '@codemirror/state';
 import { indentMore, indentLess, undo, redo } from '@codemirror/commands';
 import { indentUnit, syntaxTree } from '@codemirror/language';
 import type { SyntaxNode } from '@lezer/common';
@@ -29,30 +30,59 @@ import {
   toggleCodeBlock,
   insertLink,
   insertHardBreak,
+  openLinkAtCaret,
+  removeLinkAtSelection,
 } from './toolbar';
 
 const isMac = navigator.platform.toLowerCase().includes('mac');
 
+/** A CodeMirror key spec (e.g. `Mod-Shift-x`) as the keys it names (`['⌘', '⇧', 'X']`). */
+export function hintParts(key: string): string[] {
+  // Split on the dashes between parts, so the minus key itself (`Mod-Alt--`) stays a part.
+  return key.split(/-(?=.)/).map((part) => {
+    switch (part) {
+      case 'Mod':
+        return isMac ? '⌘' : 'Ctrl';
+      case 'Shift':
+        return isMac ? '⇧' : 'Shift';
+      case 'Alt':
+        return isMac ? '⌥' : 'Alt';
+      case 'Escape':
+        return 'Esc';
+      default:
+        return part.length === 1 ? part.toUpperCase() : part;
+    }
+  });
+}
+
 /** Render a CodeMirror key spec (e.g. `Mod-Shift-x`) as a display string (`⌘⇧X`). */
 export function hint(key: string): string {
-  // Split on the dashes between parts, so the minus key itself (`Mod-Alt--`) stays a part.
-  return key
-    .split(/-(?=.)/)
-    .map((part) => {
-      switch (part) {
-        case 'Mod':
-          return isMac ? '⌘' : 'Ctrl';
-        case 'Shift':
-          return isMac ? '⇧' : 'Shift';
-        case 'Alt':
-          return isMac ? '⌥' : 'Alt';
-        case 'Escape':
-          return 'Esc';
-        default:
-          return part.length === 1 ? part.toUpperCase() : part;
-      }
-    })
-    .join(isMac ? '' : '+');
+  return hintParts(key).join(isMac ? '' : '+');
+}
+
+/**
+ * Draw a shortcut into `el`, one element per key.
+ *
+ * `⌘`, `⌥` and `⇧` are not in every font a menu might be drawn in, so a browser
+ * falls back for those glyphs alone and sets them on the fallback's own metrics:
+ * beside a letter drawn from the asked-for font they sat visibly higher, and a
+ * hint read as three characters at three heights. Each key is its own box here,
+ * and `.sheaf-keys` lines the boxes up along their bottoms, so they stay level
+ * whatever font each glyph comes from. The element's text is unchanged, so
+ * anything reading `textContent` still sees `⌘⇧X`.
+ */
+export function drawKeyHint(el: HTMLElement, key: string): void {
+  el.classList.add('sheaf-keys');
+  const parts = hintParts(key);
+  const nodes: Node[] = [];
+  parts.forEach((part, i) => {
+    if (i && !isMac) nodes.push(document.createTextNode('+'));
+    const one = document.createElement('span');
+    one.className = 'sheaf-key';
+    one.textContent = part;
+    nodes.push(one);
+  });
+  el.replaceChildren(...nodes);
 }
 
 /**
@@ -96,6 +126,97 @@ export function indentListItem(view: EditorView): boolean {
   return true;
 }
 
+/** A numbered item's leading whitespace and quote markers, its number, and the delimiter after it. */
+const ORDERED_ITEM = /^((?:[ \t]*>[ \t]?)*[ \t]*)(\d{1,9})([.)])(?=[ \t])/;
+
+/** A line that belongs to a list block: an item, or a line indented under one. */
+const LIST_BLOCK_LINE = /^((?:[ \t]*>[ \t]?)*[ \t]*)(?:[-*+][ \t]|\d{1,9}[.)][ \t]|[ \t])/;
+
+/**
+ * Renumber the ordered lists an indent change moves an item between, so each nesting
+ * level counts on its own.
+ *
+ * Nesting an item changes which list it belongs to, and nothing on that path said so.
+ * The number comes from CodeMirror's list continuation on Enter, which counts the list
+ * the caret is in, and the indent commands move the marker and leave the digits alone.
+ * So `1, 2`, Tab, two items, Shift-Tab, one more read `1, 2, 3, 4, 5` down the page with
+ * the middle two indented, where a reader expects `1, 2`, then `1, 2` again, then `3`.
+ *
+ * The outermost level keeps the number it opens at, because a list may open at `5.` and
+ * that is something a person chose. A deeper level starts at 1, and that is the one
+ * decision here rather than arithmetic: a nested list deliberately opened at another
+ * number is renumbered when an indent changes in its block, and nothing in the text
+ * tells that apart from the case this exists to fix.
+ *
+ * Only numbers that actually change are written, so an indent that renumbers nothing
+ * leaves every byte alone. A number whose digit count changes moves the item's content
+ * column and its continuation lines are not shifted to follow, which shows on a list
+ * crossing ten items; `blockModel.ts` solves that for a moved item and does not export
+ * the helper.
+ */
+function orderedRenumberChanges(doc: Text, lines: number[]): Array<{ from: number; to: number; insert: string }> {
+  const inBlock = (n: number): boolean => {
+    const text = doc.line(n).text;
+    return text.trim() !== '' && LIST_BLOCK_LINE.test(text);
+  };
+  let first = Math.min(...lines);
+  let last = Math.max(...lines);
+  while (first > 1 && inBlock(first - 1)) first--;
+  while (last < doc.lines && inBlock(last + 1)) last++;
+
+  /** One counter per nesting level, outermost first, each holding the indent it sits at. */
+  const levels: Array<{ indent: number; next: number }> = [];
+  const changes: Array<{ from: number; to: number; insert: string }> = [];
+  for (let n = first; n <= last; n++) {
+    const line = doc.line(n);
+    const m = ORDERED_ITEM.exec(line.text);
+    if (!m) continue;
+    const indent = m[1].length;
+    while (levels.length && levels[levels.length - 1].indent > indent) levels.pop();
+    const top = levels[levels.length - 1];
+    let number: number;
+    if (!top || top.indent < indent) {
+      // A level this walk has not seen. The outermost keeps what the author wrote.
+      number = levels.length === 0 ? Number(m[2]) : 1;
+      levels.push({ indent, next: number + 1 });
+    } else {
+      number = top.next;
+      top.next = number + 1;
+    }
+    if (String(number) !== m[2]) {
+      const from = line.from + m[1].length;
+      changes.push({ from, to: from + m[2].length, insert: String(number) });
+    }
+  }
+  return changes;
+}
+
+/**
+ * The renumbering, added to the indent's own transaction rather than dispatched after it.
+ *
+ * It has to be the same transaction, because an indent is one thing a person did and
+ * `prose.indent` R6 says one undo takes it back. Renumbering in a second dispatch made
+ * two history entries, so the first undo put the old numbers back and left the item
+ * nested, which is a document nobody asked for. `sequential` applies these changes to
+ * the document the indent produced.
+ *
+ * A filter rather than a wrapper around each command, so every path that indents is
+ * covered by construction: Tab through `indentListItem`, Shift-Tab through CodeMirror's
+ * `indentLess`, and anything either of them grows into later.
+ */
+export const orderedListRenumbering = EditorState.transactionFilter.of((tr) => {
+  if (!tr.docChanged) return tr;
+  if (!tr.isUserEvent('input.indent') && !tr.isUserEvent('delete.dedent')) return tr;
+  const lines = new Set<number>();
+  tr.changes.iterChangedRanges((_fromA, _toA, fromB, toB) => {
+    lines.add(tr.newDoc.lineAt(fromB).number);
+    lines.add(tr.newDoc.lineAt(toB).number);
+  });
+  if (!lines.size) return tr;
+  const changes = orderedRenumberChanges(tr.newDoc, [...lines]);
+  return changes.length ? [tr, { changes, sequential: true }] : tr;
+});
+
 /*
  * The two sharing keys, bound in the manifest and shown in four places: this
  * overlay, the right-click menu, the block menu and the selection toolbar. They
@@ -134,7 +255,9 @@ const GROUPS: Group[] = [
       { key: 'Mod-Shift-x', label: 'Strikethrough', run: (v) => toggleWrap(v, '~~') },
       { key: 'Mod-Shift-h', label: 'Highlight', run: (v) => toggleWrap(v, '==') },
       { key: 'Mod-e', label: 'Inline code', run: (v) => toggleWrap(v, '`') },
-      { key: 'Mod-k', label: 'Insert link', run: insertLink },
+      { key: 'Mod-k', label: 'Insert or edit link', run: insertLink },
+      { key: 'Mod-Shift-k', label: 'Remove link', run: removeLinkAtSelection },
+      { key: 'Mod-Enter', label: 'Open link', run: openLinkAtCaret },
     ],
   },
   {
@@ -279,7 +402,8 @@ export function createShortcutsOverlay(parent: HTMLElement): ShortcutsOverlay {
       name.textContent = item.label;
       const keys = document.createElement('span');
       keys.className = 'sheaf-sc-keys';
-      keys.textContent = item.display ?? (item.key ? hint(item.key) : 'Enter');
+      if (item.display === undefined && item.key) drawKeyHint(keys, item.key);
+      else keys.textContent = item.display ?? 'Enter';
       row.append(name, keys);
       col.appendChild(row);
     }

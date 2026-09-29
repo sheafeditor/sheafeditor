@@ -4,6 +4,7 @@
  * an address opens as.
  */
 
+import type { FromWebview } from '../protocol';
 import { EditorState } from '@codemirror/state';
 import { syntaxTree } from '@codemirror/language';
 import { parseHtmlImage } from './images';
@@ -152,7 +153,7 @@ export function headingPosition(state: EditorState, id: string): number | null {
   return found;
 }
 
-type Post = (message: unknown) => void;
+type Post = (message: FromWebview) => void;
 
 let post: Post | null = null;
 let revealFragment: ((id: string) => void) | null = null;

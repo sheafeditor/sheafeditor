@@ -18,6 +18,7 @@
  * insert as Markdown.
  */
 
+import type { FromWebview } from '../protocol';
 import { EditorView, WidgetType } from '@codemirror/view';
 import { syntaxTree } from '@codemirror/language';
 import type { EditorState, Extension } from '@codemirror/state';
@@ -54,7 +55,14 @@ export function setResourceBaseUri(uri: string): void {
   resourceBaseUri = uri.endsWith('/') ? uri : uri + '/';
 }
 
-const ABSOLUTE_OK = /^(https?:|data:)/i;
+/*
+ * `https:` and not `http:`, because the two hosts' own policies allow only those two and
+ * an address this lets through that they then refuse is the worst of both: the picture is
+ * drawn as an element, the policy blocks the fetch, and the reader gets a broken image
+ * where the promise is that an address the page cannot load falls back to its Markdown.
+ * Refusing it here is what keeps that promise.
+ */
+const ABSOLUTE_OK = /^(https:|data:)/i;
 const HAS_SCHEME = /^[a-z][a-z0-9+.-]*:/i;
 
 /**
@@ -544,7 +552,25 @@ class ImageWidget extends WidgetType {
     img.className = 'md-img';
     img.src = this.resolvedSrc;
     img.alt = this.props.alt;
+    /*
+     * The size the author wrote, whichever of the two they wrote.
+     *
+     * A width alone is the usual case and the one every control here produces. A height alone is
+     * what arrives from somewhere else — it is valid HTML, it is what GitHub and every previewer
+     * draw from, and it is what a person gets when they paste an `<img>` in. It was parsed, kept
+     * on the props and written back out faithfully, and never reached the element, so a picture
+     * sized to 90 pixels tall was drawn across the whole column with nothing to say why.
+     *
+     * The height is applied as written rather than turned into a width from the picture's aspect
+     * ratio once it loads. Converting would be inventing a number nobody typed, and the next
+     * resize would write that invention into the file; applying what is there keeps the drawing
+     * and the document saying the same thing, which is the rule everywhere else here.
+     *
+     * Both together is still the width's job, because that is what `withWidth` keeps in
+     * proportion and what a resize writes. A height beside a width would fight it.
+     */
     if (this.props.width) img.style.width = `${this.props.width}px`;
+    else if (this.props.height) img.style.height = `${this.props.height}px`;
     img.addEventListener('load', () => view.requestMeasure());
     img.addEventListener('error', () => wrap.classList.add('is-broken'));
     frame.appendChild(img);
@@ -727,7 +753,7 @@ export function imageWidgetFor(props: ImageProps, inline = false, rewritable = t
 
 // ---- Drag / drop / paste ingestion ----------------------------------------
 
-type VsPost = (message: unknown) => void;
+type VsPost = (message: FromWebview) => void;
 
 let seq = 0;
 const pending = new Map<string, { resolve: (path: string) => void; reject: (err: Error) => void }>();

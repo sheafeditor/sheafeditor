@@ -20,9 +20,11 @@ That choice has a consequence worth knowing. Pandoc reads `~text~` as a subscrip
 
 ## Emoji shortcodes
 
-A name between colons is recognised as a shortcode: :satellite: :coffee: :heavy_check_mark: :warning: :cat:
+A name between colons draws as its character: :satellite: :coffee: :heavy_check_mark: :warning: :cat:
 
-Sheaf reads them but draws them as typed for now, where github.com substitutes the character. The characters themselves are always safe to write, and are what a resolved shortcode becomes: 🛰 ☕ ✔️ ⚠️ 🐈
+The file keeps the colons and the name. About 1,900 names are known, the same set github.com draws, `:+1:` and `:-1:` among them. A name that is not one of them stays as typed, as it does there, which is what leaves a clock time like 10:30:45 alone.
+
+The characters themselves are always safe to write, and are what a shortcode draws as: 🛰 ☕ ✔️ ⚠️ 🐈
 
 ## Data blocks
 

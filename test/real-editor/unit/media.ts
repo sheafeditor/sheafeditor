@@ -355,8 +355,28 @@ export const scenarios: Scenario[] = [
   {
     id: 'data.csv-grid.u13',
     feature: 'data.csv-grid',
-    name: 'A csv block with no closing fence at the end of the file edits without gaining one',
-    run: async () => same(await csvEdit(P + '```csv\na,b\n1,2', 0, 1, '9'), P + '```csv\na,b\n1,9'),
+    name: 'A csv block with no closing fence is shown as written, so there is no grid to edit and no fence to gain',
+    run: () => {
+      /*
+       * This shape used to draw a grid, and that is what scrambled a document being typed:
+       * an unclosed fence is a FencedCode running to the end of the document, and it is the
+       * state anybody is in partway through typing a block. It shows its source now, until
+       * the closing fence arrives.
+       *
+       * What this check was written for still holds, the other way round: an edit must never
+       * add a closing fence nobody typed. Nothing is drawn, so nothing can write one.
+       */
+      const half = P + '```csv\na,b\n1,2';
+      const open = mount(half);
+      const grids = open.view.dom.querySelectorAll('.sheaf-table').length;
+      const unchanged = open.view.state.doc.toString() === half;
+      open.view.destroy();
+      // The control: the same block closed is a grid, so this cannot pass by drawing none.
+      const closed = mount(P + '```csv\na,b\n1,2\n```\n');
+      const once = closed.view.dom.querySelectorAll('.sheaf-table').length;
+      closed.view.destroy();
+      return grids === 0 && unchanged && once === 1;
+    },
   },
   {
     id: 'data.csv-grid.u14',
@@ -625,6 +645,34 @@ export const scenarios: Scenario[] = [
     },
   },
   {
+    id: 'images.render.u21',
+    feature: 'images.render',
+    name: 'An image reference typed into the document becomes a picture once the caret leaves its line',
+    run: () => {
+      // Typed rather than opened, which is how somebody who knows Markdown adds a picture.
+      // The control is u01 and the rest of this group: the same bytes mounted draw at once,
+      // so this can only fail on the difference between arriving and being typed.
+      const m = mount(P);
+      // One transaction per character, as typing is. Inserting the whole string at once
+      // drew the picture even while the real window did not, so the difference is in the
+      // typing rather than in the bytes.
+      const text = '\n![Dawn](../assets/dot.png)';
+      for (const ch of text) {
+        const at = m.view.state.doc.length;
+        m.view.dispatch({ changes: { from: at, insert: ch }, selection: { anchor: at + 1 }, userEvent: 'input.type' });
+      }
+      const whileOnTheLine = imgs(m).length;
+      // Off the line, which is when anything revealed for the caret goes away.
+      m.view.dispatch({ selection: { anchor: 1 } });
+      const after = imgs(m).map((i) => i.getAttribute('src'));
+      m.destroy();
+      return {
+        ok: after.length === 1 && after[0] === 'https://res.test/assets/dot.png',
+        detail: `on the line ${whileOnTheLine} drawn; off it ${j(after)}`,
+      };
+    },
+  },
+  {
     id: 'images.render.u03',
     feature: 'images.render',
     name: 'An image whose file name has parentheses shows that file',
@@ -638,17 +686,21 @@ export const scenarios: Scenario[] = [
   {
     id: 'images.render.u04',
     feature: 'images.render',
-    name: 'Relative paths resolve beside the document; https and data pass; file and javascript are refused',
+    name: 'Relative paths resolve beside the document; https and data pass; http, file and javascript are refused',
     run: () => {
       const got = {
         rel: resolveImageSrc('../assets/dot.png'),
         sub: resolveImageSrc('assets/pasted.png'),
         https: resolveImageSrc('https://example.com/a.png'),
         data: resolveImageSrc('data:image/gif;base64,R0lGOD'),
+        // Refused because both hosts' own policies allow only https and data. Allowed
+        // through, it would draw an element the policy then refuses to fetch, so a reader
+        // would get a broken picture where the promise is the Markdown showing as typed.
+        http: resolveImageSrc('http://example.com/a.png'),
         file: resolveImageSrc('file:///etc/a.png'),
         js: resolveImageSrc('javascript:alert(1)'),
       };
-      const want = { rel: 'https://res.test/assets/dot.png', sub: 'https://res.test/docs/assets/pasted.png', https: 'https://example.com/a.png', data: 'data:image/gif;base64,R0lGOD', file: null, js: null };
+      const want = { rel: 'https://res.test/assets/dot.png', sub: 'https://res.test/docs/assets/pasted.png', https: 'https://example.com/a.png', data: 'data:image/gif;base64,R0lGOD', http: null, file: null, js: null };
       return { ok: j(got) === j(want), detail: j(got) };
     },
   },

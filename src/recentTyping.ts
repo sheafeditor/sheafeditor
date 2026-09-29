@@ -196,6 +196,19 @@ export function noticeAboutLostText(lost: string): string {
   return `Sheaf: this file changed outside the editor, and your last change is gone: "${quoteLost(lost)}". Undo brings it back.`;
 }
 
+/**
+ * What Sheaf says when a change written to the file cannot be kept.
+ *
+ * The other side of the race. Here it is the outside change that loses: somebody
+ * else wrote the file at the same characters the person was typing in, and there is
+ * no answer to what the two together would say, so the person at the keyboard keeps
+ * theirs. They are about to save over that change without knowing it exists, and the
+ * file's own history is where it still is, so that is what they are pointed at.
+ */
+export function noticeAboutOutsideChangeLost(): string {
+  return 'Sheaf: something wrote to this file where you were typing, and your text was kept. The change that was written is in your file history, not in the document.';
+}
+
 /** What Sheaf says when a write from outside puts back text the person had just removed. */
 export function noticeAboutRestoredText(back: string): string {
   return `Sheaf: this file changed outside the editor, and put back what you just removed: "${quoteLost(back)}". Undo removes it again.`;

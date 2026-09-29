@@ -229,3 +229,67 @@ body {
   background: var(--vscode-editor-background);
   color: var(--vscode-editor-foreground);
 }
+
+/*
+ * What the page says when an outside write took something the person had just typed.
+ *
+ * VS Code has a notification surface and this host has none, so the page draws one. It is host
+ * chrome rather than part of the editor, which is why it is styled here and built in
+ * `src/server/host.ts`: the editor bundle is the same bytes in every host and must not learn
+ * that one of them needs a notice.
+ *
+ * Fixed to the bottom rather than pushed into the document, so a message arriving mid-sentence
+ * moves nothing the person is looking at. That is the same reason the whole blank-line shrinking
+ * was removed: text that shifts under a caret costs more than the space it saves.
+ */
+.sheaf-notice {
+  position: fixed;
+  z-index: 20;
+  right: 16px;
+  bottom: 16px;
+  left: 16px;
+  margin: 0 auto;
+  max-width: 560px;
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--vscode-editorWarning-foreground, #cca700);
+  border-radius: 6px;
+  background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+  color: var(--vscode-editor-foreground);
+  font-family: var(--md-font);
+  font-size: 13px;
+  line-height: 1.45;
+  box-shadow: 0 8px 28px color-mix(in srgb, #000 35%, transparent);
+}
+.sheaf-notice[hidden] {
+  display: none;
+}
+.sheaf-notice-text {
+  flex: 1;
+  min-width: 0;
+}
+.sheaf-notice button {
+  flex: none;
+  padding: 4px 10px;
+  border: 1px solid var(--vscode-button-border, transparent);
+  border-radius: 4px;
+  background: var(--vscode-button-background, #0e639c);
+  color: var(--vscode-button-foreground, #fff);
+  font: inherit;
+  cursor: pointer;
+}
+.sheaf-notice button:hover {
+  background: var(--vscode-button-hoverBackground, #1177bb);
+}
+.sheaf-notice .sheaf-notice-close {
+  background: transparent;
+  border-color: transparent;
+  color: var(--vscode-editor-foreground);
+  opacity: 0.7;
+  padding: 4px 6px;
+}
+.sheaf-notice .sheaf-notice-close:hover {
+  background: color-mix(in srgb, var(--vscode-editor-foreground) 12%, transparent);
+}

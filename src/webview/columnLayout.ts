@@ -145,6 +145,20 @@ if (doc) {
   });
 }
 
+/**
+ * Measure every table on screen again, for a change that alters column widths without
+ * altering any table's text.
+ *
+ * The cache is keyed by what a table holds, which is the right key for almost
+ * everything and exactly the wrong one here: the row-number column narrows when the
+ * document's line numbers go off and widens when they come back, and not a byte of any
+ * table changes. Without this the digits come back into the strip that was sized for
+ * none of them.
+ */
+export function remeasureAllTables(): void {
+  for (const layout of live) layout.remeasure();
+}
+
 /** A short, stable stand-in for a long table's text, so the cache holds keys and not documents. */
 export function digest(s: string): string {
   let h = 0x811c9dc5;
@@ -228,6 +242,15 @@ export function createColumnLayout(
   let probe: HTMLElement | null = null;
   let maxes: number[] = [];
   let paneWidth = 0;
+  /**
+   * The frame's left inset: the room it gained on that side by reaching past the writing
+   * column, held as padding inside the scroller so it scrolls away.
+   *
+   * Zero for a table that keeps the column — one in a quote or a list, and every table on a
+   * pane no wider than the column — and then every width below is what it was before any of
+   * this, which is what keeps a narrow window unchanged.
+   */
+  let frameInset = 0;
   let lastSig = '';
   let cacheKey = '';
   let applied = '';
@@ -344,10 +367,47 @@ export function createColumnLayout(
     return Array.from(pins, ([c, w]) => `${c}:${w}`).join(',');
   };
 
+  /**
+   * The room this table's columns divide, which is one of two widths.
+   *
+   * The frame reaches past the writing column, so `width` is the pane. Handing that to the
+   * allocator for every table would stretch a three-column table across the window — and
+   * worse, it is circular: a table only reaches past the column because it did not fit, and
+   * a wider container is one it fits.
+   *
+   * It comes apart by asking the table's **natural** width, which does not depend on the
+   * container. Fits the column, lay it out in the column, exactly as before any of this.
+   * Does not fit, lay it out in the pane, so the room becomes visible table rather than more
+   * scrolling. Stable in both directions, because the question never reads the answer.
+   */
+  const roomFor = (m: Measured, width: number, inset: number): number => {
+    /*
+     * A pixel of the room goes to the table's own border. `border-collapse: collapse` puts
+     * half a border outside the table's box on each side, so a table laid out to exactly the
+     * room it was given ends half a pixel past the frame. That never showed while the frame
+     * sat inside the writing column, where 96px of gutter absorbed it; the frame now ends at
+     * the pane's edge, a table that fits has `overflow-x: visible` for its sticky header, and
+     * that half pixel reached the editor's own scrollbar. Measured on the corpus: a table at
+     * 1200.5 in a pane of 1200, and a document that scrolled sideways.
+     *
+     * Only a frame that reaches the pane, which is what a non-zero inset says. A table with
+     * no inset — one in a quote, one in a frame that never grew — is laid out exactly as it
+     * always was, its overshoot still lands in a gutter, and taking a pixel off it would move
+     * every existing table for a problem it does not have.
+     */
+    const pane = width - inset - (inset > 0 ? 1 : 0);
+    const column = width - 2 * inset;
+    if (column <= 0) return pane;
+    const natural = m.gutter + m.columns.reduce((sum, c) => sum + c.max, 0);
+    return natural <= column ? column : pane;
+  };
+
   /** Write the decided widths into the table as a `<colgroup>` of pixel lengths. */
-  const lay = (m: Measured, width: number): void => {
+  const lay = (m: Measured, frame: number, inset: number): void => {
     const table = opts.table();
     if (!table) return;
+    if (cellIsOpen() && lastWidths?.length) return;
+    const width = roomFor(m, frame, inset);
     const alloc: Allocation | null = allocateColumnWidths(Math.max(0, width - m.gutter), m.columns, {
       floor: m.floor,
       cap: COLUMN_CAP_FRACTION * width,
@@ -387,7 +447,7 @@ export function createColumnLayout(
 
   type Reading =
     | { kind: 'stop' }
-    | { kind: 'start'; width: number; env: string }
+    | { kind: 'start'; width: number; inset: number; env: string }
     | { kind: 'probe'; widths: number[] };
 
   const request = (): void => {
@@ -396,7 +456,12 @@ export function createColumnLayout(
       key,
       read: () => {
         if (dead || !wrap.isConnected) return { kind: 'stop' };
-        if (phase === 'idle') return { kind: 'start', width: grid.clientWidth, env: environment(grid) };
+        if (phase === 'idle') {
+          // The scroller's own left padding is the inset, and it has no right padding, so this
+          // one number says how far the frame reaches past the column on each side.
+          const pad = parseFloat(getComputedStyle(grid).paddingLeft);
+          return { kind: 'start', width: grid.clientWidth, inset: Number.isFinite(pad) ? pad : 0, env: environment(grid) };
+        }
         return { kind: 'probe', widths: readProbe() };
       },
       write: (reading) => {
@@ -416,13 +481,14 @@ export function createColumnLayout(
             cache.clear();
           }
           paneWidth = reading.width;
+          frameInset = reading.inset;
           const k = measureKey();
           const stamp = `${k}@${reading.width}#${pinStamp()}`;
           const known = cache.get(k);
           if (known) {
             if (stamp === applied && opts.table()?.querySelector(':scope > colgroup')) return;
             applied = stamp;
-            return lay(known, reading.width);
+            return lay(known, reading.width, reading.inset);
           }
           applied = '';
           buildProbe();
@@ -457,7 +523,7 @@ export function createColumnLayout(
         const k = measureKey();
         store(k, m);
         applied = `${k}@${paneWidth}#${pinStamp()}`;
-        lay(m, paneWidth);
+        lay(m, paneWidth, frameInset);
         // The frame was resized, or the text changed, while the copy was being
         // drawn. What just landed is the answer to the old question.
         if (again) {
@@ -470,6 +536,29 @@ export function createColumnLayout(
 
   const refresh = (): void => {
     if (dead || !fontsReady) return;
+    /*
+     * While a cell of this table is open, the widths are held where they were when it
+     * opened, so a measurement cannot change anything and the whole cycle is skipped.
+     *
+     * `lay` holds the same rule and is the one that must not write a colgroup. This is
+     * the same rule placed where the work begins rather than where it ends, and the
+     * difference is the entire cost: the grid rewrites its source on every keystroke, so
+     * the signature changes, so `measureKey` misses the width cache, so a throwaway copy
+     * of the table is built and measured before `lay` is reached and returns without
+     * using it. On a 200x200 table that copy is 40,000 cells, and it was 90ms of every
+     * keystroke, about a third of the whole cost. The width cache is keyed on content
+     * precisely so that editing invalidates it, which is right for a committed edit and
+     * exactly wrong for each keystroke of one.
+     *
+     * Nothing about the layout changes, because nothing downstream of here was reaching
+     * the table anyway. What was discarded after the work is now not done.
+     *
+     * A pane resized while a cell is open still holds its widths, as it did before: the
+     * measurement used to run and be thrown away at `lay`, and now it does not run. The
+     * cache is left without an entry for this keystroke's signature, which is what the
+     * remeasure on close is for, and that pays for one copy rather than one per key.
+     */
+    if (cellIsOpen() && lastWidths?.length) return;
     // A measurement is already in flight. Asking again now would read the copy
     // as though it were the grid; it is asked again as soon as that one lands.
     if (phase !== 'idle') {
@@ -481,6 +570,42 @@ export function createColumnLayout(
 
   const onScroll = (): void => edges();
   grid.addEventListener('scroll', onScroll, { passive: true });
+
+  /*
+   * While a cell of this table is open for editing, its column widths are held exactly
+   * where they were when it opened.
+   *
+   * Every keystroke in a cell changes what the table holds, so it was a fresh measurement
+   * and a fresh allocation every time: the column being typed in widened and the one
+   * beside it gave up the same pixels, so the text slid sideways under the caret, 3 to 9px
+   * a keystroke, and the prose column rewrapped as it narrowed. Holding the widths is what
+   * a hand-pinned column already does; while a cell is open, every column does it.
+   *
+   * The open editor is read from the grid rather than passed in by `tables.ts`, and that is
+   * deliberate rather than convenient. The alternative was an option the widget filled in
+   * from its own state, and the widget's `toDOM` is held to an exact line budget it may not
+   * grow, because at three thousand lines nothing inside it can be reached from a test. A
+   * decision this module can make for itself should not cost that closure two more lines.
+   *
+   * "Not while a cell is open" is the rule, not "never": a column whose content genuinely
+   * outgrew it still has to end up wider, or a table filled in from empty would keep its
+   * placeholder widths for ever. That is what the measurement on close is for.
+   */
+  const cellIsOpen = (): boolean => !!grid.querySelector('.sheaf-table-input');
+
+  /*
+   * And the close itself, which nothing else reports. The grid redraws the cell it was
+   * editing, but that is not a layout, so without this the widths stay frozen at the
+   * moment the cell opened for as long as the table is untouched afterwards.
+   */
+  let wasOpen = false;
+  const watchEditor = new MutationObserver(() => {
+    const open = cellIsOpen();
+    if (open === wasOpen) return;
+    wasOpen = open;
+    if (!open) layout.remeasure();
+  });
+  watchEditor.observe(grid, { childList: true, subtree: true });
 
   let observer: ResizeObserver | null = null;
   if (typeof ResizeObserver !== 'undefined') {
@@ -508,6 +633,7 @@ export function createColumnLayout(
       live.delete(layout);
       observer?.disconnect();
       observer = null;
+      watchEditor.disconnect();
       grid.removeEventListener('scroll', onScroll);
       dropProbe();
       note?.remove();

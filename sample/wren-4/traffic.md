@@ -35,7 +35,7 @@ sankey-beta
 Belt rocks,Oriel Ring,116
 Oriel Ring,Vesna c-II,42
 Harrow Yard,Farside Depot,33
-Farside Depot,Harrow Yard,33
+Farside Depot,Vesna c-II,33
 Belt rocks,Harrow Yard,20
 Farside Depot,Trailing cluster,2
 ```

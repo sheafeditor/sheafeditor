@@ -30,9 +30,11 @@
  *   text and keeps the selection, focus and a cell still being typed into.
  */
 
+import type { FromWebview } from '../protocol';
 import { StateField, StateEffect, EditorState, EditorSelection, Range, Prec, Extension, Transaction, ChangeDesc } from '@codemirror/state';
 import { Decoration, DecorationSet, EditorView, ViewPlugin, WidgetType, keymap } from '@codemirror/view';
 import { syntaxTree } from '@codemirror/language';
+import type { SyntaxNode } from '@lezer/common';
 import { undo as undoDocument, redo as redoDocument, undoDepth, redoDepth, isolateHistory, invertedEffects } from '@codemirror/commands';
 import type { SearchQuery } from '@codemirror/search';
 import { revealField, setReveal } from './livePreview';
@@ -297,6 +299,24 @@ export interface DataBlock {
   duplicate: boolean;
 }
 
+/**
+ * Whether a `FencedCode` node has its closing fence yet.
+ *
+ * Nothing should read the contents of one that does not. An opening fence with no closer
+ * parses as a `FencedCode` running to the end of the document, and that is the state
+ * somebody is in for as long as it takes them to type the body of a block. Read as a
+ * block, it is a grid drawn over the whole rest of the file: it takes their next
+ * keystrokes as cell entries, writes the block back rearranged, and puts the closing
+ * fence they type next above the block it was meant to close.
+ *
+ * Two `CodeMark` children is the opener and the closer. Display maths made the same
+ * choice for the same reason and says so in its own comment, and the diagram blocks ask
+ * the same question of the same node.
+ */
+export function fenceIsClosed(node: SyntaxNode): boolean {
+  return node.getChildren('CodeMark').length >= 2;
+}
+
 /** Every ```csv and ```tsv block in the document, in order, with duplicate names marked. */
 export function dataBlocks(state: EditorState): DataBlock[] {
   const out: DataBlock[] = [];
@@ -307,6 +327,7 @@ export function dataBlocks(state: EditorState): DataBlock[] {
       const open = doc.sliceString(node.from, doc.lineAt(node.from).to);
       const lang = fenceLang(open);
       if (lang !== 'csv' && lang !== 'tsv') return false;
+      if (!fenceIsClosed(node.node)) return false;
       const line = doc.lineAt(node.from);
       out.push({
         id: fenceId(open),
@@ -665,6 +686,11 @@ function renderInline(src: string): string {
   s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
   s = s.replace(/__([^_]+)__/g, '<strong>$1</strong>');
   s = s.replace(/~~([^~]+)~~/g, '<del>$1</del>');
+  // Highlight, spelled the way the document spells it: `==` has to touch the text it
+  // wraps, and a run of three or more equals signs is not a delimiter at all. Stricter
+  // than the rules around it on purpose, because it is highlight.ts that a reader
+  // compares a cell against, and `a == b` in a cell is arithmetic rather than a mark.
+  s = s.replace(/(?<!=)==(?!\s)([^=]+?)(?<!\s)==(?!=)/g, '<span class="tok-highlight">$1</span>');
   s = s.replace(/\*([^*]+)\*/g, '<em>$1</em>');
   s = s.replace(/(^|[^\w])_([^_]+)_(?=[^\w]|$)/g, '$1<em>$2</em>');
   // Put the set-aside pieces back.
@@ -672,10 +698,136 @@ function renderInline(src: string): string {
   return s;
 }
 
-/** The link under a Cmd/Ctrl-click, if that is what the click was. */
-function linkClicked(e: MouseEvent): HTMLElement | null {
-  if (!(e.metaKey || e.ctrlKey)) return null;
+/**
+ * Whether a table may reach past the writing column into the pane.
+ *
+ * Prose wants a measure and a table wants room, so a table at the top level takes the pane:
+ * its frame runs to the pane's right edge and its content crosses the left gutter when it is
+ * scrolled sideways (`.can-use-pane` in the stylesheet).
+ *
+ * A table inside a quote or a list item belongs to that block. It starts where that block's
+ * text starts and keeps the indent the lines around it have, so reaching past the column
+ * would put it somewhere its own quote bar is not.
+ *
+ * Read from `prefix`, the markers and indent the table's lines carry: empty is the top level
+ * and anything at all is a block this table sits inside.
+ */
+export function tableUsesPane(prefix: string): boolean {
+  return prefix === '';
+}
+
+/**
+ * What the block a table's lines sit in puts on its frame, as a string to append to the
+ * class list: the quote's own bar, and whether it may take the pane.
+ *
+ * The grid stands in for the quote's lines, `>` and all, so a quoted table draws that bar
+ * itself rather than inheriting one.
+ */
+/**
+ * Whether a table laid out `laid` pixels wide took the writing column rather than the pane,
+ * which is what makes its width worth remembering as the column's.
+ *
+ * The frame reaches past the column now, so a table too wide for the column is laid out to
+ * the pane and still fits its frame. Recording that as the column would have the next table
+ * on the page estimated a couple of hundred pixels too wide, and everything under it placed
+ * from that estimate until it was drawn.
+ *
+ * The frame's own left padding is how far it reaches past the column on each side, which is
+ * the same reading the layout takes.
+ */
+export function laidInColumn(laid: number, grid: HTMLElement): boolean {
+  const inset = parseFloat(getComputedStyle(grid).paddingLeft) || 0;
+  return laid <= grid.clientWidth - 2 * inset + 1;
+}
+
+export function frameClasses(prefix: string): string {
+  return `${prefix.includes('>') ? ' is-quoted' : ''}${tableUsesPane(prefix) ? ' can-use-pane' : ''}`;
+}
+
+/** The rendered link a pointer event landed on, if it landed on one. */
+export function linkUnder(e: { target: EventTarget | null }): HTMLElement | null {
   return ((e.target as Element | null)?.closest?.('[data-href]') as HTMLElement | null) ?? null;
+}
+
+/**
+ * What a press on a cell means for the link under it: follow it now, hold it for the
+ * release, or neither.
+ *
+ * **A plain click on a link in a closed cell opens it, and Cmd or Ctrl still does.** Prose
+ * needs the modifier because a plain click there places the caret, so opening has to be a
+ * gesture that is not typing. A closed cell has no caret to place, and without this a table
+ * whose first column is ten document links is a list of things that look clickable and are
+ * not.
+ *
+ * The modifier opens on the press, as it always has. A plain click waits for the release,
+ * because a press on a link that then moves is somebody selecting a range rather than
+ * following a link: the press starts the selection either way, and the release opens only
+ * if nothing moved.
+ *
+ * `inOpenCell` is the cell being edited, where the text is the cell's own editor's and a
+ * click is where the caret goes, as in prose.
+ */
+/**
+ * Every column pinned at the width it has now, which is what the first drag on a table does
+ * before it moves the one being dragged.
+ *
+ * A pinned column is taken out of the allocator's division and the rest share whatever the pane
+ * has left, so pinning one column made a drag a claim on a fixed budget: measured, dragging a
+ * column 120px wider gained it exactly 120px and cost the other two 50px and 70px, with the
+ * table's total held at 708px the whole way. Getting two columns right meant dragging back and
+ * forth.
+ *
+ * With every column pinned the allocator has nothing to divide, so a drag moves one number and
+ * the total is the sum of the pins. The table can then outgrow the pane, which is what the
+ * scrolling frame is for.
+ *
+ * Only on the first drag, and only for a table nobody has pinned. A table nobody has touched
+ * still lays out automatically and still follows the pane, which is what a person who has never
+ * dragged a divider expects to keep, and `Reset column widths` on the table's menu hands a
+ * pinned one back.
+ */
+export function frozenWidths(widths: readonly number[]): Map<number, number> {
+  const frozen = new Map<number, number>();
+  widths.forEach((w, i) => frozen.set(i, Math.round(w)));
+  return frozen;
+}
+
+export function pressOnLink(e: MouseEvent, inOpenCell: boolean): { open: HTMLElement | null; hold: HTMLElement | null } {
+  const link = inOpenCell ? null : linkUnder(e);
+  if (link && (e.metaKey || e.ctrlKey)) return { open: link, hold: null };
+  return { open: null, hold: link && e.button === 0 ? link : null };
+}
+
+/**
+ * The link a release follows, given the link its press was held on.
+ *
+ * A press and a release on one link with nothing moving between them is a click on it.
+ * Released somewhere else, or after a drag across the grid, it was a selection and the link
+ * is left alone.
+ */
+export function releaseOnLink(held: HTMLElement | null, e: { target: EventTarget | null }, moved: boolean): HTMLElement | null {
+  if (!held || moved) return null;
+  return linkUnder(e) === held ? held : null;
+}
+
+/**
+ * Write the file lines into the row and corner tooltips of the grid in `gridHost`, reading
+ * them from `lineOf`.
+ *
+ * Done when the grid is drawn rather than where those elements are built, because a change
+ * anywhere above the table moves every one of its lines while the grid keeps the DOM it
+ * already has.
+ */
+export function labelGridLines(gridHost: HTMLElement, lineOf: (r: number) => number | null): void {
+  const corner = gridHost.querySelector('.sheaf-table-corner') as HTMLElement | null;
+  if (corner) {
+    const headerLine = lineOf(-1);
+    corner.title = headerLine ? `Select whole table (header on line ${headerLine})` : 'Select whole table';
+  }
+  gridHost.querySelectorAll('tbody .sheaf-table-gutter').forEach((el, r) => {
+    const line = lineOf(r);
+    (el as HTMLElement).title = line ? `Select row (line ${line})` : 'Select row (not saved yet)';
+  });
 }
 
 // ---- Write-back (model -> source) ----------------------------------------
@@ -1217,6 +1369,8 @@ export interface TableCommandTarget {
   fenced: boolean;
   /** Whether a move to a file can be made from here: a host that writes files, and a document that can change. */
   movable: boolean;
+  /** Whether a view of this block can be written below it: a document that can change, and a page that draws views. */
+  viewable: boolean;
 }
 
 interface TableCommandSpec {
@@ -1343,6 +1497,19 @@ export const TABLE_COMMANDS = [
 
   // A CSV or TSV block's rows moved out to a file beside the document, and a view
   // of that file left in the block's place. Only a fenced block has a body to move.
+  // A view of this block, written below it. The job views exist for, offered where
+  // the table is rather than only to someone who knows the query language. A block
+  // with no name is named first, since a view reads it by its name.
+  cmd({
+    id: 'table.createView',
+    label: () => 'Create view',
+    icon: 'createView',
+    scope: 'table',
+    startsGroup: true,
+    enabled: (t) => t.viewable,
+    offered: (t) => t.viewable,
+  }),
+
   cmd({
     id: 'table.moveToFile',
     label: () => 'Move to file',
@@ -1364,6 +1531,17 @@ let moveToFile: ((view: EditorView, from: number) => void) | null = null;
 
 export function setMoveToFile(move: ((view: EditorView, from: number) => void) | null): void {
   moveToFile = move;
+}
+
+/**
+ * What writes a view of a data block below it: `createViewOf` in viewBlock.ts,
+ * which knows how a view is spelled. Set by the page beside `setMoveToFile`, and
+ * for the same reason: the block model lives here and the view does not.
+ */
+let createView: ((view: EditorView, from: number) => void) | null = null;
+
+export function setCreateView(create: ((view: EditorView, from: number) => void) | null): void {
+  createView = create;
 }
 
 export type TableCommand = (typeof TABLE_COMMANDS)[number];
@@ -1528,7 +1706,7 @@ const pinnedWidths = new Map<string, Map<number, number>>();
 /** Every live grid's way to lay its columns out again when the stored widths arrive. */
 const pinListeners = new Set<() => void>();
 
-let widthsHost: ((message: unknown) => void) | null = null;
+let widthsHost: ((message: FromWebview) => void) | null = null;
 let widthsSeq = 0;
 
 /** What a table's hand-set widths are kept under: its column count and its header row. */
@@ -1542,7 +1720,7 @@ export function tableWidthKey(headers: readonly string[]): string {
  * when the page asks first, so a table is usually drawn at its own widths from
  * the start.
  */
-export function setTableWidthsHost(send: ((message: unknown) => void) | null): void {
+export function setTableWidthsHost(send: ((message: FromWebview) => void) | null): void {
   widthsHost = send;
   send?.({ type: 'tableWidthsRead', id: `widths-${++widthsSeq}` });
 }
@@ -1603,14 +1781,14 @@ const boardTables = new Map<string, string>();
 /** Every live grid's way to look again at whether it is a board when the stored boards arrive. */
 const boardListeners = new Set<() => void>();
 
-let boardsHost: ((message: unknown) => void) | null = null;
+let boardsHost: ((message: FromWebview) => void) | null = null;
 let boardsSeq = 0;
 
 /**
  * Where the stored boards come from and go to. Setting a host asks it for this
  * document's boards straight away, ahead of the document, as widths are asked for.
  */
-export function setTableBoardsHost(send: ((message: unknown) => void) | null): void {
+export function setTableBoardsHost(send: ((message: FromWebview) => void) | null): void {
   boardsHost = send;
   send?.({ type: 'tableBoardsRead', id: `boards-${++boardsSeq}` });
 }
@@ -1664,15 +1842,19 @@ function saveBoards(): void {
  * plus 13px, and the table is the sum of its rows and a 1px edge.
  */
 const EST = {
-  /** One line of cell text: 0.92em at 16px, at a line height of 1.5. */
-  line: 22.08,
+  /**
+   * One line of cell text: 1em at 16px, at a line height of 1.5.
+   *
+   * It said 0.92em and 22.08px, which was a stale reading of the stylesheet: `.sheaf-table
+   * table` is `font-size: 1em`, and a real window reports the drawn line height as 24.
+   * A view's rows and a board's cards are the 0.92em ones.
+   */
+  line: 24,
   /** A row's padding, 6px above and below, and its 1px rule. */
   row: 13,
   /** The rule under the last row. */
   edge: 1,
-  /** The controls bar above the grid, 26px and 3px under it. */
-  bar: 29,
-  /** The frame's 0.5em above and below. */
+  /** The frame's 0.5em above and below. The controls bar floats over it and adds nothing. */
   frame: 16,
   /** An average character of cell text. */
   ch: 7.4,
@@ -1724,12 +1906,38 @@ export function estimateColumnWidths(
     }
     extents.push({ min: longest * EST.ch + EST.pad, max: widest * EST.ch + EST.pad });
   }
-  const alloc = allocateColumnWidths(pane - gutter, extents, {
+  /*
+   * Still the writing column, and a table that takes the pane is estimated too narrow and so
+   * too tall. That is a known gap rather than an oversight, and it was here before the frame
+   * reached the pane: `render.table-widths.e15` measures it, and it reads 15px on the old
+   * geometry against 9px on this one, so the frame reaching the pane makes it smaller.
+   *
+   * The obvious repair — the two widths this file's layout chooses between, applied here —
+   * was tried and made it worse, 13px, because the extents here are counted from characters
+   * rather than measured, so a table that fits is read as one that does not and estimated in
+   * room the drawn table never takes. The repair needs the real column, which this side does
+   * not have: `textColumn()` is itself an estimate.
+   */
+  /*
+   * Which room to divide, by the rule the layout itself uses: the writing column when the
+   * table's natural width fits in it, and the pane when it does not.
+   *
+   * This was tried once before against the character-counted extents alone and made the gap
+   * worse, 9px to 13px, because those extents read a table that fits as one that does not and
+   * estimated it in room the drawn table never takes. What has changed is that the fit test
+   * now asks for the *natural* width, the sum of what every column wants, which is the same
+   * question `roomFor` asks, and `EST.line` is no longer 2px short per line and masking the
+   * error in the other direction. Either half alone is worse than neither: measured, the line
+   * height alone takes 9px to 24px.
+   */
+  const natural = gutter + extents.reduce((sum, e) => sum + e.max, 0);
+  const room = natural <= pane ? pane : (paneRoom() ?? pane);
+  const alloc = allocateColumnWidths(room - gutter, extents, {
     floor: COLUMN_FLOOR_CH * EST.digit + EST.pad,
-    cap: COLUMN_CAP_FRACTION * pane,
+    cap: COLUMN_CAP_FRACTION * room,
     pinned,
   });
-  return alloc?.widths ?? extents.map(() => (pane - gutter) / n);
+  return alloc?.widths ?? extents.map(() => (room - gutter) / n);
 }
 
 /**
@@ -1738,6 +1946,39 @@ export function estimateColumnWidths(
  * them out in a text column `pane` pixels wide, holding any `pinned` column at the
  * width it was set to.
  */
+/**
+ * Whether emptying the current selection leaves column `c`'s name alone.
+ *
+ * Emptying a whole column keeps its name; emptying the header cell on its own still clears it.
+ *
+ * A header is not decoration and not data: it is the identifier the rest of the document
+ * reaches that column by. A view's `show` lists columns by name, `sort` orders by a named
+ * column, and a board's `group` names one. So clearing a column's name breaks every view,
+ * board, sort and filter naming it, and it reports itself on the *view*, which may be far
+ * down the document, as "a column the table does not have". The person emptied a column,
+ * watched it empty correctly, and a board elsewhere quietly stopped grouping.
+ *
+ * The two gestures look inconsistent and are not, because they say different things.
+ * Selecting the column says empty this column; selecting the header cell says clear this
+ * name. A spreadsheet can treat its first row as ordinary because nothing refers to it by
+ * name. Here something does.
+ *
+ * "Covered end to end, header down to the last row" is the same test `colRun` makes to decide
+ * that a drag on a header is moving a whole column rather than extending a block. It is
+ * spelled out again here rather than shared, because this takes its inputs explicitly and so
+ * can be read and checked without a grid around it.
+ *
+ * `lastRow < 0` is a table with no body rows, and it is why this is not simply "is the column
+ * covered". There, a column selection and a header-cell selection are the same set of cells,
+ * so there is nothing to tell them apart and nothing else in the column to empty. Keeping the
+ * name would leave Delete doing nothing at all, which is worse than either behaviour the
+ * decision was choosing between.
+ */
+export function columnKeepsItsName(rects: readonly CellRect[], c: number, lastRow: number): boolean {
+  if (lastRow < 0) return false;
+  return rects.some((q) => c >= q.c1 && c <= q.c2 && q.r1 === -1 && q.r2 === lastRow);
+}
+
 export function estimateTableHeight(
   headers: readonly string[],
   rows: readonly (readonly string[])[],
@@ -1763,7 +2004,7 @@ export function estimateTableHeight(
     for (let c = 0; c < n && most < CLAMP_LINES; c++) most = Math.max(most, lines(cells[c] ?? '', c));
     return most * EST.line + EST.row;
   };
-  let height = EST.bar + EST.frame + EST.edge + row(headers);
+  let height = EST.frame + EST.edge + row(headers);
   for (const r of rows) height += row(r);
   return Math.round(height);
 }
@@ -1792,8 +2033,39 @@ function textColumn(): number {
   return Math.max(EST.pane / 4, Math.min(setting, window.innerWidth - 2 * margin));
 }
 
+/**
+ * The room a table too wide for the writing column is drawn in: the scroller's own width.
+ *
+ * `textColumn()` is the writing column, which is the right divisor for a table that fits and
+ * the wrong one for a table that does not: a wide table's frame spans the pane, so it is drawn
+ * in more room than the column, its columns come out wider, its cells wrap less, and it is
+ * drawn shorter than it was estimated.
+ *
+ * Measured rather than derived. The pane could be reconstructed from `--md-gutter` and
+ * `--md-pane-overhang`, but the overhang is written by a `ResizeObserver` and may not be there
+ * yet when a block below the fold is first estimated, and an estimate that is sometimes right
+ * is worse than one that is consistently wrong. The scroller's `clientWidth` is a real number
+ * at any moment, and it is the same number the layout is handed.
+ *
+ * Null where there is nothing to read, which is jsdom and the first moments of a page.
+ */
+function paneRoom(): number | null {
+  if (typeof document === 'undefined') return null;
+  const scroller = document.querySelector('.cm-scroller');
+  const w = scroller instanceof HTMLElement ? scroller.clientWidth : 0;
+  return w > 0 ? w : null;
+}
+
 /** The height each table was last drawn at, by its text, so an undrawn copy of it is estimated exactly. */
 const drawnHeights = new Map<string, number>();
+
+/*
+ * Estimated heights, keyed on a table's shape rather than on its exact text, so that
+ * typing in a cell reuses the estimate instead of recomputing how all forty thousand of
+ * them wrap. See `estimatedHeight`, which says what the key holds and why a stale entry
+ * here is safe.
+ */
+const estimatedHeights = new Map<string, number>();
 
 /** The widths each table's columns were last laid out at, by its header row. */
 const laidWidths = new Map<string, readonly number[]>();
@@ -1854,17 +2126,24 @@ interface TableName {
 const captionRenames = new WeakMap<HTMLElement, (to: string) => string | null>();
 
 /**
+ * A free name to prefill the field with when a block is being named for the first
+ * time, read when the field opens rather than when the table was drawn, so it is
+ * free against the document as it stands.
+ */
+const captionSuggest = new WeakMap<HTMLElement, () => string>();
+
+/**
  * Put a text field over a block's name. Enter renames, and a name that cannot be
  * used keeps the field open with the reason beside it. Escape, or leaving the
  * field with a name that cannot be used, puts the name back as it was.
  */
-function openRename(caption: HTMLElement, name: TableName, rename: (to: string) => string | null): void {
+function openRename(caption: HTMLElement, name: TableName | null, rename: (to: string) => string | null, suggest = '', nameable = false): void {
   const input = document.createElement('input');
   input.type = 'text';
   input.className = 'sheaf-table-rename';
-  input.value = name.id;
+  input.value = name ? name.id : suggest;
   input.spellcheck = false;
-  input.setAttribute('aria-label', `Rename table ${name.id}`);
+  input.setAttribute('aria-label', name ? `Rename table ${name.id}` : 'Name this table');
   const reason = document.createElement('span');
   reason.className = 'sheaf-table-error';
   reason.setAttribute('role', 'alert');
@@ -1875,8 +2154,8 @@ function openRename(caption: HTMLElement, name: TableName, rename: (to: string) 
     done = true;
     input.remove();
     reason.remove();
-    paintTableName(caption, name);
-    if (focusName) caption.querySelector<HTMLElement>('.sheaf-table-id')?.focus({ preventScroll: true });
+    paintTableName(caption, name, nameable);
+    if (focusName) caption.querySelector<HTMLElement>('.sheaf-table-id, .sheaf-table-name-it')?.focus({ preventScroll: true });
   };
   const commit = (): boolean => {
     // Settled before the rename is written, since writing it draws the table again.
@@ -1893,9 +2172,10 @@ function openRename(caption: HTMLElement, name: TableName, rename: (to: string) 
     if (input.isConnected) {
       input.remove();
       reason.remove();
-      paintTableName(caption, { ...name, id: input.value.trim() || name.id });
+      const written = input.value.trim();
+      paintTableName(caption, written ? { duplicate: false, ...name, id: written } : name, nameable);
     }
-    caption.querySelector<HTMLElement>('.sheaf-table-id')?.focus({ preventScroll: true });
+    caption.querySelector<HTMLElement>('.sheaf-table-id, .sheaf-table-name-it')?.focus({ preventScroll: true });
     return true;
   };
   input.addEventListener('keydown', (e) => {
@@ -1914,7 +2194,7 @@ function openRename(caption: HTMLElement, name: TableName, rename: (to: string) 
   }
   input.addEventListener('blur', () => {
     if (done) return;
-    if (input.value.trim() === name.id || !commit()) close(false);
+    if (input.value.trim() === (name?.id ?? '') || !commit()) close(false);
   });
   caption.replaceChildren(input, reason);
   caption.hidden = false;
@@ -1952,6 +2232,13 @@ export function viewReferences(state: EditorState, name: string): { from: number
   return out;
 }
 
+/** `wanted`, or `wanted-2`, `wanted-3` and so on, whichever no block in the document is named yet. */
+export function freeBlockName(state: EditorState, wanted: string): string {
+  const taken = new Set(dataBlocks(state).flatMap((b) => (b.id ? [b.id.toLowerCase()] : [])));
+  if (!taken.has(wanted.toLowerCase())) return wanted;
+  for (let n = 2; ; n++) if (!taken.has(`${wanted}-${n}`.toLowerCase())) return `${wanted}-${n}`;
+}
+
 /** A name a block may have: letters, digits, hyphens and underscores. */
 const BLOCK_NAME = /^[A-Za-z0-9_-]+$/;
 
@@ -1964,15 +2251,30 @@ export function renameDataBlock(view: EditorView, blockFrom: number, to: string)
   const next = to.trim();
   const blocks = dataBlocks(view.state);
   const block = blocks.find((b) => b.from === blockFrom);
-  if (!block?.id) return 'This block has no name to change.';
+  if (!block) return 'This block could not be found.';
   if (next === block.id) return null;
-  if (!next) return 'A table needs a name, so views can read it. Press Escape to keep the one it has.';
+  if (!next) {
+    return block.id
+      ? 'A table needs a name, so views can read it. Press Escape to keep the one it has.'
+      : 'A table needs a name, so views can read it. Press Escape to leave it unnamed.';
+  }
   if (!BLOCK_NAME.test(next)) return `"${next}" cannot be a name. Use letters, digits, hyphens and underscores, with no spaces.`;
   if (blocks.some((b) => b !== block && b.id && b.id.toLowerCase() === next.toLowerCase())) {
     return `Another block in this document is already named "${next}". Pick a name no other block has.`;
   }
   if (view.state.readOnly) return 'This document is read-only.';
   const line = view.state.doc.lineAt(block.from);
+  // A block with no name yet gets one written onto the end of its fence line, which
+  // is where `id=` is read from. Nothing reads it by a name it did not have, so there
+  // are no views to follow.
+  if (!block.id) {
+    view.dispatch({
+      changes: { from: line.to, insert: ` id=${next}` },
+      annotations: isolateHistory.of('full'),
+      userEvent: 'input',
+    });
+    return null;
+  }
   const m = /(^|[ \t])id=([A-Za-z0-9_-]+)(?=[ \t]|$)/.exec(line.text);
   if (!m || m[2] !== block.id) return 'The name could not be found on the block’s first line.';
   const at = line.from + m.index + m[1].length + 'id='.length;
@@ -1992,9 +2294,41 @@ export function renameDataBlock(view: EditorView, blockFrom: number, to: string)
  * Always shown, where the controls bar shows only on hover, because a reader
  * following a view back to its table looks for the name without pointing at it.
  */
-function paintTableName(caption: HTMLElement, name: TableName | null): void {
+function paintTableName(caption: HTMLElement, name: TableName | null, nameable = false): void {
   // A name being typed is left alone while the table around it is drawn again.
   if (name && caption.querySelector('.sheaf-table-rename') && caption.dataset.id === name.id) return;
+  const rename = captionRenames.get(caption);
+  /*
+   * A data block with no name yet. Naming it is what a view reads it by, and until
+   * now the only way to do it was to open the block's Markdown and type `id=` onto
+   * the fence line, which nothing on screen said was possible. The caption offers it
+   * instead, in the same field renaming already uses.
+   *
+   * Only a fenced block: a pipe table has no info string to carry a name.
+   */
+  if (!name && nameable && rename) {
+    caption.hidden = false;
+    caption.replaceChildren();
+    delete caption.dataset.id;
+    const nameIt = document.createElement('span');
+    nameIt.className = 'sheaf-table-name-it';
+    nameIt.textContent = 'Name this table';
+    nameIt.tabIndex = 0;
+    nameIt.setAttribute('role', 'button');
+    nameIt.title = 'Give this table a name, so a view elsewhere can read it with "from: #name".';
+    const open = (e: Event): void => {
+      e.preventDefault();
+      e.stopPropagation();
+      openRename(caption, null, rename, captionSuggest.get(caption)?.() ?? 'data', true);
+    };
+    nameIt.addEventListener('mousedown', (e) => e.stopPropagation());
+    nameIt.addEventListener('click', open);
+    nameIt.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === 'F2' || e.key === ' ') open(e);
+    });
+    caption.appendChild(nameIt);
+    return;
+  }
   caption.hidden = !name;
   caption.replaceChildren();
   if (!name) return;
@@ -2002,7 +2336,6 @@ function paintTableName(caption: HTMLElement, name: TableName | null): void {
   const id = document.createElement('span');
   id.className = 'sheaf-table-id';
   id.textContent = `#${name.id}`;
-  const rename = captionRenames.get(caption);
   if (rename) {
     // The name is a control: a click, or Enter while it has focus, opens it for typing.
     id.tabIndex = 0;
@@ -2082,10 +2415,33 @@ class TableWidget extends WidgetType {
     const drawn = drawnHeights.get(this.sig);
     if (drawn) return drawn;
     const key = tableWidthKey(this.data.headers);
+    /*
+     * Failing that, the estimate this table's shape was last given.
+     *
+     * `drawnHeights` is keyed on the signature, which is exactly right for a measured
+     * height and useless while a cell is being typed into: the grid rewrites its source
+     * on every keystroke, so the signature is new every time, so this fell through to a
+     * full estimate that reads every cell to work out how each one wraps. On a 200x200
+     * table that was 46ms of every keystroke. `this.estimate` memoises it, but a new
+     * widget is built for each keystroke, so the memo never saw a second call.
+     *
+     * The shape key is what the estimate actually turns on: the columns, how many rows
+     * there are, and the pane it is being laid out in. One cell's text changing moves a
+     * 200-row estimate by less than a row, while adding a row, resizing the pane or
+     * editing a header misses and recomputes, which is the behaviour worth keeping.
+     *
+     * It stays an estimate, and a wrong one is corrected rather than believed: the
+     * `ResizeObserver` on the drawn table records its real height against the signature
+     * as soon as it differs, and that is what the lookup above then finds.
+     */
+    const shape = `${key}|${this.data.rows.length}|${Math.round(textColumn())}`;
+    const seen = estimatedHeights.get(shape);
+    if (seen) return seen;
     this.estimate ??= estimateTableHeight(this.data.headers, this.data.rows, laidWidths.get(key) ?? null, {
       pane: textColumn(),
       pinned: pinnedWidths.get(key) ?? null,
     });
+    remember(estimatedHeights, shape, this.estimate);
     return this.estimate;
   }
 
@@ -2133,9 +2489,7 @@ class TableWidget extends WidgetType {
     };
 
     const wrap = document.createElement('div');
-    wrap.className = 'sheaf-table' + (kind === 'csv' ? ' is-csv' : '');
-    // The grid stands in for the quote's lines, `>` and all, so it draws the quote's bar itself.
-    if (prefix.includes('>')) wrap.classList.add('is-quoted');
+    wrap.className = `sheaf-table${kind === 'csv' ? ' is-csv' : ''}${frameClasses(prefix)}`;
     gridEntries.set(wrap, {
       get from() {
         return pos.from;
@@ -2286,7 +2640,8 @@ class TableWidget extends WidgetType {
     const caption = document.createElement('div');
     caption.className = 'sheaf-table-caption';
     captionRenames.set(caption, (to) => renameDataBlock(view, pos.from, to));
-    paintTableName(caption, this.name);
+    captionSuggest.set(caption, () => freeBlockName(view.state, 'table'));
+    paintTableName(caption, this.name, this.kind !== 'pipe');
     const controls = document.createElement('div');
     controls.className = 'sheaf-table-controls';
     const gridHost = document.createElement('div');
@@ -2529,15 +2884,25 @@ class TableWidget extends WidgetType {
       const table = gridTable;
       const head = table?.tHead?.rows[0] as HTMLElement | undefined;
       if (!table || !head) return;
+      // An empty header row is not held anywhere: the stylesheet lets it scroll away
+      // and it is never lifted here either.
+      const blank = head.classList.contains('is-blank');
+      const frameTop = view.scrollDOM.getBoundingClientRect().top;
+      const box = table.getBoundingClientRect();
       let lift = 0;
-      if (wrap.isConnected && wrap.classList.contains('is-scroll-x')) {
-        const frameTop = view.scrollDOM.getBoundingClientRect().top;
-        const box = table.getBoundingClientRect();
+      if (!blank && wrap.isConnected && wrap.classList.contains('is-scroll-x')) {
         lift = Math.max(0, Math.min(frameTop - box.top, box.height - head.offsetHeight));
       }
       const want = lift > 0 ? `translateY(${Math.round(lift)}px)` : '';
       if (head.style.transform !== want) head.style.transform = want;
-      head.classList.toggle('is-stuck', lift > 0);
+      /*
+       * The edge drawn under a row that is holding its place, whichever way it holds
+       * it. This used to be `lift > 0`, which is only ever true for a table wide
+       * enough to scroll sideways, so the common table, held by the stylesheet, never
+       * got an edge and the rows passed under it with nothing between.
+       */
+      const held = !blank && box.top < frameTop && box.bottom - head.offsetHeight > frameTop;
+      head.classList.toggle('is-stuck', held);
     };
     view.scrollDOM.addEventListener('scroll', stickHeader, { passive: true });
 
@@ -2554,6 +2919,8 @@ class TableWidget extends WidgetType {
       const table = gridTable;
       const head = table?.tHead?.rows[0] as HTMLElement | undefined;
       if (!table || !head) return frameTop;
+      // Nothing is covered by a header that does not stick.
+      if (head.classList.contains('is-blank')) return frameTop;
       const box = table.getBoundingClientRect();
       if (box.top >= frameTop) return frameTop;
       return Math.max(frameTop, Math.min(frameTop + head.offsetHeight, box.bottom));
@@ -2569,9 +2936,8 @@ class TableWidget extends WidgetType {
       // table sits inside the quote's indent, so it says nothing about the column.
       const gutterCol = gridTable?.querySelector<HTMLElement>(':scope > colgroup > col');
       const gutter = gutterCol ? parseFloat(gutterCol.style.width) : NaN;
-      if (widths && gutter > 0 && !wrap.classList.contains('is-scroll-x') && !wrap.classList.contains('is-quoted')) {
-        laidPane = gutter + widths.reduce((a, b) => a + b, 0);
-      }
+      const laid = widths && gutter > 0 ? gutter + widths.reduce((a, b) => a + b, 0) : null;
+      if (laid !== null && !wrap.classList.contains('is-scroll-x') && !wrap.classList.contains('is-quoted') && laidInColumn(laid, gridHost)) laidPane = laid;
       syncControls();
       measureClamps();
       stickHeader();
@@ -2617,6 +2983,9 @@ class TableWidget extends WidgetType {
     // Whether the pointer has moved across the grid since the press. A press that
     // never moved is a click, and a click settles on the cell it was made in.
     let dragMoved = false;
+    // A press with no modifier that landed on a rendered link in a closed cell. The
+    // release opens it, so long as nothing moved in between and the release is on it.
+    let pressedLink: HTMLElement | null = null;
     // A press that landed in an open cell editor's text. It is the text field's own
     // selection drag until it leaves the cell, and a cell range from there on.
     let inputDrag: Cell | null = null;
@@ -3610,6 +3979,8 @@ class TableWidget extends WidgetType {
         pinned: !!pins()?.size,
         fenced: kind === 'csv' && !!moveToFile,
         movable: kind === 'csv' && !!moveToFile && !view.state.readOnly,
+        // Writing a view needs no file host, so it does not borrow the mover's fact.
+        viewable: kind === 'csv' && !!createView && !view.state.readOnly,
       };
     };
     /**
@@ -3649,6 +4020,30 @@ class TableWidget extends WidgetType {
           commitCell();
           flush();
           moveToFile?.(view, pos.from);
+        },
+        'table.createView': () => {
+          commitCell();
+          flush();
+          // A view reads its table by name, so a block that has none is named first,
+          // in the field the caption already offers. Escape there writes nothing and
+          // no view is made.
+          if (dataBlocks(view.state).find((b) => b.from === pos.from)?.id) {
+            createView?.(view, pos.from);
+            return;
+          }
+          openRename(
+            caption,
+            null,
+            (to) => {
+              const why = renameDataBlock(view, pos.from, to);
+              // Named: the block is at the same place, one character longer on its
+              // first line, and the view goes below it.
+              if (!why) createView?.(view, pos.from);
+              return why;
+            },
+            freeBlockName(view.state, 'table'),
+            true
+          );
         },
       };
     };
@@ -3734,7 +4129,7 @@ class TableWidget extends WidgetType {
     };
 
     const clearSelected = (): void => {
-      const cells = selCells();
+      const cells = selCells().filter(({ r, c }) => !(r === -1 && columnKeepsItsName(selRects(), c, lastRow())));
       if (cells.some(({ r, c }) => getCell(r, c) !== '')) record();
       for (const { r, c } of cells) {
         setCell(r, c, '');
@@ -4052,9 +4447,10 @@ class TableWidget extends WidgetType {
       el.addEventListener('mousedown', (e) => {
         e.preventDefault();
         e.stopPropagation();
-        // Cmd/Ctrl-click on a link opens it, as in prose, instead of selecting.
-        const link = activeInput ? null : linkClicked(e);
-        if (link) return openLink(link.dataset.href ?? '');
+        // A link under the press: followed now with a modifier, held for the release without.
+        const onLink = pressOnLink(e, !!activeInput);
+        if (onLink.open) return openLink(onLink.open.dataset.href ?? '');
+        pressedLink = onLink.hold;
         if (keepForMenu(e, r, c)) return;
         if (press?.(e)) return;
         // Cmd/Ctrl-click picks cells one at a time, so cells nowhere near each other
@@ -4086,21 +4482,7 @@ class TableWidget extends WidgetType {
       return view.state.doc.lineAt(range.from).number;
     };
 
-    // The file lines named in the row and corner tooltips, read from the document as
-    // it stands. They are written here rather than where those elements are built,
-    // because a change anywhere above the table moves every one of its lines while
-    // the grid keeps the DOM it already has.
-    const labelLines = (): void => {
-      const corner = gridHost.querySelector('.sheaf-table-corner') as HTMLElement | null;
-      if (corner) {
-        const headerLine = lineOf(-1);
-        corner.title = headerLine ? `Select whole table (header on line ${headerLine})` : 'Select whole table';
-      }
-      gridHost.querySelectorAll('tbody .sheaf-table-gutter').forEach((el, r) => {
-        const line = lineOf(r);
-        (el as HTMLElement).title = line ? `Select row (line ${line})` : 'Select row (not saved yet)';
-      });
-    };
+    const labelLines = (): void => labelGridLines(gridHost, lineOf);
 
     // The table element `render` drew last, whose rows the marks below go on.
     let gridTable: HTMLTableElement | null = null;
@@ -4289,6 +4671,7 @@ class TableWidget extends WidgetType {
         const widths = columns.widths();
         const m = columns.measured();
         if (!widths || !m || widths[c] === undefined) return;
+        if (!pins()?.size) setPins(frozenWidths(widths), false);
         drag = { startX: e.clientX, startW: widths[c], floor: Math.round(m.floor) };
         try {
           g.setPointerCapture?.(e.pointerId);
@@ -4363,6 +4746,11 @@ class TableWidget extends WidgetType {
         th.append(axisChevron(c), resizeGrip(c));
         htr.appendChild(th);
       }
+      // A header row with nothing in any cell. The pipe syntax requires a header, so a
+      // two-column summary table is written `| | |` and has one whether the author
+      // wanted it or not. It keeps nothing in view, so it must not stick: an opaque
+      // band with no text in it just rides down over the rows it passes.
+      htr.classList.toggle('is-blank', data.headers.every((h) => h.trim() === ''));
       thead.appendChild(htr);
       const drawnRows = [htr];
       table.appendChild(thead);
@@ -4615,6 +5003,9 @@ class TableWidget extends WidgetType {
       // The release settles the range, hit-tested again: the last move may have been
       // read while the table was laid out for an open cell editor.
       if (dragging && dragMoved) reachTo(cellUnder(e));
+      const followed = releaseOnLink(pressedLink, e, dragMoved);
+      pressedLink = null;
+      if (followed) openLink(followed.dataset.href ?? '');
       dragging = false;
       dragMoved = false;
       axisDrag = null;
@@ -4679,6 +5070,7 @@ class TableWidget extends WidgetType {
       current: () => boardState,
       editable: () => !view.state.readOnly,
       move: (row, value) => moveCard(row, value),
+      openLink,
     });
     /** Give the focus to the picked card, or the first, or the board itself when it has none. */
     function focusBoard(): void {
@@ -5152,9 +5544,9 @@ class TableWidget extends WidgetType {
       view.scrollDOM.removeEventListener('scroll', stickHeader);
     });
 
-    // Write the model to the document once focus leaves the table for good. Focus
-    // moving into the right-click menu is not leaving: the menu acts on this grid
-    // and hands focus back, so the check waits until focus lands somewhere else.
+    // Write the model to the document once focus leaves the table for good. The right-click menu,
+    // the table menu and the top toolbar are not leaving: each acts on this grid and hands focus
+    // back. The toolbar is listed because its dropdowns focus their menu, which used to commit.
     let waiting = false;
     const recheck = (): void => void setTimeout(writeIfLeft, 0);
     const stopWaiting = (): void => {
@@ -5173,7 +5565,7 @@ class TableWidget extends WidgetType {
       if (committed || !wrap.isConnected) return stopWaiting();
       const active = document.activeElement;
       if (wrap.contains(active)) return stopWaiting();
-      if (active?.closest?.('.sheaf-ctx-menu, .sheaf-table-menu')) return startWaiting();
+      if (active?.closest?.('.sheaf-ctx-menu, .sheaf-table-menu, .sheaf-toolbar')) return startWaiting();
       stopWaiting();
       commitCell();
       // The keyboard is elsewhere now, so the table stops showing a selection and an active cell.
@@ -5204,7 +5596,7 @@ class TableWidget extends WidgetType {
       pos.from = next.from;
       pos.to = next.to;
       // A name is drawn above the grid, not in it, so a new one is painted in place.
-      paintTableName(caption, next.name);
+      paintTableName(caption, next.name, next.kind !== 'pipe');
       // The table only moved. The grid's DOM stands as it is, but every row of it is
       // on a new line, so the lines the tooltips name are read again.
       if (next.sig === sig) {
@@ -5378,7 +5770,31 @@ function buildTableDecorations(state: EditorState, prev: DecorationSet | null): 
   const isActive = (from: number, to: number): boolean => {
     if (reveal && reveal.from <= to && reveal.to >= from) return true;
     for (const r of state.selection.ranges) {
-      if (r.head > from && r.head < to && (r.empty || wasSource(from, to))) return true;
+      /*
+       * A caret at the very end of a table that is still only a header and a
+       * delimiter row counts as inside it, which the end of any other table does not.
+       *
+       * That is where the caret of somebody typing a table out by hand is. A table
+       * needs a delimiter row to be a table at all, so the moment `| - | -` parses,
+       * the block became one with the caret sitting at its close, the grid took both
+       * lines, and the ` |` still to be typed landed after the widget as a line of
+       * its own. What they got for typing two lines was a delimiter row missing its
+       * last pipe and a stray ` |` under the table.
+       *
+       * Only those two lines, because a table with a body row was not typed into
+       * being just now: it was pasted, or inserted from the toolbar, and its caret
+       * parked at the end is somebody who has just been given a grid and wants to
+       * see one. There is no third case, since once the delimiter row is finished
+       * the grid is drawn and further rows are typed in its cells rather than here.
+       *
+       * The strict end stays for a selection, which is what it was for: a
+       * double-click beside a table leaves an undirectional range's head on that
+       * boundary, and a drag or a Select All leaves it past the last line, and
+       * neither is somebody asking to edit the pipes.
+       */
+      const beingTyped = doc.lineAt(to).number - doc.lineAt(from).number === 1;
+      const inside = r.head > from && (r.head < to || (r.empty && r.head === to && beingTyped));
+      if (inside && (r.empty || wasSource(from, to))) return true;
     }
     return false;
   };
@@ -5421,6 +5837,10 @@ function buildTableDecorations(state: EditorState, prev: DecorationSet | null): 
         const raw = doc.sliceString(node.from, node.to);
         const info = fenceLang(raw);
         if (info !== 'csv' && info !== 'tsv') return;
+        // This loop is the one that draws, and it asked its own question rather than going
+        // through `dataBlocks`, which is why an unclosed fence was drawn as a grid long
+        // after `dataBlocks` had stopped reporting one.
+        if (!fenceIsClosed(node.node)) return;
         const line = doc.lineAt(node.from);
         const from = line.from;
         const to = doc.lineAt(Math.max(node.from, node.to - 1)).to;
@@ -5902,5 +6322,23 @@ export function insertPipeTable(view: EditorView): boolean {
 /** Insert a ```csv data-table skeleton, caret in the first header cell. */
 export function insertCsvTable(view: EditorView): boolean {
   insertBlock(view, CSV_SKELETON, '```csv\n'.length);
+  return true;
+}
+
+/**
+ * Insert a view, reading the named table above the caret.
+ *
+ * A view needs a table to read, and the one a person means when they ask for a
+ * view where they are standing is nearly always the one they can see above them.
+ * So the `from:` line arrives filled in and the view draws rows at once, which is
+ * the whole point of offering it from a menu. With no named table anywhere the
+ * line is left empty with the caret on it, and the view says what it is missing.
+ */
+export function insertViewBlock(view: EditorView): boolean {
+  const at = view.state.selection.main.head;
+  const named = dataBlocks(view.state).filter((b) => b.id);
+  const above = named.filter((b) => b.to <= at);
+  const source = (above.length ? above[above.length - 1] : named[0])?.id ?? '';
+  insertBlock(view, `\`\`\`view\nfrom: ${source ? `#${source}` : ''}\n\`\`\``, '```view\nfrom: '.length + (source ? source.length + 1 : 0));
   return true;
 }

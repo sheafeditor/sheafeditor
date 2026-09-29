@@ -32,6 +32,7 @@
 import { FSWatcher, watch } from 'node:fs';
 import { readFile, writeFile } from 'node:fs/promises';
 import { DocumentSync, SyncHost, toWebviewText } from '../textSync';
+import { RecentTyping, noticeAboutLostText, noticeAboutRestoredText } from '../recentTyping';
 
 /** A byte-order mark, which VS Code keeps out of a document's text and back in its file. */
 const BOM = '﻿';
@@ -41,7 +42,28 @@ const WATCH_SETTLE_MS = 40;
 
 /** A tab listening to one document. */
 export interface Subscriber {
-  setContent(text: string): void;
+  /**
+   * A whole document, in the webview's line endings.
+   *
+   * `tookTypedText` is true when it drops something the person typed a moment ago, which is what
+   * makes the change one their own Undo takes back.
+   *
+   * Required rather than optional, which makes a *caller* that omits it an error. It does not
+   * make an implementation that ignores it one: TypeScript lets a method declare fewer
+   * parameters than its signature, so a subscriber can drop the flag and still compile. That is
+   * the shape of the defect this whole parameter exists to fix — a quiet `false` nobody chose —
+   * so the flag reaching a tab is held by a check in the server suite rather than by the type.
+   */
+  setContent(text: string, tookTypedText: boolean): void;
+  /**
+   * Something to tell the person, with an offer to undo it.
+   *
+   * A browser tab has no notification surface of its own, so the page draws one. The words are
+   * built here rather than there, from the same two functions the extension host uses, because
+   * two hosts writing their own sentences about one event is how they come to disagree about
+   * what happened.
+   */
+  notice(message: string): void;
 }
 
 export class OpenDocument implements SyncHost {
@@ -50,6 +72,23 @@ export class OpenDocument implements SyncHost {
   private bom: boolean;
   private crlfEol: boolean;
   private readonly sync: DocumentSync;
+  /*
+   * What the tab has typed lately, and what a write landing from disk takes back of it.
+   *
+   * `recentTyping.ts` imports nothing but `textSync.ts` — no `vscode`, no Node builtin — so what
+   * this host was missing was the call rather than the means. Without it every outside write
+   * reached the editor marked as somebody else's ordinary edit, so the person's own Undo did not
+   * offer their text back and nothing said anything had gone.
+   */
+  private readonly typing = new RecentTyping();
+  /**
+   * The text the tab holds, which is not the file's while a keystroke is on its way to disk.
+   *
+   * That gap is exactly where the race lives, so the comparison has to be against this rather
+   * than against `this.text`: by the time a write arrives, `this.text` may already be what the
+   * tab sent, and a comparison of a thing with itself finds nothing lost.
+   */
+  private webview: string;
   private readonly subscribers = new Set<Subscriber>();
   private watcher: FSWatcher | undefined;
   private settle: ReturnType<typeof setTimeout> | undefined;
@@ -64,6 +103,7 @@ export class OpenDocument implements SyncHost {
     this.bom = raw.startsWith(BOM);
     this.text = this.bom ? raw.slice(1) : raw;
     this.crlfEol = firstEolIsCrlf(this.text);
+    this.webview = toWebviewText(this.text);
     this.sync = new DocumentSync(this);
     this.startWatching();
   }
@@ -128,8 +168,10 @@ export class OpenDocument implements SyncHost {
     return true;
   }
 
-  setContent(text: string): void {
-    for (const sub of this.subscribers) sub.setContent(text);
+  setContent(text: string, tookTypedText: boolean): void {
+    // The tab is about to hold this, so it is the baseline the next write is measured against.
+    this.webview = text;
+    for (const sub of this.subscribers) sub.setContent(text, tookTypedText);
   }
 
   onEdited(): void {
@@ -140,6 +182,11 @@ export class OpenDocument implements SyncHost {
 
   /** The whole text a tab posted after an edit of its own. */
   edit(text: string): Promise<void> {
+    // Recorded before the text is taken, because what `RecentTyping` keeps is the text that came
+    // *before* each edit: the oldest one still inside its window is the baseline, and everything
+    // between it and what the tab holds now is what the person put there.
+    this.typing.record(this.webview);
+    this.webview = text;
     return this.sync.edit(text);
   }
 
@@ -191,7 +238,31 @@ export class OpenDocument implements SyncHost {
     this.bom = raw.startsWith(BOM);
     this.text = text;
     this.crlfEol = firstEolIsCrlf(text);
-    this.sync.documentChanged(text);
+    /*
+     * What this write takes back of what the person just did, read before the push, because
+     * pushing is what replaces the tab's text.
+     *
+     * Two ways a write undoes their work and both count: it drops what they typed, or it puts
+     * back what they deleted. A row taken out of a table that is simply there again is their
+     * edit undone as surely as a lost sentence.
+     */
+    const arriving = toWebviewText(text);
+    const lost = this.typing.dropped(this.webview, arriving);
+    const back = lost === undefined ? this.typing.restored(this.webview, arriving) : undefined;
+    const reached = this.sync.documentChanged(text, lost !== undefined || back !== undefined);
+    if (reached) {
+      // Whatever was typed is either in this document or gone from it, so nothing on record can
+      // be taken by a later write.
+      this.typing.forget();
+      // And said out loud, after the document has gone, so the offer to undo it refers to
+      // something the editor is already holding as an undo step.
+      if (lost !== undefined) this.say(noticeAboutLostText(lost));
+      else if (back !== undefined) this.say(noticeAboutRestoredText(back));
+    }
+  }
+
+  private say(message: string): void {
+    for (const sub of this.subscribers) sub.notice(message);
   }
 }
 

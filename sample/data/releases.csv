@@ -1,0 +1,7 @@
+version,channel,shipped,notes
+0.1.0,stable,2026-09-26,First public listing on both registries
+0.1.1,stable,2026-10-02,Heading alignment and the wrapped-space fix
+0.2.0,beta,2026-10-09,Views and boards
+0.2.1,beta,2026-10-14,Emoji written by name
+0.3.0,alpha,2026-10-21,Data files referenced from a document
+0.0.9,stable,2026-09-19,Pre-listing build kept for comparison

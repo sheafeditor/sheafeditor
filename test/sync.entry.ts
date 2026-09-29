@@ -13,8 +13,9 @@
 import { EditorState, Transaction } from '@codemirror/state';
 import { minimalEdit, toWebviewText } from '../src/textSync';
 
-export { minimalEdit, planEdit, toWebviewText, DocumentSync } from '../src/textSync';
+export { minimalEdit, mergeOutsideChange, planEdit, toWebviewText, DocumentSync } from '../src/textSync';
 export { RecentTyping, RECENT_TYPING_MS, noticeAboutLostText, quoteLost } from '../src/recentTyping';
+export { documentTitle, fileTitle, relativeLink } from '../src/docLink';
 export {
   parseView,
   applyView,

@@ -83,6 +83,51 @@ The renderer is CodeMirror 6 decorations over the raw buffer, and it has a few c
 - Match the surrounding code: TypeScript, no linter enforced, but follow the file's existing comment density and naming. The module-header comments in `src/webview/*.ts` explain what each file is responsible for — keep them true.
 - User-facing strings (command titles, setting descriptions, errors) are product copy. Write them for someone who has never seen the extension.
 
+## Writing a documentation page
+
+The pages in `docs/` are read by someone who is in the middle of a document and wants to get something done. Every feature page follows one shape, and `npm run check-docs` enforces it.
+
+```markdown
+---
+title: Tables
+summary: Edit a Markdown table as a grid, with spreadsheet keys, selection, copy and paste.
+order: 30
+---
+
+# Tables
+
+One to three sentences, to the reader: when they would reach for this, and
+what they get. No history, no mechanism.
+
+## Add a row or a column
+
+What to do, then what happens. Numbered steps when it takes more than one move.
+
+## Sort a column
+
+...
+
+## Keys
+
+A table of keys, when the feature has more than two.
+
+## Good to know
+
+Limits, what stays as written, and what the file gets. Always last.
+```
+
+The rules the check holds a feature page to:
+
+- **The summary starts with a verb.** It says what the reader can do: "Edit a table as a grid", never "The table editor" or "How tables work". Twenty-five words at most.
+- **The title is the page's first heading**, word for word.
+- **An opening paragraph comes first**, before any heading, list, table or example. It speaks to the reader as "you", and it runs sixty words at most.
+- **Every section is a task**, headed by what the reader wants to do, starting with a verb: "Resize a column", "Follow a link", "Turn it off". Two headings are exempt, **Keys** and **Good to know**, and **Good to know** is always the last section.
+- **Headings are plain words**, with no formatting or links in them, so their anchors are stable.
+- **A page stays under 1,800 words.** A longer one covers more than one job, and splits.
+- **Links between pages resolve**, down to the heading they point at.
+
+`README.md`, `getting-started.md` and `settings.md` are the index, the first-day guide and the reference, and are exempt from the section rules. `settings.md` is headed by setting names, so a reader can find the one they are changing.
+
 ## Reporting bugs
 
 Open an issue with your VS Code version, your OS, and a minimal Markdown snippet that reproduces the problem. For rendering bugs, the raw Markdown matters more than a screenshot of it — paste the source.

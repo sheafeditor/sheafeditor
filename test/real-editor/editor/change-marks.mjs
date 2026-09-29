@@ -49,11 +49,22 @@ export const scenarios = [
       const m = await S.eval(() => {
         const rows = [...document.querySelectorAll('.sheaf-table tr.sheaf-arrived')].map((tr) => tr.textContent.replace(/\s+/g, ' ').trim());
         const quoted = document.querySelector('.sheaf-table.is-quoted');
-        return { rows, quotedBar: quoted ? getComputedStyle(quoted).borderLeftWidth : null };
+        /*
+         * The bar is asked to equal the document's own `--md-quote-rule` rather than a number.
+         * It was `'3px'` copied from the stylesheet, and when that literal became the shared
+         * variable so a quoted block's cells line up with the quoted prose around them, this
+         * scenario went red for a change it does not test: what it is about is which row an
+         * outside write marks, and that half passed throughout.
+         */
+        const want = getComputedStyle(document.documentElement).getPropertyValue('--md-quote-rule').trim();
+        return { rows, quotedBar: quoted ? getComputedStyle(quoted).borderLeftWidth : null, want };
       });
       await S.shot('change-marks-table');
       const d = await S.disk();
-      const ok = m.rows.length === 1 && /nut/.test(m.rows[0]) && /12/.test(m.rows[0]) && m.quotedBar === '3px' && d === TABLE_AFTER;
+      // Both readings have to be a real width. Two empty strings would otherwise satisfy the
+      // comparison, which is the same failure as an unread value looking like an absent one.
+      const barMatches = /^\d+(\.\d+)?px$/.test(m.want) && m.quotedBar === m.want;
+      const ok = m.rows.length === 1 && /nut/.test(m.rows[0]) && /12/.test(m.rows[0]) && barMatches && d === TABLE_AFTER;
       return { ok, detail: `${j(m)}${d === TABLE_AFTER ? '' : '; the file changed'}` };
     },
   },

@@ -40,9 +40,14 @@ import {
   writeDataBlock,
   writeDataFile,
   setMoveToFile,
+  setCreateView,
+  tableUsesPane,
+  tableRowRefAt,
 } from '../src/webview/tables';
+import { setBlockRefHost, setCellRefSource, tableRowRef } from '../src/webview/refs';
+import { tableIcon } from '../src/webview/tableIcons';
 import { setResourceBaseUri } from '../src/webview/images';
-import { viewBlocks, setDataFileHost, handleDataFile, handleDataFileCreated, moveBlockToFile } from '../src/webview/viewBlock';
+import { createViewOf, viewBlocks, setDataFileHost, handleDataFile, handleDataFileCreated, moveBlockToFile } from '../src/webview/viewBlock';
 import { notionTheme } from '../src/webview/theme';
 import { mountContextMenu } from '../src/webview/contextmenu';
 import { hint } from '../src/webview/shortcuts';
@@ -216,6 +221,15 @@ interface Result {
 const mouseup = (opts: any = {}): void => {
   document.dispatchEvent(new G.MouseEvent('mouseup', { bubbles: true, cancelable: true, ...opts }));
 };
+/** A mouse release on an element, which is what a click ends with; it bubbles to the document. */
+const mouseupOn = (el: Element, opts: any = {}): void => {
+  el.dispatchEvent(new G.MouseEvent('mouseup', { bubbles: true, cancelable: true, ...opts }));
+};
+/** A press and a release on one element with nothing moving between them: a click. */
+const click = (h: Harness, el: Element, opts: any = {}): void => {
+  h.mousedown(el, opts);
+  mouseupOn(el, opts);
+};
 /** The pointer moving over an element with the button still held. */
 const mousemove = (el: Element, opts: any = {}): void => {
   el.dispatchEvent(new G.MouseEvent('mousemove', { bubbles: true, cancelable: true, buttons: 1, ...opts }));
@@ -260,10 +274,29 @@ const copyRef = (h: Harness, target: Element): string => {
 const quoted = (text: string): string => '\n\n```\n' + text + '\n```\n';
 
 
-async function scenario(name: string, fn: () => Promise<boolean> | boolean): Promise<Result> {
+/**
+ * One scenario, which says `true`, `false`, or `{ ok, detail }` when a failure is worth
+ * printing numbers with.
+ *
+ * **The object shape is here because its absence was a trap.** Every other suite in this
+ * repository lets a scenario return `{ ok, detail }`, and one written that way here passed
+ * whatever it held: an object is truthy, so `ok: false` read as a pass. Nothing caught it —
+ * `tsconfig.json` includes `src` alone, so the test entries are bundled by esbuild and never
+ * type-checked, and a scenario returning the wrong shape compiles and passes in silence.
+ *
+ * Anything that is neither is a failure naming what it got, rather than a truthy value read
+ * as a pass.
+ */
+type Verdict = boolean | { ok: boolean; detail?: string };
+
+async function scenario(name: string, fn: () => Promise<Verdict> | Verdict): Promise<Result> {
   try {
-    const ok = await fn();
-    return { name, ok, detail: ok ? '' : 'assertion failed' };
+    const said = await fn();
+    if (typeof said === 'boolean') return { name, ok: said, detail: said ? '' : 'assertion failed' };
+    if (said && typeof said === 'object' && typeof said.ok === 'boolean') {
+      return { name, ok: said.ok, detail: said.ok ? '' : (said.detail ?? 'assertion failed') };
+    }
+    return { name, ok: false, detail: `said ${JSON.stringify(said)}, which is neither true, false, nor { ok, detail }` };
   } catch (e) {
     return { name, ok: false, detail: 'threw: ' + (e as Error).message };
   }
@@ -541,7 +574,7 @@ export async function runAll(): Promise<Result[]> {
   // is kept for the page's whole session under the table's header row.
 
   results.push(
-    await scenario('dragging a header’s right border sets that column’s width and the rest share what is left', async () => {
+    await scenario('dragging a header’s right border sets that column’s width and leaves every other column alone', async () => {
       const h = mount(P + '| Drag A | Drag B | Drag C |\n| - | - | - |\n| 1 | 2 | 3 |');
       const before = h.doc();
       const sent: any[] = [];
@@ -574,11 +607,21 @@ export async function runAll(): Promise<Result[]> {
         !!d &&
         a[1] === 290 &&
         d[1] === 190 &&
-        d[2] + d[3] === 900 - FAKE_GUTTER - 190 &&
+        /*
+         * The columns beside it hold what they had. They used to share whatever the drag left,
+         * so the table's total stayed at the pane's width and a drag was a claim on a fixed
+         * budget: widening one column narrowed every other one to pay for it.
+         */
+        d[2] === a[2] &&
+        d[3] === a[3] &&
         after === before &&
         sent.some((m) => m.type === 'tableWidthsRead') &&
         !!write &&
-        write.widths[key]?.['0'] === 190
+        // Every column is pinned now, not just the dragged one: that is what leaves the
+        // allocator nothing to divide and so what keeps the others still.
+        write.widths[key]?.['0'] === 190 &&
+        write.widths[key]?.['1'] === a[2] &&
+        write.widths[key]?.['2'] === a[3]
       );
     })
   );
@@ -861,17 +904,21 @@ export async function runAll(): Promise<Result[]> {
   results.push(
     await scenario('the height a table is estimated at before it is drawn allows for rows that wrap', () => {
       // Three rows whose notes wrap past the four lines a cell is drawn at, in columns
-      // 80, 80 and 300 pixels wide. As drawn in Chromium: a line is 22.08px, a row adds
-      // 12px of padding (its rule is shared with the next row), the bar above the grid
-      // takes 29px and the frame 16px.
+      // 80, 80 and 300 pixels wide. As drawn in Chromium: a line is 24px, a row adds
+      // 12px of padding (its rule is shared with the next row), and the frame takes 16px.
+      // The controls bar floats over the frame and takes no height.
+      //
+      // 24 rather than 22.08: `.sheaf-table table` is `font-size: 1em` at a line height of
+      // 1.5, and a real window reports the drawn line height as 24. The 0.92em these numbers
+      // were written from is a view's rows and a board's cards, not a table's.
       const headers = ['Code', 'State', 'Note'];
       const rows = [0, 1, 2].map((i) => [`A${i}`, 'open', LONG_NOTE + ' ' + LONG_NOTE]);
-      const real = 29 + 16 + (22.08 + 12) + 3 * (4 * 22.08 + 12);
+      const real = 16 + (24 + 12) + 3 * (4 * 24 + 12);
       const old = (rows.length + 1) * 33 + 34;
       const est = estimateTableHeight(headers, rows, [80, 80, 300]);
       // One-line rows still come out at about one line each.
       const flat = estimateTableHeight(headers, [['a', 'b', 'c']], [80, 80, 300]);
-      const flatReal = 29 + 16 + 2 * (22.08 + 12);
+      const flatReal = 16 + 2 * (24 + 12);
       return Math.abs(est - real) < Math.abs(old - real) && Math.abs(est - real) <= real * 0.1 && Math.abs(flat - flatReal) <= 4;
     })
   );
@@ -892,12 +939,12 @@ export async function runAll(): Promise<Result[]> {
       // so 54, 61 and 570 once rounded. Note's text then has 546px a line, 73 characters:
       // the long note is 2 lines and the medium one 1.
       //
-      // Drawn, each row is its lines at 22.08px plus 13px, with a 1px edge, under a 29px
-      // bar and inside a 16px frame: 29 + 16 + 1 + 35.08 (header) + 57.16 + 35.08 + 35.08
-      // = 208.4, so 208.
+      // Drawn, each row is its lines at 24px plus 13px, with a 1px edge, inside a 16px
+      // frame (the controls bar floats over it and takes no height): 16 + 1 + 37 (header)
+      // + 61 + 37 + 37 = 189.
       //
       // An even share would give Note 228px, 27 characters a line: the long note
-      // clamped at 4 lines and the medium one at 3, 297px, about 89px too tall.
+      // clamped at 4 lines and the medium one at 3, 285px, about 96px too tall.
       const long = 'The shipment waits on customs paperwork the broker has not filed yet, so the pallet sits at the port until every form arrives.';
       const medium = 'Supplier confirmed the new date by phone on Tuesday morning.';
       const headers = ['Code', 'State', 'Note'];
@@ -915,21 +962,29 @@ export async function runAll(): Promise<Result[]> {
       const est = estimateTableHeight(headers, rows, null, { pane: 708 });
       const even = estimateTableHeight(headers, rows, [228.17, 228.17, 228.17]);
       // In a 400px pane the ceiling is 180px and Note gets 262px, 32 characters a line:
-      // the long note is 4 lines and the medium one 2, 29 + 16 + 1 + 35.08 + 101.32 + 57.16
-      // + 35.08 = 274.64, so 275. The pane the window gives is the one divided.
+      // the long note is 4 lines and the medium one 2, 16 + 1 + 37 + 109 + 61 + 37 = 261.
+      // The pane the window gives is the one divided.
       const narrow = estimateTableHeight(headers, rows, null, { pane: 400 });
       // Widths a drawn table was laid out at still win over any division.
       const laid = estimateTableHeight(headers, rows, [54, 61, 570], { pane: 400 });
-      return allocated && long.length === 126 && est === 208 && even === 297 && narrow === 275 && laid === 208;
+      return allocated && long.length === 126 && est === 189 && even === 285 && narrow === 261 && laid === 189;
     })
   );
 
   results.push(
     await scenario('the estimate for an undrawn table matches the height a real window draws it at', () => {
-      // Measured in VS Code at a 708px text column: the header and three one-line rows at
-      // 35.08px, a two-line row at 57.16px and a three-line row at 79.23px, so each row is its
-      // lines at 22.08px plus 13px; the table adds a 1px edge, and the bar and frame 45px.
-      // 5 * 13 + 8 * 22.08 + 1 + 45 = 287.64. Drawn: 287.63.
+      /*
+       * Measured in VS Code at a 708px text column: each row is its lines at 24px plus 13px,
+       * the table adds a 1px edge, and the frame 16px. The controls bar floats over the frame
+       * and adds nothing. 5 * 13 + 8 * 24 + 1 + 16 = 274.
+       *
+       * These numbers were 22.08px a line and 258.63 in total, from a reading of a stylesheet
+       * that had `.sheaf-table table` at 0.92em. It is 1em, and a real window reports the drawn
+       * line height as 24. **This scenario is why that went unnoticed**: it pinned the estimator
+       * to a number taken from the estimator's own assumptions, so the two agreed with each
+       * other and neither agreed with the screen. `render.table-widths.e15` is what measures
+       * the drawing, and it is the one that failed.
+       */
       const headers = ['Ref', 'Status', 'Detail'];
       const rows = [
         ['R1', 'open', 'The shipment waits on customs paperwork the broker has not filed yet, so the pallet sits at the port until every form arrives.'],
@@ -942,7 +997,7 @@ export async function runAll(): Promise<Result[]> {
       // Ref is sized to its own three letters and rounded to 46px; the estimate must not
       // wrap that header onto a second line the window never draws.
       const divided = estimateColumnWidths(headers, rows, 708, null);
-      return Math.abs(est - 287.63) <= 2 && Math.abs(atDrawn - 287.63) <= 2 && divided[0] < 47;
+      return Math.abs(est - 274) <= 2 && Math.abs(atDrawn - 274) <= 2 && divided[0] < 47;
     })
   );
 
@@ -1214,20 +1269,33 @@ export async function runAll(): Promise<Result[]> {
   );
 
   results.push(
-    await scenario('Cmd+K in a cell writes the link into that cell and nowhere else', async () => {
+    await scenario('Cmd+K in a cell asks for the address, then writes the link into that cell and nowhere else', async () => {
       const h = mount(MARKUP);
       const before = h.doc();
       h.dblclick(h.cell(1, 1)!);
       const input = h.input(1, 1)!;
-      cellView(h.cell(1, 1))!.dispatch({ selection: { anchor: 0, head: 5 } });
+      const cm = cellView(h.cell(1, 1))!;
+      cm.dispatch({ selection: { anchor: 0, head: 5 } });
       h.keydown(input, 'k', { ctrlKey: true });
+      // The cell is untouched while the address is asked for: no `[plain](url)` placeholder.
+      const pending = input.value;
+      /*
+       * Enter in the popover has to reach the popover. Both live inside the cell's editor, and
+       * the cell claims keys on their way down to stop Enter opening a line: unguarded, Enter
+       * here committed the cell and the link was never written.
+       */
+      const url = cm.dom.querySelector('.sheaf-linkpop-url') as HTMLInputElement | null;
+      if (!url) return false;
+      url.value = 'https://x.io';
+      url.dispatchEvent(new G.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
       const held = input.value;
       h.keydown(input, 'Enter');
       const doc = await h.commit();
       h.view.destroy();
       return (
-        held === '[plain](url)' &&
-        doc.includes('| [plain](url)') &&
+        pending === 'plain' &&
+        held === '[plain](https://x.io)' &&
+        doc.includes('| [plain](https://x.io)') &&
         linesBesides(doc, 1) === linesBesides(before, 1)
       );
     })
@@ -1259,13 +1327,146 @@ export async function runAll(): Promise<Result[]> {
   );
 
   results.push(
-    await scenario('selecting a word in an open cell brings up the toolbar with the marks and nothing a cell cannot use', () => {
+    await scenario('Tab and Escape in a cell’s link popover belong to the popover, not to the grid', () => {
+      const h = mount(MARKUP);
+      const before = h.doc();
+      h.dblclick(h.cell(1, 1)!);
+      const cm = cellView(h.cell(1, 1))!;
+      cm.dispatch({ selection: { anchor: 0, head: 5 } });
+      h.keydown(h.input(1, 1)!, 'k', { ctrlKey: true });
+      const pop = cm.dom.querySelector('.sheaf-linkpop') as HTMLElement | null;
+      if (!pop) return false;
+      const key = (el: Element, k: string): void =>
+        void el.dispatchEvent(new G.KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true }));
+      // Tab moves between the popover's two fields, so it must not step to the next cell.
+      key(pop.querySelector('.sheaf-linkpop-text')!, 'Tab');
+      const stillHere = !!h.input(1, 1);
+      // Escape closes the popover and leaves the cell open, as it does over a paragraph.
+      key(pop, 'Escape');
+      const closed = !cm.dom.querySelector('.sheaf-linkpop');
+      const open = !!h.input(1, 1);
+      const doc = h.doc();
+      h.view.destroy();
+      return stillHere && closed && open && doc === before;
+    })
+  );
+
+  results.push(
+    await scenario('selecting a word in an open cell brings up the toolbar with Edit Markdown, the marks, and no block kinds', () => {
       const h = mount(MARKUP);
       h.dblclick(h.cell(0, 0)!);
       pointerSelect(h, 0, 0, 0, 3);
       const cmds = toolbarCmds(cellToolbar(h));
       h.view.destroy();
-      return cmds === 'bold,italic,strike,highlight,code,link,clear';
+      // Turn into is absent rather than disabled: a heading marker in a cell is two
+      // characters of a value. Copy ref is out because this page wired no host to copy
+      // through, which is the same rule the document's own bar follows.
+      return cmds === 'reveal,bold,italic,strike,highlight,code,link,clear';
+    })
+  );
+
+  results.push(
+    await scenario("Edit Markdown on a cell's toolbar shows that cell's Markdown, and shows it again rendered", () => {
+      const h = mount(MARKUP);
+      const before = h.doc();
+      h.dblclick(h.cell(1, 1)!);
+      const cm = cellView(h.cell(1, 1))!;
+      cm.dispatch({ selection: { anchor: 0, head: 5 }, userEvent: 'select.pointer' });
+      const press = (): void => (cellToolbar(h)!.querySelector('[data-cmd="reveal"]') as HTMLElement).click();
+      press();
+      // The whole cell, which is the whole of this editor's document, and no more.
+      const shown = cm.state.field(revealField, false);
+      const opened = !!shown && shown.from === 0 && shown.to === cm.state.doc.length;
+      cm.dispatch({ selection: { anchor: 0, head: 5 }, userEvent: 'select.pointer' });
+      press();
+      const closed = cm.state.field(revealField, false) === null;
+      const doc = h.doc();
+      h.view.destroy();
+      return opened && closed && doc === before;
+    })
+  );
+
+  results.push(
+    await scenario("Copy ref on a cell's toolbar names the row in the file, not line 1 of the cell", () => {
+      const copied: string[] = [];
+      setBlockRefHost({ getFileName: () => 'notes.md', copyToClipboard: (text) => copied.push(text) });
+      setCellRefSource((el) => {
+        const row = tableRowRefAt(el);
+        return row ? tableRowRef('notes.md', row) : null;
+      });
+      const h = mount(MARKUP);
+      h.dblclick(h.cell(1, 1)!);
+      pointerSelect(h, 1, 1, 0, 5);
+      const cmds = toolbarCmds(cellToolbar(h));
+      (cellToolbar(h)!.querySelector('[data-cmd="copy-ref"]') as HTMLElement).click();
+      h.view.destroy();
+      setCellRefSource(null);
+      setBlockRefHost(null);
+      // The cell's own editor counts from line 1; the grid says which line of the file
+      // the row is on, so a ref that starts `notes.md:1` would be the cell answering.
+      if (cmds !== 'reveal,copy-ref,bold,italic,strike,highlight,code,link,clear') return { ok: false, detail: cmds };
+      if (copied.length !== 1) return { ok: false, detail: `${copied.length} writes` };
+      /*
+       * The whole shape settled for a cell ref: the file, the line, the column name and
+       * the row number, then the cell's own text quoted. `tableLine` indexes the table's
+       * header line from zero, so the second body row is four lines on and one more again
+       * as a line number.
+       */
+      const line = tableLine + 4;
+      return copied[0].startsWith(`notes.md:${line} (Note, row 2)\n`) && copied[0].includes('plain')
+        ? true
+        : { ok: false, detail: JSON.stringify(copied[0]) };
+    })
+  );
+
+  results.push(
+    await scenario("a link in an open cell puts the link items in that cell's menu, and plain text does not", () => {
+      document.querySelectorAll('.sheaf-ctx-menu').forEach((m) => m.remove());
+      const h = mount(MARKUP);
+      mountContextMenu(h.view.dom, { getView: () => h.view, getFileName: () => 'doc.md', copyToClipboard: () => {} });
+      const labels = (): string[] => {
+        const menu = Array.from(document.querySelectorAll<HTMLElement>('.sheaf-ctx-menu')).find((m) => !m.hidden);
+        return menu ? [...menu.querySelectorAll('.sheaf-ctx-item')].map((b) => b.firstElementChild?.textContent?.trim() ?? '') : [];
+      };
+      h.dblclick(h.cell(0, 1)!);
+      const cm = cellView(h.cell(0, 1))!;
+      const text = cm.state.doc.toString();
+      // The menu anchors on the caret when the click reports no coordinates, which is
+      // what jsdom gives it, so the caret is what picks the link or the plain word.
+      cm.dispatch({ selection: { anchor: text.indexOf('a link') + 2 } });
+      h.input(0, 1)!.dispatchEvent(new G.MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 0 }));
+      const onLink = labels();
+      document.querySelectorAll('.sheaf-ctx-menu').forEach((m) => m.remove());
+      mountContextMenu(h.view.dom, { getView: () => h.view, getFileName: () => 'doc.md', copyToClipboard: () => {} });
+      cm.dispatch({ selection: { anchor: text.indexOf('and') + 1 } });
+      h.input(0, 1)!.dispatchEvent(new G.MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 0 }));
+      const onText = labels();
+      h.view.destroy();
+      document.querySelectorAll('.sheaf-ctx-menu').forEach((m) => m.remove());
+      if (!onLink.includes('Open link') || !onLink.includes('Remove link')) return { ok: false, detail: `on the link: ${onLink.join(', ')}` };
+      if (onText.includes('Open link')) return { ok: false, detail: `on plain text: ${onText.join(', ')}` };
+      // Link, the item that offers to make one, is the other way round.
+      return onText.includes('Link') ? true : { ok: false, detail: `no Link on plain text: ${onText.join(', ')}` };
+    })
+  );
+
+  results.push(
+    await scenario('editing a revealed cell writes exactly that edit and moves no other row', async () => {
+      const h = mount(MARKUP);
+      const before = h.doc();
+      h.dblclick(h.cell(1, 1)!);
+      const cm = cellView(h.cell(1, 1))!;
+      // Show the source, then type into it, which is the whole point of showing it.
+      h.keydown(h.input(1, 1)!, 'e', { ctrlKey: true, altKey: true });
+      const shown = cm.state.field(revealField, false) !== null;
+      cm.dispatch({ changes: { from: 0, to: cm.state.doc.length, insert: '**plain**' }, userEvent: 'input.type' });
+      const doc = await h.commit();
+      h.view.destroy();
+      if (!shown) return { ok: false, detail: 'the chord showed nothing' };
+      const changed = doc.split('\n').filter((l, i) => l !== before.split('\n')[i]);
+      return changed.length === 1 && changed[0].includes('**plain**') && changed[0].includes('tea')
+        ? true
+        : { ok: false, detail: `${changed.length} lines changed: ${changed.join(' | ')}` };
     })
   );
 
@@ -1284,7 +1485,7 @@ export async function runAll(): Promise<Result[]> {
         before === null &&
         sel.from === 0 &&
         sel.to === 'hot chocolate'.length &&
-        cmds === 'bold,italic,strike,highlight,code,link,clear' &&
+        cmds === 'reveal,bold,italic,strike,highlight,code,link,clear' &&
         doc === MARKUP
       );
     })
@@ -1678,6 +1879,79 @@ export async function runAll(): Promise<Result[]> {
       const doc = await h.commit();
       h.view.destroy();
       return doc === P + '| A | B | C |\n| - | - | - |\n|   | 2 | 3 |\n| 4 | 5 |   |';
+    })
+  );
+
+  /*
+   * A header is the identifier the rest of the document reaches a column by: a view's `show`
+   * lists columns by name, `sort` orders by a named one, and a board's `group` names one. So
+   * emptying a whole column keeps its name, and the failure this prevents would have shown up
+   * on the view rather than at the table the person was working in.
+   */
+  results.push(
+    await scenario('Delete over a whole column empties its cells and keeps its name', async () => {
+      const h = mount(PIPE);
+      h.mousedown(h.cell(-1, 1)!);
+      h.keydown(h.grid()!, 'Delete');
+      const doc = await h.commit();
+      h.view.destroy();
+      return doc === P + '| A | B | C |\n| - | - | - |\n| 1 |   | 3 |\n| 4 |   | 6 |';
+    })
+  );
+
+  /*
+   * And the other half, which is what makes the first half a decision rather than an
+   * inability: selecting the name on its own still clears it. Without this the check above
+   * would pass on a build that had simply stopped clearing header cells at all.
+   */
+  results.push(
+    await scenario('Delete over the header cell alone still clears the name', async () => {
+      const h = mount(PIPE);
+      /*
+       * Reached with the keyboard rather than the pointer, because clicking a header always
+       * takes the whole column: its press handler runs `selectRange({ r: lastRow(), c }, { r:
+       * -1, c })` whatever modifier is held. Up from the first body row is how a person ends
+       * up on the name by itself, and it is the gesture the decision means by "selecting just
+       * the name".
+       */
+      h.mousedown(h.cell(0, 1)!);
+      h.keydown(h.grid()!, 'ArrowUp');
+      h.keydown(h.grid()!, 'Delete');
+      const doc = await h.commit();
+      h.view.destroy();
+      return doc === P + '| A |   | C |\n| - | - | - |\n| 1 | 2 | 3 |\n| 4 | 5 | 6 |';
+    })
+  );
+
+  results.push(
+    await scenario('Undo after emptying a column returns the file byte for byte', async () => {
+      // `history()` has to be mounted for Cmd+Z to reach anything, as the other undo
+      // scenarios here do. Without it this failed against a working undo.
+      const h = mount(PIPE, [history()]);
+      const before = h.doc();
+      h.mousedown(h.cell(-1, 1)!);
+      h.keydown(h.grid()!, 'Delete');
+      h.keydown(h.grid()!, 'z', { metaKey: true });
+      const doc = await h.commit();
+      h.view.destroy();
+      return doc === before;
+    })
+  );
+
+  /*
+   * With no body rows, a column selection and a header-cell selection are the same cells, so
+   * there is nothing to tell them apart and nothing else in the column to empty. Keeping the
+   * name there would leave Delete doing nothing at all, which is worse than either behaviour
+   * the decision was choosing between, so the name goes.
+   */
+  results.push(
+    await scenario('In a table with no body rows, Delete over the column clears the name', async () => {
+      const h = mount(P + '| A | B |\n| - | - |');
+      h.mousedown(h.cell(-1, 1)!);
+      h.keydown(h.grid()!, 'Delete');
+      const doc = await h.commit();
+      h.view.destroy();
+      return doc === P + '| A |   |\n| - | - |';
     })
   );
 
@@ -2087,11 +2361,15 @@ export async function runAll(): Promise<Result[]> {
   );
 
   results.push(
-    await scenario('an unnamed csv block shows no name line', () => {
+    await scenario('an unnamed csv block shows no name, and offers to take one instead', () => {
       const h = mount(CSV);
       const caption = h.root()?.querySelector('.sheaf-table-caption') as HTMLElement | null;
+      const shown = caption?.querySelector('.sheaf-table-id');
+      const offer = caption?.querySelector('.sheaf-table-name-it');
       h.view.destroy();
-      return !!caption && caption.hidden;
+      // The caption is on screen, holding the offer rather than a name. The stylesheet
+      // keeps the offer quiet until the table is pointed at.
+      return !!caption && !caption.hidden && !shown && !!offer && offer.textContent === 'Name this table';
     })
   );
 
@@ -2142,6 +2420,52 @@ export async function runAll(): Promise<Result[]> {
       const found = dataBlocks(h.view.state).map((b) => `${b.lang}:${b.id}:${b.duplicate}`);
       h.view.destroy();
       return JSON.stringify(found) === JSON.stringify(['csv:a:true', 'tsv:null:false', 'csv:A:true']);
+    })
+  );
+
+  results.push(
+    await scenario('a fence with no closing fence yet is not a data block, however far down the document it runs', () => {
+      /*
+       * The state someone is in for as long as it takes them to type the body. An
+       * unclosed fence parses as a FencedCode running to the end of the document, so
+       * read as a block it is a grid over the whole rest of the file, taking the next
+       * keystrokes as cell entries and writing the document back rearranged.
+       *
+       * Display maths made the same choice for the same reason, and says so in its own
+       * comment; the diagram blocks beside this already test for the closing fence.
+       */
+      const half = 'Start.\n\n```csv\nname,qty\napple,3\n\nA paragraph well below it.\n';
+      const whole = 'Start.\n\n```csv\nname,qty\napple,3\n```\n\nA paragraph well below it.\n';
+      const open = mount(half);
+      const openFound = dataBlocks(open.view.state).length;
+      open.view.destroy();
+      const closed = mount(whole);
+      const closedFound = dataBlocks(closed.view.state).length;
+      closed.view.destroy();
+      // The second half is the control: the same five lines closed still make one block,
+      // so this cannot pass by finding no blocks anywhere.
+      return openFound === 0 && closedFound === 1;
+    })
+  );
+
+  results.push(
+    await scenario('an unclosed csv fence draws no grid, which is a separate question from dataBlocks', () => {
+      /*
+       * The loop that draws asked the tree its own question rather than going through
+       * `dataBlocks`, so fixing `dataBlocks` alone left the grid on screen and the
+       * document still being rearranged under it. Both paths now ask `fenceIsClosed`, and
+       * this is the one that was actually wrong.
+       */
+      const half = 'Start.\n\n```csv\nname,qty\napple,3\n\nA paragraph well below it.\n';
+      const whole = 'Start.\n\n```csv\nname,qty\napple,3\n```\n\nA paragraph well below it.\n';
+      const open = mount(half);
+      const whileTyping = open.view.dom.querySelectorAll('.sheaf-table').length;
+      const openUnchanged = open.doc() === half;
+      open.view.destroy();
+      const closed = mount(whole);
+      const once = closed.view.dom.querySelectorAll('.sheaf-table').length;
+      closed.view.destroy();
+      return whileTyping === 0 && openUnchanged && once === 1;
     })
   );
 
@@ -2760,7 +3084,13 @@ export async function runAll(): Promise<Result[]> {
   );
 
   results.push(
-    await scenario('Cmd-click on a link in a cell opens it', async () => {
+    await scenario('a click on a link in a cell opens it, with or without the modifier', async () => {
+      /*
+       * A closed cell has no caret to place, so a plain click has nothing else to mean.
+       * Prose needs the modifier because a click there is where typing goes; a table whose
+       * first column is ten document links needed it too, and read as a list of things that
+       * look clickable and are not.
+       */
       const h = mount(P + '| Site | Link |\n| --- | --- |\n| Docs | [guide](https://example.com/g?a=1&b=2) |\n| Bad | [x](javascript:alert(1)) |');
       const win = document.defaultView as any;
       const opened: string[] = [];
@@ -2769,21 +3099,91 @@ export async function runAll(): Promise<Result[]> {
         opened.push(this.href);
       };
       const good = h.cell(0, 1)!.querySelector('.tok-link')!;
-      h.mousedown(good, { metaKey: true });
+      click(h, good, { metaKey: true });
       const selectedByCmdClick = !!h.root()!.querySelector('.is-focus');
-      h.mousedown(h.cell(1, 1)!.querySelector('.tok-link')!, { ctrlKey: true });
-      h.mousedown(good); // a plain click still selects the cell
+      // A scheme a document must not run is refused wherever it is clicked from.
+      click(h, h.cell(1, 1)!.querySelector('.tok-link')!, { ctrlKey: true });
+      click(h, good);
+      // The plain click selects the cell as well: the link is in it, and the cell is where
+      // the keyboard goes next.
       const selectedByPlainClick = h.cell(0, 1)!.classList.contains('is-focus');
+      // The text beside a link is not the link.
+      click(h, h.cell(0, 0)!);
+      const afterPlainCell = opened.length;
       win.HTMLAnchorElement.prototype.click = original;
       const doc = await h.commit();
       h.view.destroy();
       return (
-        opened.length === 1 &&
-        opened[0] === 'https://example.com/g?a=1&b=2' &&
+        opened.length === 2 &&
+        opened.every((href) => href === 'https://example.com/g?a=1&b=2') &&
         !selectedByCmdClick &&
         selectedByPlainClick &&
+        afterPlainCell === 2 &&
         doc.includes('[guide](https://example.com/g?a=1&b=2)')
       );
+    })
+  );
+
+  results.push(
+    await scenario('a press on a link that then moves selects a range and opens nothing', async () => {
+      // A click is a press and a release with nothing between them. Opening on the press
+      // would take a drag that happened to start on a link and follow it instead.
+      const h = mount(P + '| Site | Link |\n| --- | --- |\n| Docs | [guide](https://example.com/g) |\n| More | [other](https://example.com/o) |');
+      const win = document.defaultView as any;
+      const opened: string[] = [];
+      const original = win.HTMLAnchorElement.prototype.click;
+      win.HTMLAnchorElement.prototype.click = function (this: HTMLAnchorElement): void {
+        opened.push(this.href);
+      };
+      const from = h.cell(0, 1)!.querySelector('.tok-link')!;
+      h.mousedown(from);
+      mousemove(h.cell(1, 1)!);
+      mouseupOn(h.cell(1, 1)!);
+      const range = picked(h);
+      // And a press on a link released somewhere else is not a click on it either.
+      h.mousedown(from);
+      mouseupOn(h.cell(1, 0)!);
+      win.HTMLAnchorElement.prototype.click = original;
+      const doc = await h.commit();
+      h.view.destroy();
+      return opened.length === 0 && range === '0,1 1,1' && doc.includes('[guide](https://example.com/g)');
+    })
+  );
+
+  results.push(
+    await scenario('a plain click on a link in an open cell opens it, as one in prose does, and leaves the cell open', async () => {
+      /*
+       * A cell being edited is text, and it now follows the same rule as the text around it:
+       * a click opens the link. The press still places the caret and begins a selection, and
+       * the release is what opens, so a drag that starts on a link selects instead.
+       *
+       * The grid's own handler is not what does this. It finds nothing in an open cell by
+       * design; the cell's editor has the prose gesture from `linkGesture.ts`, which reads the
+       * address out of editor state rather than off the DOM.
+       */
+      const h = mount(P + '| Site | Link |\n| --- | --- |\n| Docs | [guide](https://example.com/g) |');
+      const win = document.defaultView as any;
+      const opened: string[] = [];
+      const original = win.HTMLAnchorElement.prototype.click;
+      win.HTMLAnchorElement.prototype.click = function (this: HTMLAnchorElement): void {
+        opened.push(this.href);
+      };
+      h.dblclick(h.cell(0, 1)!);
+      const open = !!h.input(0, 1);
+      const inCell = cellView(h.cell(0, 1))!.dom.querySelector('.tok-link');
+      if (!inCell) throw new Error('no rendered link in the open cell: ' + (cellView(h.cell(0, 1))?.dom.innerHTML ?? 'no editor').slice(0, 300));
+      click(h, inCell);
+      const afterPlain = opened.length;
+      // Still open, so the click landed in the cell's text rather than closing it.
+      const stillOpen = !!h.input(0, 1);
+      win.HTMLAnchorElement.prototype.click = original;
+      const doc = await h.commit();
+      h.view.destroy();
+      if (!open) return { ok: false, detail: 'the cell did not open' };
+      if (!stillOpen) return { ok: false, detail: 'the click closed the cell instead of landing in its text' };
+      if (afterPlain !== 1) return { ok: false, detail: `a plain click opened ${afterPlain} links, and it should open exactly one` };
+      // And it wrote nothing: opening a link is not an edit.
+      return doc.includes('[guide](https://example.com/g)') ? true : { ok: false, detail: 'the cell text changed' };
     })
   );
 
@@ -2955,10 +3355,10 @@ export async function runAll(): Promise<Result[]> {
         'Pad columns to line up',
         'Show as board',
       ];
-      // Twenty-three with the two width commands, which drop out of the right-click
+      // Twenty-four with the two width commands, which drop out of the right-click
       // menu here: this runner lays nothing out, so there is nothing to fit or reset.
-      // Move to file is the other, and is offered only on a data block.
-      return unique && ids.length === 23 && labels.join('|') === expected.join('|') && header.join('|') === fromHeader.join('|');
+      // Create view and Move to file are the others, offered only on a data block.
+      return unique && ids.length === 24 && labels.join('|') === expected.join('|') && header.join('|') === fromHeader.join('|');
     })
   );
 
@@ -4123,8 +4523,68 @@ export async function runAll(): Promise<Result[]> {
     })
   );
 
+  /*
+   * What an icon actually draws, as a string that can be compared.
+   *
+   * The markup cannot be compared directly: the same glyph written `<path d="…"/>` in the
+   * source comes back from the DOM as `<path d="…"></path>`, so two identical drawings differ
+   * as text. This reads the shapes and their geometry instead, which is what a person sees.
+   */
+  const shapesOf = (svg: Element | null): string | null =>
+    svg
+      ? [...svg.children]
+          .map((e) => `${e.tagName}:${['d', 'x', 'y', 'width', 'height', 'rx', 'cx', 'cy', 'r'].map((a) => e.getAttribute(a) ?? '').join('|')}`)
+          .join(';')
+      : null;
+
   results.push(
-    await scenario('a context menu inside a cell editor is left to the text field', () => {
+    await scenario('every row of a table cell’s right-click menu draws the same glyph the grid’s own menu draws', () => {
+      document.querySelectorAll('.sheaf-table-menu, .sheaf-ctx-menu').forEach((m) => m.remove());
+      const h = mount(RAGGED);
+      mountContextMenu(h.view.dom, {
+        getView: () => h.view,
+        getFileName: () => 'doc.md',
+        copyToClipboard: () => {},
+        sendRefToTerminal: () => {},
+      });
+      // The right-click menu on a closed cell, which is the grid's own commands.
+      h.cell(1, 0)!.dispatchEvent(new G.MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, clientX: 5, clientY: 5 }));
+      const menu = Array.from(document.querySelectorAll<HTMLElement>('.sheaf-ctx-menu')).find((m) => !m.hidden) ?? null;
+      const rows = menu
+        ? [...menu.querySelectorAll('.sheaf-ctx-item')].map((b) => ({
+            label: b.querySelector('.sheaf-ctx-label')?.textContent ?? '',
+            // The glyph's own shapes, not just that there is one: two icon sets would both
+            // draw something here, and only what is drawn says whether it is the same glyph.
+            glyph: shapesOf(b.querySelector('svg')),
+          }))
+        : [];
+      /*
+       * The control the issue names. The same commands reached from the grid's own chevron
+       * menu, so a fix that invented a second icon set is caught: it would put a glyph on
+       * every row above and still disagree with the menu beside it.
+       */
+      const fromGrid = new Map<string, string | null>();
+      for (const a of tableActionsAt(h.cell(1, 0)) ?? []) {
+        if (!a.icon) continue;
+        const holder = document.createElement('div');
+        holder.innerHTML = tableIcon(a.icon);
+        fromGrid.set(a.label, shapesOf(holder.querySelector('svg')));
+      }
+      h.view.destroy();
+      document.querySelectorAll('.sheaf-table-menu, .sheaf-ctx-menu').forEach((m) => m.remove());
+      if (!rows.length) return { ok: false, detail: 'no right-click menu opened on a closed cell' };
+      const bare = rows.filter((r) => !r.glyph).map((r) => r.label);
+      if (bare.length) return { ok: false, detail: `${bare.length} row(s) with no glyph: ${JSON.stringify(bare)}` };
+      const wrong = rows.filter((r) => fromGrid.has(r.label) && fromGrid.get(r.label) !== r.glyph).map((r) => r.label);
+      if (wrong.length) return { ok: false, detail: `drawn differently from the grid's own menu: ${JSON.stringify(wrong)}` };
+      // And the control covered something: the grid has to have named icons for these at all.
+      const shared = rows.filter((r) => fromGrid.has(r.label)).length;
+      return shared >= 6 ? true : { ok: false, detail: `only ${shared} rows were compared against the grid's menu, so the control proves little` };
+    })
+  );
+
+  results.push(
+    await scenario("a right-click in an open cell gets the document's menu, built for the cell", () => {
       const h = mount(RAGGED);
       mountContextMenu(h.view.dom, { getView: () => h.view, getFileName: () => 'doc.md', copyToClipboard: () => {} });
       h.dblclick(h.cell(0, 0)!);
@@ -4132,11 +4592,72 @@ export async function runAll(): Promise<Result[]> {
       input.focus();
       const e = new G.MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, clientX: 5, clientY: 5 });
       input.dispatchEvent(e);
-      const menuOpen = Array.from(document.querySelectorAll<HTMLElement>('.sheaf-ctx-menu')).some((m) => !m.hidden);
-      const stillEditing = document.activeElement === input;
+      const menu = Array.from(document.querySelectorAll<HTMLElement>('.sheaf-ctx-menu')).find((m) => !m.hidden) ?? null;
+      // The first span is the label; the key hint is drawn into a second one beside it.
+      const labels = menu ? [...menu.querySelectorAll('.sheaf-ctx-item')].map((b) => b.firstElementChild?.textContent?.trim()) : [];
       h.view.destroy();
       document.querySelectorAll('.sheaf-ctx-menu').forEach((m) => m.remove());
-      return !e.defaultPrevented && !menuOpen && stillEditing;
+      /*
+       * The menu the document gets, one scope in: Edit Markdown and Copy ref lead, the
+       * marks follow, and Turn into is absent rather than disabled, because a heading
+       * marker written into a cell is two characters of a value. The table's own row and
+       * column actions are not here either: the click landed in text being typed, not on
+       * the grid.
+       */
+      if (!menu || !e.defaultPrevented) return { ok: false, detail: 'no Sheaf menu opened for the cell' };
+      const wrong = ['Turn into', 'Insert row below'].filter((l) => labels.includes(l));
+      if (wrong.length) return { ok: false, detail: `offered ${wrong.join(' and ')}` };
+      if (!labels.includes('Clear formatting')) return { ok: false, detail: `no marks: ${labels.join(', ')}` };
+      if (labels[0] !== 'Edit Markdown' || labels[1] !== 'Copy ref') return { ok: false, detail: `led with ${labels.slice(0, 2).join(', ')}` };
+      return true;
+    })
+  );
+
+  results.push(
+    await scenario("Edit Markdown in an open cell's menu shows that cell's source and leaves the file alone", () => {
+      const h = mount(RAGGED);
+      const before = h.doc();
+      mountContextMenu(h.view.dom, { getView: () => h.view, getFileName: () => 'doc.md', copyToClipboard: () => {} });
+      h.dblclick(h.cell(1, 0)!);
+      const input = h.input(1, 0)!;
+      input.focus();
+      input.dispatchEvent(new G.MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, clientX: 5, clientY: 5 }));
+      const menu = Array.from(document.querySelectorAll<HTMLElement>('.sheaf-ctx-menu')).find((m) => !m.hidden) ?? null;
+      const item = [...(menu?.querySelectorAll<HTMLElement>('.sheaf-ctx-item') ?? [])].find((b) => b.textContent?.startsWith('Edit Markdown'));
+      const unavailable = !!item && (item.hasAttribute('disabled') || item.getAttribute('aria-disabled') === 'true');
+      item?.click();
+      const cm = cellView(h.cell(1, 0));
+      const shown = cm?.state.field(revealField, false) ?? null;
+      const doc = h.doc();
+      h.view.destroy();
+      document.querySelectorAll('.sheaf-ctx-menu').forEach((m) => m.remove());
+      if (!item) return { ok: false, detail: 'no Edit Markdown item in the cell menu' };
+      if (unavailable) return { ok: false, detail: 'Edit Markdown was drawn unavailable' };
+      // The whole cell, which is the whole of this editor's document, and nothing written.
+      if (!cm || !shown || shown.from !== 0 || shown.to !== cm.state.doc.length) return { ok: false, detail: `revealed ${JSON.stringify(shown)}` };
+      return doc === before ? true : { ok: false, detail: 'the file changed' };
+    })
+  );
+
+  results.push(
+    await scenario('a right-click in a data field is still left to the platform, which is where cut and paste live', () => {
+      // A menu a scenario before this one left standing would read as this one's.
+      document.querySelectorAll('.sheaf-ctx-menu').forEach((m) => m.remove());
+      const h = mount('```csv\nFruit,Qty\napple,3\n```');
+      mountContextMenu(h.view.dom, { getView: () => h.view, getFileName: () => 'doc.md', copyToClipboard: () => {} });
+      h.dblclick(h.cell(0, 0)!);
+      const field = h.input(0, 0)!;
+      const isTextarea = field instanceof G.HTMLTextAreaElement;
+      field.focus();
+      const e = new G.MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, clientX: 5, clientY: 5 });
+      field.dispatchEvent(e);
+      const menuOpen = Array.from(document.querySelectorAll<HTMLElement>('.sheaf-ctx-menu')).some((m) => !m.hidden);
+      const stillEditing = document.activeElement === field;
+      h.view.destroy();
+      document.querySelectorAll('.sheaf-ctx-menu').forEach((m) => m.remove());
+      // A data field holds a value rather than Markdown, so there is nothing for the
+      // marks to do to it and the platform's own menu is the useful one.
+      return isTextarea && !e.defaultPrevented && !menuOpen && stillEditing;
     })
   );
 
@@ -6268,11 +6789,18 @@ export async function runAll(): Promise<Result[]> {
       h.keydown(h.input(-1, 0)!, 'Enter');
       const afterRename = grid.getAttribute('aria-label');
       const stillInGrid = h.grid() === grid && document.activeElement === grid;
+      /*
+       * Emptying the Qty column no longer takes its name with it, so the label is expected to
+       * be unchanged here. This step used to assert `Table: Name`, on the old behaviour where
+       * a column selection cleared the header too; the rename above is what proves the label
+       * follows a header that really did change, and this now proves the name survives the
+       * clear, which is what a view naming that column depends on.
+       */
       h.mousedown(h.cell(-1, 1)!); // selects the Qty column, header included
       h.keydown(grid, 'Delete');
       const afterClear = grid.getAttribute('aria-label');
       h.view.destroy();
-      return before === 'Table: Fruit, Qty' && afterRename === 'Table: Name, Qty' && stillInGrid && afterClear === 'Table: Name';
+      return before === 'Table: Fruit, Qty' && afterRename === 'Table: Name, Qty' && stillInGrid && afterClear === 'Table: Name, Qty';
     })
   );
 
@@ -7215,6 +7743,44 @@ export async function runAll(): Promise<Result[]> {
   );
 
   results.push(
+    await scenario('a table at the top level may take the pane; one inside a quote keeps the quote’s column', () => {
+      /*
+       * A table reaches past the writing column to the pane's edge, which is `can-use-pane`
+       * in the stylesheet. A table inside a quote belongs to that block: it starts where the
+       * quote's text starts, so reaching past the column would put it somewhere its own bar
+       * is not.
+       *
+       * A table indented under a list item is *not* one of these, and not because of this
+       * rule: its prefix arrives empty, so the widget has no idea it is inside anything and
+       * it is already drawn at the top-level position. Measured in a browser, at 246px with
+       * the list's bullets, before any of this: a gap of its own, filed and not fixed here.
+       *
+       * The class is read here and the geometry it buys is measured in a browser, by
+       * `scripts/check-table-widths.mjs`. jsdom lays nothing out, so every edge there is at
+       * zero and zero equals zero whatever the rules say.
+       */
+      const takes = (doc: string): boolean => {
+        const h = mount(doc);
+        const yes = h.view.dom.querySelector('.sheaf-table')?.classList.contains('can-use-pane') === true;
+        h.view.destroy();
+        return yes;
+      };
+      const plain = takes(P + '| a | b |\n| --- | --- |\n| 1 | 2 |');
+      const quoted = takes(QUOTE);
+      // And the rule the class comes from, read directly, because a quote is one of several
+      // shapes a block puts in front of a table's lines and the others have no fixture here.
+      const rule = [
+        ['', true],
+        ['> ', false],
+        ['  ', false],
+        ['\t', false],
+        ['> > ', false],
+      ].every(([prefix, want]) => tableUsesPane(prefix as string) === want);
+      return plain && !quoted && rule;
+    })
+  );
+
+  results.push(
     await scenario('an edited cell of a quoted table changes only its own line and keeps the quote mark', async () => {
       const h = mount(QUOTE);
       h.dblclick(h.cell(0, 1)!);
@@ -7553,6 +8119,24 @@ async function viewChecks(): Promise<Result[]> {
   const results: Result[] = [];
 
   results.push(
+    await scenario('a view whose fence is not closed yet is left as written, and draws once it is closed', () => {
+      // The same state that scrambled a csv block: an unclosed fence runs to the end of
+      // the document, so what draws is a grid over everything the person has not typed
+      // yet. Here the query is already complete, which is the worst moment for it.
+      const half = P + TASKS + '\n\n```view\nfrom: #tasks\n\nA paragraph well below it.\n';
+      const open = mount(half, [viewBlocks]);
+      const whileTyping = viewShows(open);
+      const openUnchanged = open.doc() === half;
+      open.view.destroy();
+      const whole = P + TASKS + '\n\n```view\nfrom: #tasks\n```\n\nA paragraph well below it.\n';
+      const closed = mount(whole, [viewBlocks]);
+      const once = viewShows(closed);
+      closed.view.destroy();
+      return whileTyping === null && openUnchanged && once !== null && once.rows.length === 4;
+    })
+  );
+
+  results.push(
     await scenario('a view of a named block shows the rows its where keeps, in its sort order, with its show columns', () => {
       const doc = withView('from: #tasks\nwhere: status != Done\nsort: estimate desc\nshow: estimate, feature');
       const h = mount(doc, [viewBlocks]);
@@ -7730,6 +8314,7 @@ async function viewChecks(): Promise<Result[]> {
   results.push(...(await viewEditChecks()));
   results.push(...(await viewHeaderChecks()));
   results.push(...(await moveToFileChecks()));
+  results.push(...(await createViewChecks()));
 
   return results;
 }
@@ -7751,6 +8336,92 @@ const pageNote = (h: Harness): string | null => {
 };
 
 const MOVABLE = '```csv id=tasks\nfeature,status\n"Search, fast",Open\nExport,  Done\n```';
+
+async function createViewChecks(): Promise<Result[]> {
+  const results: Result[] = [];
+
+  results.push(
+    await scenario('Create view on a named block writes a view of it below, as one undo step, and the view draws its rows', () => {
+      setCreateView(createViewOf);
+      const doc = P + MOVABLE + '\n\nAfter.\n';
+      const h = mount(doc, [viewBlocks, history()]);
+      const ran = runTableCommand(h.cell(0, 0), 'Create view');
+      const after = h.doc();
+      // The view reads the block it was made from, and shows what the block holds.
+      const shows = viewShows(h);
+      undo(h.view);
+      const back = h.doc();
+      h.view.destroy();
+      setCreateView(null);
+      if (after !== P + MOVABLE + '\n\n```view\nfrom: #tasks\n```\n\nAfter.\n') console.log('   got:', JSON.stringify(after));
+      return (
+        ran &&
+        after === P + MOVABLE + '\n\n```view\nfrom: #tasks\n```\n\nAfter.\n' &&
+        shows?.rows.length === 2 &&
+        back === doc
+      );
+    })
+  );
+
+  results.push(
+    await scenario('Create view on an unnamed block asks for a name first, and writes both the name and the view together', () => {
+      setCreateView(createViewOf);
+      const doc = P + UNNAMED + '\n';
+      const h = mount(doc, [viewBlocks, history()]);
+      runTableCommand(h.cell(0, 0), 'Create view');
+      // The field the caption offers, prefilled and waiting: nothing is written yet.
+      const asked = !!renameField(h) && h.doc() === doc;
+      typeName(h, 'notes');
+      const after = h.doc();
+      const shows = viewShows(h);
+      h.view.destroy();
+      setCreateView(null);
+      return (
+        asked &&
+        after === P + '```csv id=notes' + UNNAMED.slice('```csv'.length) + '\n\n```view\nfrom: #notes\n```\n' &&
+        shows?.rows.length === 2
+      );
+    })
+  );
+
+  results.push(
+    await scenario('Escape at the name writes nothing at all, so no half-named block is left behind', () => {
+      setCreateView(createViewOf);
+      const doc = P + UNNAMED + '\n';
+      const h = mount(doc, [viewBlocks]);
+      runTableCommand(h.cell(0, 0), 'Create view');
+      typeName(h, 'notes', 'Escape');
+      const unchanged = h.doc() === doc;
+      const noView = viewShows(h) === null;
+      h.view.destroy();
+      setCreateView(null);
+      return unchanged && noView;
+    })
+  );
+
+  results.push(
+    await scenario('Create view is offered on a CSV block and on no pipe table, and not in a data file’s own grid', () => {
+      setCreateView(createViewOf);
+      setMoveToFile(moveBlockToFile);
+      const csv = mount(P + MOVABLE, [viewBlocks]);
+      const onCsv = (tableActionsAt(csv.cell(0, 0)) ?? []).some((a) => a.label === 'Create view');
+      csv.view.destroy();
+      const pipe = mount(PIPE, [viewBlocks]);
+      const onPipe = (tableActionsAt(pipe.cell(0, 0)) ?? []).some((a) => a.label === 'Create view');
+      pipe.view.destroy();
+      // A data file's own grid: the page gives it neither, because the file is the
+      // table and a view of it belongs in a document.
+      setMoveToFile(null);
+      setCreateView(null);
+      const bare = mount(P + MOVABLE, [viewBlocks]);
+      const onFileGrid = (tableActionsAt(bare.cell(0, 0)) ?? []).some((a) => a.label === 'Create view');
+      bare.view.destroy();
+      return onCsv && !onPipe && !onFileGrid;
+    })
+  );
+
+  return results;
+}
 
 async function moveToFileChecks(): Promise<Result[]> {
   const results: Result[] = [];
@@ -8154,8 +8825,59 @@ function typeName(h: Harness, name: string, key = 'Enter'): void {
   h.keydown(field, key);
 }
 
+/** The offer to name a block that has none. */
+const nameIt = (h: Harness, which = 0): HTMLElement | null =>
+  (h.view.dom.querySelectorAll('.sheaf-table')[which]?.querySelector('.sheaf-table-name-it') as HTMLElement | null) ?? null;
+
+/** A csv block with no `id=` on its fence line. */
+const UNNAMED = '```csv\nfeature,status\nSearch,Open\nExport,Done\n```';
+
 async function renameChecks(): Promise<Result[]> {
   const results: Result[] = [];
+
+  results.push(
+    await scenario('a data block with no name offers one, and taking the offer writes id= onto its fence line as one undo step', () => {
+      const doc = P + UNNAMED + '\n';
+      const h = mount(doc, [viewBlocks, history()]);
+      // No name, so no name is shown; the offer stands in its place.
+      const before = blockName(h) === null && nameIt(h) !== null;
+      nameIt(h)!.click();
+      // Prefilled with a name no other block has, ready to accept.
+      const held = renameField(h)?.value;
+      typeName(h, 'tasks');
+      const after = h.doc();
+      const shown = blockName(h)?.textContent;
+      undo(h.view);
+      const back = h.doc();
+      h.view.destroy();
+      return before && held === 'table' && after === P + '```csv id=tasks' + UNNAMED.slice('```csv'.length) + '\n' && shown === '#tasks' && back === doc;
+    })
+  );
+
+  results.push(
+    await scenario('the name offered is free against the document, and Escape at the field leaves the block unnamed', () => {
+      // A block already called `table`, so the offer on the second one steps past it.
+      const doc = P + '```csv id=table\na,b\n1,2\n```\n\n' + UNNAMED + '\n';
+      const h = mount(doc, [viewBlocks]);
+      nameIt(h, 1)!.click();
+      const held = renameField(h)?.value;
+      typeName(h, 'whatever', 'Escape');
+      const closed = !renameField(h) && nameIt(h, 1) !== null;
+      const unchanged = h.doc() === doc;
+      h.view.destroy();
+      return held === 'table-2' && closed && unchanged;
+    })
+  );
+
+  results.push(
+    await scenario('a pipe table is never offered a name, because it has no fence to carry one', () => {
+      const h = mount(P + '| Feature | Status |\n| --- | --- |\n| Search | Open |\n', [viewBlocks]);
+      const offered = nameIt(h) !== null;
+      const named = blockName(h) !== null;
+      h.view.destroy();
+      return offered === false && named === false;
+    })
+  );
 
   results.push(
     await scenario('clicking a block’s name opens it for typing, and Enter renames the block and every view that reads it, in any case, as one undo step', () => {
@@ -8569,6 +9291,44 @@ async function viewHeaderChecks(): Promise<Result[]> {
       const shut = !h.view.dom.querySelector('.sheaf-view-input');
       h.view.destroy();
       return still && shut;
+    })
+  );
+
+  results.push(
+    await scenario('the pointer over a view\u2019s cell says whether it can be typed into, and matches a table\u2019s', () => {
+      /*
+       * It was `cell`, the thick plus a spreadsheet draws for dragging out a range, which
+       * reads as a tool about to do that and is not what a click there does. A view is a block
+       * in a document and its cells behave as a table's, which have always been `text`.
+       *
+       * And where nothing can be edited — a source that does not resolve, or a read-only
+       * editor — the ordinary arrow, rather than the same promise as a cell that can be typed
+       * into.
+       *
+       * The class is read here and not the drawn cursor: jsdom applies no stylesheet, so
+       * `getComputedStyle(td).cursor` is empty whatever the rules say. The rules themselves
+       * are two lines above the ones a table uses, in the same file.
+       */
+      const editableOf = (doc: string, extra: Extension[] = []): boolean | null => {
+        const h = mount(doc, [viewBlocks, ...extra]);
+        const wrap = h.view.dom.querySelector('.sheaf-view');
+        const yes = wrap ? wrap.classList.contains('is-editable') : null;
+        h.view.destroy();
+        return yes;
+      };
+      const ordinary = editableOf(withView('from: #tasks'));
+      const readOnly = editableOf(withView('from: #tasks'), [EditorState.readOnly.of(true)]);
+      /*
+       * A source that names nothing in the document cannot be written back to. This one reads
+       * false for a second reason as well — such a view draws no table, so the line that sets
+       * the class never runs — which is why the read-only case is the one that discriminates:
+       * with the class forced true it reads true and this one still reads false.
+       */
+      const unresolved = editableOf(withView('from: #nothing-here'));
+      return {
+        ok: ordinary === true && readOnly === false && unresolved === false,
+        detail: `an ordinary view ${ordinary}, a read-only one ${readOnly}, one whose source does not resolve ${unresolved}`,
+      };
     })
   );
 
@@ -9024,9 +9784,66 @@ function dragCard(h: Harness, row: number, to: string, opts: { escape?: boolean 
   fire(target, 'pointerup', 260, 0);
 }
 
+/** The view's layout control, which says what pressing it would do. */
+const layoutButton = (h: Harness, which = 0): HTMLButtonElement | null =>
+  (h.view.dom.querySelectorAll('.sheaf-view')[which]?.querySelector('.sheaf-view-layout') as HTMLButtonElement | null) ?? null;
+
 async function boardChecks(): Promise<Result[]> {
   const results: Result[] = [];
   const BOARD = 'from: #tasks\nlayout: board\ngroup: status';
+
+  results.push(
+    await scenario('Show as board on a view writes both of a board’s lines, grouped by the column picked, as one undo step', () => {
+      const doc = withView('from: #tasks');
+      const h = mount(doc, [viewBlocks, history()]);
+      const said = layoutButton(h)?.textContent;
+      layoutButton(h)!.click();
+      // The chooser offers every column the view reads, by name.
+      const offered = Array.from(h.view.dom.querySelectorAll('.sheaf-view-menu .sheaf-view-menu-apply')).map((b) => b.textContent);
+      const pick = Array.from(h.view.dom.querySelectorAll<HTMLButtonElement>('.sheaf-view-menu .sheaf-view-menu-apply')).find(
+        (b) => b.textContent === 'status'
+      );
+      pick!.click();
+      const after = h.doc();
+      const drawn = boardShows(h)?.length;
+      undo(h.view);
+      const back = h.doc();
+      h.view.destroy();
+      return (
+        said === 'Show as board' &&
+        JSON.stringify(offered) === JSON.stringify(['feature', 'status', 'estimate']) &&
+        after === withView('from: #tasks\nlayout: board\ngroup: status') &&
+        drawn === 3 &&
+        back === doc
+      );
+    })
+  );
+
+  results.push(
+    await scenario('Show as table takes a board’s two lines out together, because layout without group is an error rather than a board', () => {
+      const doc = withView(BOARD);
+      const h = mount(doc, [viewBlocks, history()]);
+      const said = layoutButton(h)?.textContent;
+      layoutButton(h)!.click();
+      const after = h.doc();
+      const asTable = viewShows(h)?.rows.length;
+      h.view.destroy();
+      return said === 'Show as table' && after === withView('from: #tasks') && asTable === 4;
+    })
+  );
+
+  results.push(
+    await scenario('a view whose rows cannot be read offers no layout control, and a read-only one shows it disabled', () => {
+      const missing = mount(P + '```view\nfrom: #nothing\n```\n', [viewBlocks]);
+      const onMissing = layoutButton(missing)?.hidden;
+      missing.view.destroy();
+      const locked = mount(withView('from: #tasks'), [viewBlocks, EditorState.readOnly.of(true)]);
+      const button = layoutButton(locked);
+      const onLocked = button?.hidden === false && button.getAttribute('aria-disabled') === 'true';
+      locked.view.destroy();
+      return onMissing === true && onLocked === true;
+    })
+  );
 
   results.push(
     await scenario('a board draws one column per value in the order the values first appear, with a card per row', () => {
@@ -9142,6 +9959,66 @@ async function boardChecks(): Promise<Result[]> {
       const home = h.doc() === doc;
       h.view.destroy();
       return escaped && home;
+    })
+  );
+
+  results.push(
+    await scenario('a card being dragged is carried out of the flow, leaving a gap that moves to where it would land', () => {
+      const h = mount(withView(BOARD), [viewBlocks]);
+      const card = boardCard(h, 0)!;
+      const Ctor = G.window.PointerEvent ?? G.MouseEvent;
+      const fire = (el: EventTarget, type: string, x: number, buttons: number): void =>
+        void el.dispatchEvent(new Ctor(type, { bubbles: true, cancelable: true, clientX: x, clientY: 10, button: 0, buttons, pointerId: 7 }));
+      const slot = (): HTMLElement | null => h.view.dom.querySelector('.sheaf-board-slot');
+      fire(card, 'pointerdown', 10, 1);
+      // A press alone is not a drag, so nothing is lifted until the pointer has gone 4px.
+      const onPress = { lifted: card.classList.contains('is-dragging'), gap: !!slot() };
+      const head = boardColumn(h, 'Done')!.querySelector('.sheaf-board-col-head')!;
+      fire(head, 'pointermove', 200, 1);
+      const carried = {
+        lifted: card.classList.contains('is-dragging'),
+        // Positioned under the pointer: 190px along from where the press landed.
+        moved: card.style.transform,
+        // The gap is in the column the card would land in, not the one it came from.
+        gapIn: slot()?.closest('.sheaf-board-col')?.getAttribute('data-value') ?? null,
+      };
+      fire(head, 'pointerup', 200, 0);
+      const settled = { lifted: card.classList.contains('is-dragging'), gap: !!slot(), moved: card.style.transform };
+      h.view.destroy();
+      if (onPress.lifted || onPress.gap) return { ok: false, detail: `a press alone lifted the card: ${JSON.stringify(onPress)}` };
+      if (!carried.lifted || carried.moved !== 'translate(190px, 0px)') return { ok: false, detail: `carried ${JSON.stringify(carried)}` };
+      if (carried.gapIn !== 'Done') return { ok: false, detail: `the gap was in ${carried.gapIn ?? 'no column'}` };
+      // Released, the card is back in the flow with nothing left on it, and the gap has gone.
+      return settled.lifted || settled.gap || settled.moved ? { ok: false, detail: JSON.stringify(settled) } : true;
+    })
+  );
+
+  results.push(
+    await scenario('Escape mid-drag puts the gap back where the card came from and writes nothing', () => {
+      const doc = withView(BOARD);
+      const h = mount(doc, [viewBlocks]);
+      const card = boardCard(h, 0)!;
+      const Ctor = G.window.PointerEvent ?? G.MouseEvent;
+      const fire = (el: EventTarget, type: string, x: number, buttons: number): void =>
+        void el.dispatchEvent(new Ctor(type, { bubbles: true, cancelable: true, clientX: x, clientY: 10, button: 0, buttons, pointerId: 7 }));
+      fire(card, 'pointerdown', 10, 1);
+      fire(boardColumn(h, 'Done')!.querySelector('.sheaf-board-col-head')!, 'pointermove', 200, 1);
+      const away = h.view.dom.querySelector('.sheaf-board-slot')?.closest('.sheaf-board-col')?.getAttribute('data-value') ?? null;
+      h.keydown(document.activeElement ?? card, 'Escape');
+      const after = {
+        gap: !!h.view.dom.querySelector('.sheaf-board-slot'),
+        moved: card.style.transform,
+        lifted: card.classList.contains('is-dragging'),
+        // The card never left its own column in the DOM, so this is where it should still be.
+        home: boardColumn(h, 'Open')?.contains(card) ?? false,
+      };
+      // The release after an Escape must not land the card either.
+      fire(boardColumn(h, 'Done')!.querySelector('.sheaf-board-col-head')!, 'pointerup', 200, 0);
+      const wrote = h.doc();
+      h.view.destroy();
+      if (away !== 'Done') return { ok: false, detail: `the gap never reached Done, it was in ${away ?? 'no column'}` };
+      if (after.gap || after.moved || after.lifted || !after.home) return { ok: false, detail: JSON.stringify(after) };
+      return wrote === doc ? true : { ok: false, detail: 'the file changed' };
     })
   );
 
@@ -9293,6 +10170,62 @@ async function showPipeBoard(h: Harness, column: string): Promise<boolean> {
 
 async function pipeBoardChecks(): Promise<Result[]> {
   const results: Result[] = [];
+
+  results.push(
+    await scenario('a click on a link on a board card opens it, and a press that drags the card opens nothing', async () => {
+      /*
+       * A pipe table's card draws its fields as Markdown, so a column of document links is a
+       * column of links on a board too, and the same rule applies: a card has no caret to
+       * place, so a plain click on a link has nothing else to mean. The release rather than
+       * the press, because a press on a card that moves is the card being dragged.
+       *
+       * A *view's* board is not the same question: a view reads a CSV or TSV block, which is
+       * data, and its cards show their values as written, so there is no link on one to click.
+       */
+      const doc = P + '| Task | Stage |\n| --- | --- |\n| [guide](https://example.com/g) | Open |\n| Export | Done |\n';
+      setTableBoardsHost(() => {});
+      const h = mount(doc);
+      h.ctrl('overflow')!.click();
+      await pickTableMenu('Show as board');
+      await pickTableMenu('Stage');
+      const win = document.defaultView as any;
+      const opened: string[] = [];
+      const original = win.HTMLAnchorElement.prototype.click;
+      win.HTMLAnchorElement.prototype.click = function (this: HTMLAnchorElement): void {
+        opened.push(this.href);
+      };
+      const link = boardCard(h, 0)?.querySelector('[data-href]') as HTMLElement | null;
+      const Ctor = G.window.PointerEvent ?? G.MouseEvent;
+      const fire = (el: EventTarget, type: string, x: number, buttons: number): void => {
+        el.dispatchEvent(new Ctor(type, { bubbles: true, cancelable: true, clientX: x, clientY: 10, button: 0, buttons, pointerId: 7 }));
+      };
+      if (link) {
+        fire(link, 'pointerdown', 10, 1);
+        fire(link, 'pointerup', 10, 0);
+      }
+      const afterClick = opened.length;
+      // The same press, moved onto another column: the card is dragged and nothing is followed.
+      if (link) {
+        fire(link, 'pointerdown', 10, 1);
+        const target = boardColumn(h, 'Done')!.querySelector('.sheaf-board-col-head')!;
+        fire(target, 'pointermove', 200, 1);
+        fire(target, 'pointermove', 260, 1);
+        fire(target, 'pointerup', 260, 0);
+      }
+      const afterDrag = opened.length;
+      win.HTMLAnchorElement.prototype.click = original;
+      const moved = h.doc();
+      h.view.destroy();
+      setTableBoardsHost(null);
+      return (
+        !!link &&
+        afterClick === 1 &&
+        opened[0] === 'https://example.com/g' &&
+        afterDrag === 1 &&
+        moved.includes('| [guide](https://example.com/g) | Done |')
+      );
+    })
+  );
 
   results.push(
     await scenario('a pipe table’s menus offer Show as board, which asks which column to group by and then draws the rows as cards, leaving the file alone', async () => {
@@ -9491,6 +10424,24 @@ async function pipeBoardChecks(): Promise<Result[]> {
         beforeAnswer === null &&
         JSON.stringify(afterAnswer) === JSON.stringify(['x:a'])
       );
+    })
+  );
+
+  results.push(
+    await scenario('a header row holding nothing is marked, so it is not stuck over the rows it would cross', async () => {
+      // The pipe syntax requires a header, so a two-column summary is written with an
+      // empty one whether the author wanted it or not.
+      const blank = mount(P + '|  |  |\n| - | - |\n| Ships at risk | One tanker |\n| Status | Holding |\n');
+      const blankHead = blank.view.dom.querySelector('.sheaf-table thead tr')?.classList.contains('is-blank');
+      blank.view.destroy();
+      const named = mount(P + '| Field | Value |\n| - | - |\n| Ships at risk | One tanker |\n');
+      const namedHead = named.view.dom.querySelector('.sheaf-table thead tr')?.classList.contains('is-blank');
+      named.view.destroy();
+      // Spaces are nothing too: `|   |   |` is the same empty header.
+      const spaces = mount(P + '|    |   |\n| - | - |\n| a | b |\n');
+      const spacedHead = spaces.view.dom.querySelector('.sheaf-table thead tr')?.classList.contains('is-blank');
+      spaces.view.destroy();
+      return blankHead === true && namedHead === false && spacedHead === true;
     })
   );
 

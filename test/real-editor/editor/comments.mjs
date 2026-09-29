@@ -223,4 +223,50 @@ export const scenarios = [
       };
     },
   },
+  {
+    id: 'render.comment.e06',
+    feature: 'render.comment',
+    name: 'Changing the words of a collapsed comment opens it again, since the collapse was kept against that text',
+    run: async (S) => {
+      const text = 'Release notes.\n\n<!-- Ask the platform team first.\nThe retry budget is open. -->\n\nAfter line\n';
+      const file = await S.fresh('comment-edit-collapsed', text);
+      await S.sleep(700);
+      await S.click({ sel: '.md-comment-fold' });
+      await S.sleep(400);
+      const folded = await boxes(S);
+      // Edit the comment's words: click it to reveal the raw comment, type into the first line.
+      await S.click({ sel: '.md-comment' });
+      await S.sleep(400);
+      await S.caret('Ask the platform team first.', 'Ask the platform team'.length);
+      await S.type(' now');
+      await S.caret('After line', 2);
+      await S.sleep(700);
+      const after = await boxes(S);
+      const disk = await S.disk(file);
+      const ok =
+        folded.length === 1 && folded[0].collapsed &&
+        after.length === 1 && !after[0].collapsed &&
+        disk === text.replace('Ask the platform team first.', 'Ask the platform team now first.');
+      return { ok, detail: `collapsed first ${j(folded.map((b) => b.collapsed))}; after the edit ${j(after.map((b) => b.collapsed))}; file ${j(disk)}` };
+    },
+  },
+  {
+    id: 'render.comment.e07',
+    feature: 'render.comment',
+    name: 'A comment that is never closed is left as written, with no box drawn over the rest of the document',
+    run: async (S) => {
+      const text = 'Release notes.\n\n<!-- Ask the platform team before publishing this.\n\nThe exporter now runs nightly.\n';
+      const file = await S.fresh('comment-unclosed', text);
+      await S.sleep(700);
+      const drawn = await boxes(S);
+      const shown = await lines(S);
+      const disk = await S.disk(file);
+      const ok =
+        drawn.length === 0 &&
+        shown.some((l) => l.includes('<!-- Ask the platform team before publishing this.')) &&
+        shown.some((l) => l === 'The exporter now runs nightly.') &&
+        disk === text;
+      return { ok, detail: `boxes ${drawn.length}; the lines read ${j(shown)}; file unchanged ${disk === text}` };
+    },
+  },
 ];

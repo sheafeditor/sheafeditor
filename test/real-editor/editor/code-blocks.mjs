@@ -60,6 +60,38 @@ const look = (S) =>
     return { codeLines, marks, hidden, unpainted, layerDepth, layerClass };
   });
 
+/*
+ * A fence whose grammar arrives as a chunk.
+ *
+ * The editor is split, so a language's grammar is not in the bundle that loads with the
+ * page: it is fetched by a dynamic import when a fence asks for it. In a VS Code webview
+ * that fetch has to satisfy a policy whose `script-src` is a nonce and nothing else, and
+ * the claim it rests on is that a module imported by a script carrying the nonce is
+ * fetched with that nonce, and so are its own imports. Mermaid has relied on that for
+ * some time, which is precedent rather than proof, and nothing watched it happen.
+ *
+ * This watches it. Python is a language whose grammar is its own chunk, and a keyword in
+ * it is coloured only if that chunk arrived, was allowed, and parsed. A bare fence cannot
+ * ask the question: it needs no grammar, so it looks identical whether chunks load or not,
+ * which is why the three scenarios above passed on a build nobody had verified.
+ *
+ * The check is a token element with a highlight class inside the block, and a colour that
+ * differs from the block's ordinary text. Either alone is weaker than it looks: the class
+ * can be present with the theme painting nothing, and a colour can differ for reasons
+ * that have nothing to do with parsing.
+ */
+const highlighting = (S) =>
+  S.eval(() => {
+    const lines = [...document.querySelectorAll('.cm-line')].filter((l) => l.className.includes('tok-code-block'));
+    const plain = lines.length ? getComputedStyle(lines[lines.length - 1]).color : null;
+    const tokens = lines
+      .flatMap((l) => [...l.querySelectorAll('span[class]')])
+      .filter((t) => /tok-|ͼ/.test(t.className))
+      .map((t) => ({ text: t.textContent, cls: t.className, colour: getComputedStyle(t).color }));
+    return { lineCount: lines.length, plain, tokens: tokens.slice(0, 8), coloured: tokens.filter((t) => t.colour !== plain).length };
+  });
+
+
 export const scenarios = [
   {
     id: 'render.code-block.selection-visible-inside',
@@ -113,6 +145,27 @@ export const scenarios = [
       return {
         ok: m.hidden.length === 0 && m.marks.length > 0 && m.unpainted.length === 0,
         detail: `${m.hidden.length} of ${m.marks.length} selection rectangles hidden behind a code-block tint (layer depth ${m.layerDepth}); ${m.unpainted.length} lines painting no tint; ${j(m.hidden)}`,
+      };
+    },
+  },
+  {
+    id: 'render.code-block.a-grammar-arrives-as-a-chunk',
+    feature: 'render.code-block',
+    name: 'A fence in a language whose grammar is a separate chunk is still syntax coloured',
+    run: async (S) => {
+      await S.fresh('fence-python', 'Intro paragraph.\n\n```python\ndef greet(name):\n    return f"hello {name}"\n```\n\nAfter text.\n');
+      // Longer than the others deliberately: the grammar is fetched and parsed after the
+      // page has already drawn the fence, so an immediate read catches it uncoloured.
+      await S.sleep(1500);
+      const m = await highlighting(S);
+      return {
+        ok: m.lineCount >= 2 && m.coloured > 0,
+        detail:
+          m.lineCount < 2
+            ? `only ${m.lineCount} code lines, so the fence did not render as a block`
+            : m.coloured === 0
+              ? `no token in the fence is coloured differently from its plain text (${m.plain}), so the grammar chunk did not arrive, was refused by the policy, or did not parse; tokens ${j(m.tokens)}`
+              : `${m.coloured} of ${m.tokens.length} sampled tokens coloured against plain ${m.plain}; ${j(m.tokens.slice(0, 4))}`,
       };
     },
   },

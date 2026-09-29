@@ -32,11 +32,14 @@ import { EditorState, Extension, Range, RangeSet, StateEffect, StateField, Text,
 import { syntaxTree } from '@codemirror/language';
 import { SyntaxNode, Tree } from '@lezer/common';
 import { alertLabel, alertLine, alertMarkerAt } from './alerts';
+import { emojiFor } from './emoji';
 import { editableProps, imageSelection, imageWidgetFor, matchHtmlImage } from './images';
 import { inlineHtmlPairAt } from './inlineHtml';
 import { BlockRange, blockRangeAt } from './blockModel';
 import { blockMath, blockMathError, blockMathRanges, inlineMath, inlineMathError, mathError } from './maths';
+import { MermaidRange, mermaidDiagram, mermaidThemeChanged, mermaidThemeWatch, openingFenceLang } from './mermaid';
 import { coveredEnd } from './selectionExtent';
+import { footnoteClicks, footnoteDefDecoration, footnoteDefLine, footnoteIndex, footnoteKey, footnoteRefDecoration } from './footnotes';
 import { floatingField, setSourceMode as setSourceModeEffect } from './floatingState';
 
 export interface LivePreviewConfig {
@@ -191,8 +194,31 @@ class BulletWidget extends WidgetType {
   }
   toDOM(): HTMLElement {
     const span = document.createElement('span');
-    span.className = 'tok-bullet';
-    span.textContent = '• ';
+    // Boxed, so the words after it start at the same stop as every other list item's. The
+    // box supplies the gap after the marker, so the bullet no longer carries a space of its
+    // own: it wrote `"• "` and the source space after the `-` was drawn as well, which put
+    // two spaces on every bullet line.
+    span.className = 'tok-bullet tok-marker-box';
+    /*
+     * Hidden from assistive technology, because the glyph is decoration: it stands for a `-`
+     * in the file and says nothing the words do not. Without this a reader is offered
+     * `•dash item` as one unbroken run, since the marker takes its space with it now and
+     * nothing separates the two. Same treatment as the decorative icons in `alerts.ts`,
+     * `blockHandle.ts` and `comments.ts`.
+     *
+     * Only the bullet. The other two markers in a box must not carry this:
+     *
+     * - An ordered item's number is content rather than decoration. Sheaf exposes no list
+     *   semantics at all, so the digits are the only thing that carries the ordinal, and
+     *   hiding them would read `seven` where the line says `1. seven`.
+     * - A task item's box holds a real `<input type="checkbox">`. `aria-hidden` on an ancestor
+     *   takes the whole subtree out of the accessibility tree, focusable content included, so
+     *   putting it there would remove the checkbox itself rather than a glyph.
+     *
+     * Which is why this is an attribute on one widget and not a rule on `.tok-marker-box`.
+     */
+    span.setAttribute('aria-hidden', 'true');
+    span.textContent = '•';
     return span;
   }
 }
@@ -205,6 +231,11 @@ class CheckboxWidget extends WidgetType {
     return other.checked === this.checked && other.pos === this.pos;
   }
   toDOM(view: EditorView): HTMLElement {
+    // In the same box as a bullet or a number, so a task item's words start where every
+    // other list item's do. Drawn bare, the checkbox was a third marker width and put task
+    // text 26px right of everything around it.
+    const outer = document.createElement('span');
+    outer.className = 'tok-marker-box';
     const box = document.createElement('input');
     box.type = 'checkbox';
     box.className = 'md-task';
@@ -214,7 +245,8 @@ class CheckboxWidget extends WidgetType {
       const from = this.pos;
       view.dispatch({ changes: { from, to: from + 1, insert: this.checked ? ' ' : 'x' } });
     });
-    return box;
+    outer.appendChild(box);
+    return outer;
   }
   ignoreEvent(): boolean {
     return true;
@@ -232,6 +264,34 @@ class EntityWidget extends WidgetType {
   toDOM(): HTMLElement {
     const span = document.createElement('span');
     span.textContent = this.text;
+    return span;
+  }
+  ignoreEvent(): boolean {
+    // Let clicks place the caret, as they would on the character itself.
+    return false;
+  }
+}
+
+/**
+ * The character a `:shortcode:` draws as.
+ *
+ * Its own class rather than `EntityWidget`'s so that a drawn shortcode can be
+ * told apart from the same character written literally, by a theme that wants to
+ * and by the checks that do, and so two widgets carrying the same character for
+ * different reasons never compare equal. The character needs no styling of its
+ * own, so the stylesheet says nothing about `tok-emoji`.
+ */
+class EmojiWidget extends WidgetType {
+  constructor(readonly char: string) {
+    super();
+  }
+  eq(other: EmojiWidget): boolean {
+    return other.char === this.char;
+  }
+  toDOM(): HTMLElement {
+    const span = document.createElement('span');
+    span.className = 'tok-emoji';
+    span.textContent = this.char;
     return span;
   }
   ignoreEvent(): boolean {
@@ -260,33 +320,24 @@ function decodeEntity(raw: string): string {
   return text;
 }
 
-/**
- * The language of a fenced code block, drawn in place of its opening fence.
+/*
+ * A fenced block's language used to be drawn as a chip in place of its opening
+ * fence, floated to the right of the panel. It is gone, and what replaced it is
+ * nothing: an opening fence is hidden exactly as an unlabelled one always was.
  *
- * The fence itself is punctuation, and Sheaf hides punctuation. The word after it
- * is not: it says what the code is, and a reader who cannot see it has lost
- * something the document said. So the line the fence was on carries this chip
- * instead, and the caret on that line brings the raw ``` back to edit.
+ * Removing it was the whole of the fix for a different complaint, that a code
+ * block's own options sat at its top right where every other block's sit in the
+ * left margin. The chip was not merely beside them: `blockHandle.ts` takes the
+ * handle's position from the first position in the block, which is inside the
+ * fence line, and a floated chip put that coordinate at the right-hand end. So
+ * the `+`, the grip and the label were one fault with one cause, and an
+ * unlabelled fence already demonstrated the fix, its handle sitting at -53px
+ * with every other block's while a labelled one sat at 611px.
+ *
+ * What it costs is real and was weighed: a reader can no longer see at a glance
+ * what a block's code is. The language is still in the file, and Edit Markdown
+ * on the block shows the fence and its word, which is also how it is changed.
  */
-class CodeLangWidget extends WidgetType {
-  constructor(readonly lang: string) {
-    super();
-  }
-  eq(other: CodeLangWidget): boolean {
-    return other.lang === this.lang;
-  }
-  toDOM(): HTMLElement {
-    const chip = document.createElement('span');
-    chip.className = 'md-code-lang';
-    chip.textContent = this.lang;
-    return chip;
-  }
-  ignoreEvent(): boolean {
-    // A press on the chip is a press on the line it sits in, which is how the
-    // caret gets there and brings the fence back.
-    return false;
-  }
-}
 
 class HrWidget extends WidgetType {
   eq(): boolean {
@@ -319,7 +370,34 @@ const inlineCodeMark = Decoration.mark({ class: 'tok-inline-code' });
 const highlightMark = Decoration.mark({ class: 'tok-highlight' });
 const linkTextMark = Decoration.mark({ class: 'tok-link' });
 const dimMark = Decoration.mark({ class: 'tok-mark' });
-const bulletDim = Decoration.mark({ class: 'tok-bullet' });
+/**
+ * A marker drawn as itself on the caret's line, in the box its hidden form occupies.
+ *
+ * The box is the reason an item does not move when the caret lands on it: it gives the drawn
+ * marker the same advance as the widget it replaces, so the words stay on their stop instead
+ * of following the width of whatever the file happens to say.
+ */
+const dimMarkBox = Decoration.mark({ class: 'tok-mark tok-marker-box' });
+/**
+ * An ordered list's number, kept as the document's own text and boxed like the bullet
+ * widget, so that the digits cannot move the words after them. Drawn bare, `1.` and `2.`
+ * are 2.4px apart and `1.` and `10.` 9.5px apart, because digits have different advance
+ * widths in a proportional font, so every item in a long numbered list started at a
+ * slightly different place.
+ */
+const orderedMark = Decoration.mark({ class: 'tok-bullet tok-marker-box' });
+
+/**
+ * The end of a marker, including the single space that belongs to it.
+ *
+ * Every marker in Markdown is followed by a space that is part of the syntax rather than
+ * part of the sentence, and the parser's node covers only the marker character. Hiding the
+ * node alone therefore leaves that space on the screen: a bullet line drew `•  words`
+ * with two spaces, and a nested quote left one per level.
+ */
+function markerEnd(doc: Text, to: number): number {
+  return doc.sliceString(to, to + 1) === ' ' ? to + 1 : to;
+}
 const fenceMark = Decoration.mark({ class: 'tok-code-fence' });
 const hide = Decoration.replace({});
 
@@ -341,7 +419,6 @@ function inlineHtmlMark(cls: string, title: string | undefined): Decoration {
 }
 
 const headingLine = (level: number) => Decoration.line({ class: `tok-heading tok-h${level}` });
-const quoteLine = Decoration.line({ class: 'tok-quote' });
 const codeLine = Decoration.line({ class: 'tok-code-block' });
 /** The opening and closing fence lines, drawn as the block's own top and bottom edge. */
 const codeFenceLine = Decoration.line({ class: 'tok-code-block sheaf-code-fence-line' });
@@ -423,6 +500,156 @@ export const activeLines = activeLineSet;
  * Collects two range sets in one pass: every decoration (for rendering), and
  * only the replace/widget ranges (for atomic cursor motion).
  */
+// ---- Rhythm: how far in each line sits -------------------------------------
+
+/**
+ * One line's position, in levels rather than in pixels.
+ *
+ * `hang` marks the line a list item starts on, which is the only line that has a marker to
+ * hang in the indent. A wrapped row of that same line, and a line further down the same
+ * item, come back to the content edge instead.
+ *
+ * `gap` is the one vertical thing here, and it rides on the same pass because it is the same
+ * question asked downward: does this line open a list item that needs separating from the item
+ * above it. A tight list has no blank lines in its source by definition, so nothing else can
+ * give it any air, and six task items read as a solid block of text with boxes in it.
+ *
+ * It is set on the line an item opens on and nowhere else, which is what makes the gap land
+ * once per item rather than once per drawn row. A wrapped item is one `.cm-line` however many
+ * rows it takes, so a three-line item takes one gap at its top and nothing inside it.
+ *
+ * False on the first item of an outermost list, because the blank line above the list already
+ * separates it from the block before. True on the first item of a *nested* list, which has no
+ * blank line above it and would otherwise sit tighter against its parent than its own siblings
+ * sit against each other.
+ */
+interface LineRhythm {
+  list: number;
+  quote: number;
+  hang: boolean;
+  gap: boolean;
+}
+
+/** The step lengths live in the stylesheet; nothing here knows a pixel. */
+const rhythmLines = new Map<string, Decoration>();
+
+/**
+ * The line decoration for one measured rhythm, cached so that scrolling a long document
+ * does not build a new decoration per line per frame.
+ *
+ * Both depths ride on one decoration and one class, and that is deliberate. Two rules each
+ * setting `padding-left`, one for lists and one for quotes, cannot add up: the second wins
+ * outright, so a list inside a quote would take one indent and lose the other. One property
+ * per axis and a single `calc` that reads both keeps them additive.
+ */
+function rhythmLine(r: LineRhythm): Decoration {
+  const key = `${r.list}:${r.quote}:${r.hang ? 'h' : ''}${r.gap ? 'g' : ''}`;
+  let deco = rhythmLines.get(key);
+  if (!deco) {
+    const cls = ['tok-rhythm'];
+    if (r.quote) cls.push('tok-quote');
+    if (r.hang) cls.push('tok-hang');
+    if (r.gap) cls.push('tok-item-gap');
+    const style = [`--md-list-depth:${r.list}`, `--md-quote-depth:${r.quote}`].join(';');
+    deco = Decoration.line({ class: cls.join(' '), attributes: { style } });
+    rhythmLines.set(key, deco);
+  }
+  return deco;
+}
+
+/**
+ * Whether a list item takes the gap that separates it from the item above it.
+ *
+ * Every item does except the one that opens an outermost list, and both halves of that are
+ * about what is already above the item.
+ *
+ * The first item of a top-level list has a blank line above it, or the top of the document, or
+ * a heading with its own space: something separates the list from what precedes it, and a gap
+ * on top of that would make the list stand off from the prose by more than its own items stand
+ * apart from each other.
+ *
+ * The first item of a *nested* list has none of that. It sits directly under the text of its
+ * parent item, with no blank line anywhere, so without a gap it reads tighter against its
+ * parent than its own siblings read against it, which is the thing this is for at one level up.
+ *
+ * `parent.from === node.from` is what identifies a first item: a list and its first item begin
+ * at the same character, since the list is nothing but its items.
+ */
+function takesItemGap(node: SyntaxNode): boolean {
+  const list = node.parent;
+  if (!list || list.from !== node.from) return true;
+  // Nested if any ListItem is above this list in the tree. A quote in between does not make
+  // the list top-level again: `> - a` is still a list opening a quoted block.
+  for (let up = list.parent; up; up = up.parent) {
+    if (up.name === 'ListItem') return true;
+  }
+  return false;
+}
+
+/**
+ * How deep in lists and quotes every line of `ranges` sits.
+ *
+ * One pass for both axes, and one decoration per line emitted after it, because the
+ * obvious alternative does not work. The tree walk meets an outer `Blockquote` before the
+ * nested one inside it, so applying a class as each is met puts the same class on the same
+ * line twice, and the same class twice is no class at all. That is why `> > >` has been
+ * drawn exactly like `>`.
+ *
+ * Depth comes from the tree and never from the leading whitespace in the file. Two spaces,
+ * four spaces and a tab are three different widths in a proportional font and none of them
+ * is a designed step; and an ordered item's content starts three columns in rather than
+ * two, so counting spaces puts a numbered level three at depth four.
+ *
+ * The deepest container covering a line wins, which falls out of taking the maximum: an
+ * outer block records its own depth across all of its lines and an inner one raises the
+ * lines it covers.
+ */
+function lineRhythms(state: EditorState, ranges: readonly { from: number; to: number }[]): Map<number, LineRhythm> {
+  const doc = state.doc;
+  const out = new Map<number, LineRhythm>();
+  const at = (n: number): LineRhythm => {
+    let r = out.get(n);
+    if (!r) {
+      r = { list: 0, quote: 0, hang: false, gap: false };
+      out.set(n, r);
+    }
+    return r;
+  };
+
+  for (const { from, to } of ranges) {
+    let list = 0;
+    let quote = 0;
+    syntaxTree(state).iterate({
+      from,
+      to,
+      enter: (node) => {
+        const quoted = node.name === 'Blockquote';
+        const item = node.name === 'ListItem';
+        if (!quoted && !item) return;
+        if (quoted) quote++;
+        else list++;
+        const first = doc.lineAt(node.from).number;
+        const last = doc.lineAt(Math.min(node.to, doc.length)).number;
+        for (let n = first; n <= last; n++) {
+          const r = at(n);
+          if (quoted) r.quote = Math.max(r.quote, quote);
+          else r.list = Math.max(r.list, list);
+        }
+        // Only the line the item opens on carries a marker to hang.
+        if (item) {
+          at(first).hang = true;
+          at(first).gap = takesItemGap(node.node);
+        }
+      },
+      leave: (node) => {
+        if (node.name === 'Blockquote') quote--;
+        else if (node.name === 'ListItem') list--;
+      },
+    });
+  }
+  return out;
+}
+
 class DecoBuilder {
   readonly all: Range<Decoration>[] = [];
   readonly atomic: Range<Decoration>[] = [];
@@ -524,6 +751,30 @@ function buildDecorations(view: EditorView): BuiltDecorations {
   const front = frontMatterRange(state);
   if (front) {
     for (let n = front.startLine; n <= front.endLine; n++) b.line(frontMatterLine, doc.line(n).from);
+  }
+
+  /*
+   * How far in each line sits, measured once and emitted once, before anything inside the
+   * lines is looked at.
+   *
+   * The same depth whether or not the caret is on the line, and that is the whole point: an
+   * item must not move when you click it. An earlier version dropped the list indent on the
+   * caret's line, on the reasoning that the marker and the leading whitespace are drawn as
+   * themselves there and a computed indent on top of drawn whitespace counts it twice. That is
+   * true and it was still wrong, because the two do not cancel: source whitespace is about
+   * 4.2px a space in the body font against a 32px step, so a fourth-level item jumped 66px
+   * left as the caret arrived and back as it left. Measured, not estimated.
+   *
+   * What makes holding the indent work is that the drawn prefix is given the same advance as
+   * the hidden one instead of its own: the leading whitespace comes off the screen on every
+   * line, and the revealed marker sits in a box one step wide, so the words land on the stop
+   * either way. See the `ListMark` branch.
+   */
+  const rhythm = lineRhythms(state, view.visibleRanges);
+  for (const [n, r] of rhythm) {
+    const line = doc.line(n);
+    if (front && line.from < front.to) continue;
+    if (r.list || r.quote) b.line(rhythmLine(r), line.from);
   }
 
   for (const { from, to } of view.visibleRanges) {
@@ -632,6 +883,19 @@ function buildDecorations(view: EditorView): BuiltDecorations {
           return;
         }
 
+        // --- Emoji shortcodes ---------------------------------------------
+        // `:warning:` draws as its character off the caret's line, the way
+        // github.com renders it. A name the table does not hold stays as typed,
+        // which is what github.com does with it too, so `10:30:45` and a word
+        // between colons that is nobody's shortcode are left alone.
+        if (name === 'Emoji') {
+          if (!lineActive(node.from)) {
+            const char = emojiFor(doc.sliceString(node.from + 1, node.to - 1));
+            if (char) b.replace(Decoration.replace({ widget: new EmojiWidget(char) }), node.from, node.to);
+          }
+          return;
+        }
+
         // --- Hard line breaks ---------------------------------------------
         // A line ends inside a paragraph either with a trailing backslash,
         // which is what Shift+Enter writes, or with two or more trailing
@@ -649,6 +913,39 @@ function buildDecorations(view: EditorView): BuiltDecorations {
           return;
         }
 
+        // --- Footnotes ----------------------------------------------------
+        // A reference draws as its number and a definition's `[^label]:` as the
+        // same number, off the lines showing their source. A reference with no
+        // definition, and a definition nothing refers to, stay as written.
+        if (name === 'FootnoteReference') {
+          const notes = footnoteIndex(state);
+          const label = node.node.getChild('FootnoteLabel');
+          const key = label ? footnoteKey(doc.sliceString(label.from, label.to)) : '';
+          const n = notes.numbers.get(key);
+          if (n === undefined) return;
+          if (lineActive(node.from)) {
+            for (const mark of node.node.getChildren('FootnoteMark')) b.mark(dimMark, mark.from, mark.to);
+          } else {
+            b.replace(footnoteRefDecoration(n, notes.defs.get(key)!.text), node.from, node.to);
+          }
+          return;
+        }
+        if (name === 'FootnoteDefinition') {
+          for (let n = doc.lineAt(node.from).number; n <= doc.lineAt(node.to).number; n++) b.line(footnoteDefLine, doc.line(n).from);
+          const notes = footnoteIndex(state);
+          const label = node.node.getChild('FootnoteLabel');
+          const key = label ? footnoteKey(doc.sliceString(label.from, label.to)) : '';
+          const def = notes.defs.get(key);
+          const n = notes.numbers.get(key);
+          if (label && def?.from === node.from && n !== undefined && !lineActive(node.from)) {
+            b.replace(footnoteDefDecoration(n), node.from, def.markTo);
+          } else {
+            for (const mark of node.node.getChildren('FootnoteMark')) b.mark(dimMark, mark.from, mark.to);
+          }
+          // The note inside is ordinary Markdown and is drawn as such.
+          return;
+        }
+
         // --- Links & images ----------------------------------------------
         if (name === 'Image') {
           if (!lineActive(node.from)) {
@@ -662,6 +959,17 @@ function buildDecorations(view: EditorView): BuiltDecorations {
               props && imageWidgetFor(props, isInlineImage(state, node.from, node.to), written !== null);
             if (widget) {
               b.replace(Decoration.replace({ widget }), node.from, node.to);
+              /*
+               * Nothing inside a range that has been replaced wholesale, and skipping the
+               * children is how that is said. Left to descend, the `![`, the `]`, the
+               * `(`, the address and the `)` each added their own hide inside the picture's
+               * own range, and a nested replace whose `from` equals the outer one's sorts
+               * ahead of it. CodeMirror drew the right thing from a fresh set and, on an
+               * image that had just been typed, kept the empty element the inner hide made
+               * while the markup was still half written: the picture never appeared, the
+               * line showed nothing at all, and closing and reopening the file fixed it.
+               */
+              return false;
             }
           }
           return;
@@ -768,17 +1076,68 @@ function buildDecorations(view: EditorView): BuiltDecorations {
           let quoted = node.node.parent;
           while (quoted && quoted.name !== 'Blockquote') quoted = quoted.parent;
           const alert = quoted ? null : alertMarkerAt(doc, node.from);
+          // The quote's own line class and its depth come from the rhythm pass above, which
+          // is the only place that can count the depth: this branch is entered once per
+          // nesting level and would apply the same class to the same line each time.
           for (let n = doc.lineAt(node.from).number; n <= doc.lineAt(node.to).number; n++) {
-            b.line(quoteLine, doc.line(n).from);
             if (alert) b.line(alertLine(alert.kind), doc.line(n).from);
           }
           if (alert && !lineActive(alert.from)) b.replace(alertLabel(alert), alert.from, alert.to);
           return;
         }
         if (name === 'QuoteMark') {
-          // Keep the `>` visible-but-dim on active lines so the quote rule persists.
-          if (lineActive(node.from)) b.mark(dimMark, node.from, node.to);
-          else b.replace(hide, node.from, node.to);
+          /*
+           * Hidden on every line, the caret's included, and that last part is the one exception
+           * to how every other marker in Sheaf behaves.
+           *
+           * It used to stay visible-but-dim on the caret's line, and the comment here said it
+           * was "so the quote rule persists", which was true when the rule was a `border-left`
+           * drawn on a line that had a `>` on it. The rule is a repeating gradient on the line
+           * itself now, one band per level, so it survives whether the marker is drawn or not:
+           * the reason for the exception expired and the exception outlived it.
+           *
+           * What it cost was a quote's words moving 14px right as the caret arrived and back as
+           * it left, because the drawn `> ` sat in front of words that already had the computed
+           * indent. A list item does not move when the caret lands on it, which was settled for
+           * the same reason, and this is that question with a smaller number.
+           *
+           * The line still reveals its other syntax. `**bold**` in a quote shows its asterisks
+           * on the caret's line exactly as it does anywhere else; it is only the `>` that stays
+           * away, because it is the only marker whose width the indent has already accounted for.
+           *
+           * The space after the marker goes with it. Hidden alone, the `>` left its space on the
+           * screen, one per level, so a three-level quote carried three stray spaces and each
+           * level landed about 4px off its stop instead of on it.
+           *
+           * The marker is hidden atomically and the space is not, which is a distinction that
+           * matters and cost a leak to find. `atomicRanges` is what the caret and a group delete
+           * step over, so widening the atomic range widens what `Alt-Backspace` takes: with the
+           * space inside it, deleting a word at the start of a quoted line removed the whole `> `
+           * and joined the line to the one above, which turned `> [!NOTE]` into an ordinary line
+           * and put `[!NOTE]` and a stray `>` on the screen. Hiding the space softly draws the
+           * same thing and leaves deletion where it was. `no-leak/alert/DeleteWordBackAlt` is the
+           * class that says so, and it is at zero.
+           */
+          /*
+           * One exception to the exception: an alert's own marker line.
+           *
+           * There the whole line is syntax. `> [!question]- Why this way?` has no prose on it
+           * whose position could shift, and it is the line a person edits to change a callout's
+           * type or its fold marker, so it shows byte for byte including the `>`. Hiding the
+           * marker there would leave somebody retyping a callout unable to see part of what they
+           * were retyping.
+           *
+           * Only the marker that opens the line, so a nested quote holding something that looks
+           * like a marker is not treated as one: an alert is top-level only, and `alertMarkerAt`
+           * reads from whatever position it is given.
+           */
+          const line = doc.lineAt(node.from);
+          if (lineActive(node.from) && node.from === line.from && alertMarkerAt(doc, node.from)) {
+            b.mark(dimMark, node.from, node.to);
+            return;
+          }
+          b.replace(hide, node.from, node.to);
+          b.softReplace(hide, node.to, markerEnd(doc, node.to));
           return;
         }
 
@@ -786,12 +1145,48 @@ function buildDecorations(view: EditorView): BuiltDecorations {
         if (name === 'ListMark') {
           const bulletChar = doc.sliceString(node.from, node.to).trim();
           const ordered = /\d/.test(bulletChar);
+          /*
+           * The whitespace this item is indented by, taken off the screen on every line,
+           * whether or not the caret is on it.
+           *
+           * The indent is a computed padding now, so drawn spaces would add their own width on
+           * top of it. Hiding them only when the line is rendered is what made an item jump as
+           * the caret arrived: the computed step is 32px and four drawn spaces are about 17px,
+           * so the two never cancelled and a fourth-level item moved 66px. Hidden on both, the
+           * line holds still, and the indent a reader sees is the designed one either way.
+           */
+          const line = doc.lineAt(node.from);
+          if (node.from > line.from) b.replace(hide, line.from, node.from);
+          /*
+           * On the caret's line the marker is drawn as itself, as every marker in Sheaf is, but
+           * in the same box the hidden form occupies. The box is what holds the words still:
+           * one step of advance whatever is in it, so `- `, `10. ` and `[x] ` all leave the
+           * text on the stop. Content wider than the box spills into the indent rather than
+           * pushing the words along, which is what `overflow: visible` on it is for.
+           */
           if (lineActive(node.from)) {
-            b.mark(dimMark, node.from, node.to);
+            b.mark(dimMarkBox, node.from, markerEnd(doc, node.to));
+            return;
+          }
+          // A task item's marker is its checkbox. The bullet was drawn as well, so the line
+          // carried two markers and its words started one marker box further in than every
+          // other item's.
+          //
+          // Read from the text rather than from the tree. `TaskMarker` is not this node's
+          // sibling: the task extension wraps the item's content in a node of its own and the
+          // marker sits inside that, so a sibling test finds nothing and quietly draws both
+          // markers. The text is the same question asked where the answer does not depend on
+          // which shape the parser chose.
+          const after = markerEnd(doc, node.to);
+          if (/^\[[ xX]\]/.test(doc.sliceString(after, after + 3))) {
+            b.replace(hide, node.from, after);
           } else if (!ordered) {
-            b.replace(Decoration.replace({ widget: new BulletWidget() }), node.from, node.to);
+            b.replace(Decoration.replace({ widget: new BulletWidget() }), node.from, markerEnd(doc, node.to));
           } else {
-            b.mark(bulletDim, node.from, node.to);
+            // The number stays the document's own text, boxed so that `9.` and `10.` end on
+            // the same period and start their words at the same place.
+            b.mark(orderedMark, node.from, node.to);
+            b.replace(hide, node.to, markerEnd(doc, node.to));
           }
           return;
         }
@@ -802,7 +1197,8 @@ function buildDecorations(view: EditorView): BuiltDecorations {
             b.replace(
               Decoration.replace({ widget: new CheckboxWidget(checked, statePos) }),
               node.from,
-              node.to
+              // With the space after it, as every other marker now takes its own.
+              markerEnd(doc, node.to)
             );
           }
           return;
@@ -827,8 +1223,9 @@ function buildDecorations(view: EditorView): BuiltDecorations {
               // From the backticks, not from the start of the line: a fence inside a
               // quote or a list item sits behind that block's own marker, and hiding
               // the marker with it would take the line out of the block it is in.
-              if (fence.lang) b.softReplace(Decoration.replace({ widget: new CodeLangWidget(fence.lang) }), fence.at, line.to);
-              else b.softReplace(hide, fence.at, line.to);
+              // Every fence line the same, labelled or not: see the note above CodeLangWidget's
+              // removal for why the language is no longer drawn here.
+              b.softReplace(hide, fence.at, line.to);
             } else {
               b.line(codeLine, line.from);
             }
@@ -851,6 +1248,10 @@ function buildDecorations(view: EditorView): BuiltDecorations {
           }
           return;
         }
+        // Anything else is walked into, which is what `undefined` says here. Only the
+        // image branch returns false, because it has replaced a whole range and nothing
+        // inside it may add a decoration of its own.
+        return undefined;
       },
     });
   }
@@ -906,8 +1307,8 @@ function definitionTarget(ref: SyntaxNode, state: EditorState): Definition {
 
 /**
  * Every `[label]: destination "title"` definition in the document, keyed by
- * normalized label. Footnote labels (`[^1]`) are left out: GFM footnotes are
- * not links, and Sheaf shows them as written.
+ * normalized label. Footnote labels (`[^1]`) are left out: a footnote is not a
+ * link, and footnotes.ts reads them as their own blocks.
  */
 function referenceDefinitions(state: EditorState): Map<string, Definition> {
   const tree = syntaxTree(state);
@@ -1127,6 +1528,75 @@ const blockMathField = StateField.define<BlockMathDecorations>({
   ],
 });
 
+// ---- Mermaid --------------------------------------------------------------
+//
+// A ```mermaid fence drawn as its diagram. A fence is several lines, so like
+// display maths it is a block decoration from a field. The drawing is in
+// mermaid.ts; this finds the fences and decides which are showing their source.
+
+/**
+ * The document's ```mermaid fences that are closed and hold something. A fence
+ * with no closer yet is someone typing one, and it stays as written rather than
+ * swallowing the rest of the document into a diagram. A fence inside a quote or
+ * a list stays as written too, as display maths does.
+ */
+export function mermaidRanges(state: EditorState): MermaidRange[] {
+  const doc = state.doc;
+  const found: MermaidRange[] = [];
+  syntaxTree(state).iterate({
+    enter: (node) => {
+      if (node.name !== 'FencedCode') return;
+      const open = doc.lineAt(node.from);
+      if (open.from !== node.from || openingFenceLang(open.text) !== 'mermaid') return false;
+      if (node.node.getChildren('CodeMark').length < 2) return false;
+      const close = doc.lineAt(Math.max(node.from, node.to - 1));
+      if (close.number <= open.number) return false;
+      const source = close.number - open.number > 1 ? doc.sliceString(doc.line(open.number + 1).from, doc.line(close.number - 1).to) : '';
+      if (source.trim() !== '') found.push({ from: open.from, to: close.to, source });
+      return false;
+    },
+  });
+  return found;
+}
+
+/** Block replace decorations for the document's ```mermaid diagrams. */
+function buildMermaidDecorations(state: EditorState): DecorationSet {
+  // In source mode the fences are what the reader asked to see.
+  if (sourceModeOn(state)) return Decoration.none;
+  const decos: Range<Decoration>[] = [];
+  const doc = state.doc;
+  const active = activeLineSet(state);
+  for (const block of mermaidRanges(state)) {
+    const first = doc.lineAt(block.from).number;
+    const last = doc.lineAt(block.to).number;
+    let shown = false;
+    for (let n = first; n <= last; n++) if (active.has(n)) shown = true;
+    if (!shown) decos.push(mermaidDiagram(block.source).range(block.from, block.to));
+  }
+  return Decoration.set(decos, true);
+}
+
+const mermaidField = StateField.define<BlockMathDecorations>({
+  create: (state) => ({ configVersion, decorations: buildMermaidDecorations(state) }),
+  update(value, tr) {
+    if (
+      tr.docChanged ||
+      tr.selection ||
+      tr.effects.some((e) => e.is(setReveal) || e.is(mermaidThemeChanged)) ||
+      value.configVersion !== configVersion ||
+      syntaxTree(tr.state) !== syntaxTree(tr.startState)
+    ) {
+      return { configVersion, decorations: buildMermaidDecorations(tr.state) };
+    }
+    return { configVersion: value.configVersion, decorations: value.decorations.map(tr.changes) };
+  },
+  provide: (f) => [
+    EditorView.decorations.from(f, (v) => v.decorations),
+    // Cursor motion glides over a drawn diagram as one unit.
+    EditorView.atomicRanges.of((view) => view.state.field(f).decorations),
+  ],
+});
+
 // ---- Plugin ---------------------------------------------------------------
 
 const livePreviewPlugin = ViewPlugin.fromClass(
@@ -1165,7 +1635,15 @@ const livePreviewPlugin = ViewPlugin.fromClass(
 
 /**
  * Live preview: inline decorations from the view plugin, plus the block
- * decorations that draw HTML image markup spanning several lines and the
- * `$$…$$` equations that do the same.
+ * decorations that draw HTML image markup spanning several lines, the `$$…$$`
+ * equations and the ```mermaid diagrams that do the same.
  */
-export const livePreview: Extension = [livePreviewPlugin, htmlImageField, blockMathField, imageSelection];
+export const livePreview: Extension = [
+  livePreviewPlugin,
+  htmlImageField,
+  blockMathField,
+  mermaidField,
+  mermaidThemeWatch,
+  imageSelection,
+  footnoteClicks,
+];

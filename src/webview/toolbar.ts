@@ -9,22 +9,29 @@
  * the buttons.
  */
 
-import { EditorSelection, EditorState, ChangeSpec, Extension, Line, SelectionRange, StateEffect, StateField } from '@codemirror/state';
+import { EditorSelection, EditorState, ChangeSpec, Line } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
 import { syntaxTree } from '@codemirror/language';
 import { undo, redo, undoDepth, redoDepth, insertNewlineAndIndent } from '@codemirror/commands';
 import { insertNewlineContinueMarkup } from '@codemirror/lang-markdown';
 import { formatStateAt, FormatState } from './formatState';
-import { hint } from './shortcuts';
+import { drawKeyHint, hint } from './shortcuts';
 import { insertPipeTable, insertCsvTable } from './tables';
+import { inlineOnlyEditor } from './cellEditor';
+import { alertMarkerOnText } from './alerts';
+import { breakOnAlertMarker } from './typedIntoChrome';
 import { pickImage } from './images';
-import { inlineLinkAt } from './floatingState';
-import { removeLink } from './linkPopover';
+import { inlineLinkAt, inlineLinksIn, InlineLink } from './floatingState';
+import { editLinkInPopover, openNewLinkPopover, removeLinks } from './linkPopover';
+import { linkAddressAt, openLink } from './linkTarget';
+import { pendingMarksField, setPendingMarks } from './pendingMarks';
+import { lineTextStart } from './lineStart';
+import { splitKeepingRuns } from './invisibleEdges';
 
 type TreeNode = ReturnType<ReturnType<typeof syntaxTree>['resolveInner']>;
 
 /** The syntax node each inline marker produces. */
-const MARK_NODE: Record<string, string> = {
+export const MARK_NODE: Record<string, string> = {
   '**': 'StrongEmphasis',
   '*': 'Emphasis',
   '~~': 'Strikethrough',
@@ -97,33 +104,6 @@ function textSpans(state: EditorState, from: number, to: number): { from: number
   return spans;
 }
 
-/** Bold, italic and the other marks pressed with a bare caret outside any word, waiting for the next typed text. */
-const setPendingMarks = StateEffect.define<{ pos: number; marks: string[] } | null>();
-const pendingMarksField = StateField.define<{ pos: number; marks: string[] } | null>({
-  create: () => null,
-  update(value, tr) {
-    for (const e of tr.effects) if (e.is(setPendingMarks)) return e.value;
-    return value && (tr.docChanged || tr.selection) ? null : value;
-  },
-});
-
-/** Wraps the text typed at a caret with pending marks in those marks, so a mark pressed in empty space writes nothing until there is text. */
-export const pendingMarks: Extension = [
-  pendingMarksField,
-  EditorView.inputHandler.of((view, from, to, text) => {
-    const pending = view.state.field(pendingMarksField, false);
-    if (!pending || from !== pending.pos || to !== pending.pos || view.composing) return false;
-    const open = pending.marks.join('');
-    const close = [...pending.marks].reverse().join('');
-    view.dispatch({
-      changes: { from, insert: open + text + close },
-      selection: { anchor: from + open.length + text.length },
-      userEvent: 'input.type',
-    });
-    return true;
-  }),
-];
-
 /**
  * Toggle an inline mark (**, *, ~~, ==, `) on each selection range, reading the
  * syntax tree rather than the characters beside the selection:
@@ -139,6 +119,9 @@ export function toggleWrap(view: EditorView, mark: string): boolean {
   const { state } = view;
   const name = MARK_NODE[mark];
   const tree = syntaxTree(state);
+  // Nothing to write here: the delimiters would be text rather than formatting.
+  // The mark's own construct is exempt, because that is what turning it off means.
+  if (state.selection.ranges.some((r) => marksAreLiteral(state, r.from, r.to, name))) return false;
   let pendingAt: number | null = null;
 
   const markAround = (from: number, to: number, strict: boolean): TreeNode | null => {
@@ -301,6 +284,96 @@ function parseListLine(text: string): { lead: string; kind: 'bullet' | 'ordered'
   if (bullet && m[5] !== undefined) return { lead, kind: 'task', marker, rest: text.slice(whole.length) };
   return { lead, kind: bullet ? 'bullet' : 'ordered', marker, rest: text.slice(lead.length + marker.length) };
 }
+/**
+ * Constructs whose contents are read as characters rather than as prose, so a
+ * `**` written inside one is two asterisks and stays on the screen.
+ *
+ * A code span and a fenced block are the obvious ones. The other three are less
+ * obvious and were each found by writing a command's output back out and
+ * reading it: an autolink's `<http://example.test>` stops being a link the
+ * moment anything is put inside it, and shows its angle brackets; the address
+ * half of a `[text](address)` is not prose either, though the text half is and
+ * bolding that is an ordinary thing to want; and a footnote reference took the
+ * marks inside its brackets and drew `[^**1**]`.
+ */
+const LITERAL_NODES = new Set(['InlineCode', 'FencedCode', 'CodeBlock', 'Autolink', 'URL', 'FootnoteReference']);
+
+/**
+ * Whether an inline mark written over `from`..`to` would come out as text.
+ *
+ * Asked of the whole range rather than of one end, because a selection can start
+ * in prose and finish inside a code span, and wrapping that writes a `**` the
+ * reader can see at whichever end landed in the code.
+ *
+ * A collapsed caret exactly on the boundary of one of these is not inside it:
+ * the caret against the backtick of a code span is in the paragraph, and arming
+ * bold there is a reasonable thing to do.
+ *
+ * `except` names the one construct that does not count, which is the construct
+ * the command is toggling. Inline code is the case: being inside a code span is
+ * exactly the position from which a person turns the code span off, and reading
+ * it as a literal context refused the command that was meant to remove it.
+ */
+/**
+ * Whether the mark `mark` can be written over the current selection, which is
+ * what the toolbar button and the menu item both ask before drawing themselves.
+ */
+/**
+ * Whether a block command can act on this editor at all.
+ *
+ * False in a table cell, whose document is one cell's inline content: a heading, a list, a
+ * quote, a fence or a divider has no meaning there, and running one wrote its marker into the
+ * cell's value, so Quote turned `needs review` into `> needs review`. The control is drawn
+ * unavailable instead, which is what the rest of the toolbar already does with a mark that
+ * cannot apply.
+ */
+export function blocksApply(view: EditorView): boolean {
+  return !view.state.facet(inlineOnlyEditor);
+}
+
+export function marksApply(view: EditorView, mark: string): boolean {
+  const { state } = view;
+  return !state.selection.ranges.some((r) => marksAreLiteral(state, r.from, r.to, MARK_NODE[mark]));
+}
+
+export function marksAreLiteral(state: EditorState, from: number, to: number, except?: string): boolean {
+  let literal = false;
+  syntaxTree(state).iterate({
+    from,
+    to,
+    enter: (node) => {
+      if (literal) return false;
+      if (node.name === except) return undefined;
+      if (!LITERAL_NODES.has(node.name)) return undefined;
+      // Touching from outside does not count; overlapping the inside does.
+      if (node.to <= from || node.from >= to) return undefined;
+      if (from === to && (from === node.from || from === node.to)) return undefined;
+      literal = true;
+      return false;
+    },
+  });
+  return literal;
+}
+
+/**
+ * The text of a line that is about to become a list item, with any heading
+ * marker taken off it.
+ *
+ * `- ## Heading` is valid Markdown and it is not what "make this a bullet"
+ * means: it is a list item holding a heading, which is a different thing from a
+ * list item, and it is what all three list commands used to write. Two of them
+ * hid it, because a heading nested in a bullet draws with its hashes hidden and
+ * the line looked right while the file said otherwise. The task list drew
+ * `[ ] ## Heading` and gave the game away.
+ *
+ * Quote does not do this and should not: a quoted heading is an ordinary thing
+ * to want, the quote wraps the block rather than replacing it, and Quote's own
+ * comment says it keeps the heading deliberately.
+ */
+function unheaded(rest: string): string {
+  return rest.replace(HEADING_RE, '');
+}
+
 /** One level of quote marker at the start of a line, after any indentation, with or without a space after it. */
 const QUOTE_RE = /^([ \t]*)>[ \t]?/;
 
@@ -366,11 +439,61 @@ function markableLines(state: EditorState): Line[] {
  * heading (its text changes, or `drop` says so) the underline line goes too, so
  * it is not left behind as a stray paragraph.
  */
-function writeLines(view: EditorView, edits: { line: Line; text: string; drop?: boolean }[]): boolean {
+/** One line's new text, as `writeLines` takes it. */
+type LineEdit = { line: Line; text: string; drop?: boolean; remove?: boolean };
+
+/**
+ * What a block command does to an alert's marker line, or null when the line is not one.
+ *
+ * **An alert's marker line is chrome.** `> [!NOTE]` has no text of its own on screen: what is
+ * drawn there is a label, the way a code fence draws its language and a horizontal rule draws a
+ * line. So a block command takes that line with the quote rather than leaving `[!NOTE]` behind
+ * as literal characters, which is not what any of these commands mean and is what a person saw:
+ * pressing Bullet list on a callout wrote `- [!NOTE]` and the label became text.
+ *
+ * A title is the exception, because it is the only part of that line that was ever the person's:
+ * the label drawn in its place is the title when there is one and the type's name when there is
+ * not. So a titled callout keeps its title and an untitled one loses the line. This is the rule
+ * `blockModel.ts` already applies when it reads a block's text, quoted rather than reinvented,
+ * because the two must not disagree about what a callout turns into.
+ *
+ * **One function because there have been three paths and each was found separately.** The
+ * rhythm lane fixed `blockModel`, which did not move a single cell of the measurement, because
+ * the block commands go through `turnInto`. Fixing `turnInto` cleared nineteen classes and left
+ * four, because Bullet list, Numbered list, Task list and Quote are toggles that mark lines
+ * themselves and never reach it. A fifth path would have been a fourth discovery. Now there is
+ * one predicate and five callers.
+ *
+ * `keepQuote` is false only for Plain text, which is the one command whose whole purpose is to
+ * take the quote off as well.
+ */
+function alertChromeEdit(line: Line, keepQuote: boolean): LineEdit | null {
+  const m = BLOCK_PREFIX_RE.exec(line.text)!;
+  const [, indent, quotes] = m;
+  const alert = alertMarkerOnText(line.text.slice(m[0].length));
+  if (!alert) return null;
+  if (!alert.title) return { line, text: line.text, remove: true };
+  return { line, text: keepQuote ? `${indent}${quotes}${alert.title}` : alert.title, drop: true };
+}
+
+function writeLines(view: EditorView, edits: { line: Line; text: string; drop?: boolean; remove?: boolean }[]): boolean {
   const setext = setextHeadings(view.state);
   const dropped = new Set<number>();
   const changes: ChangeSpec[] = [];
-  for (const { line, text, drop } of edits) {
+  for (const { line, text, drop, remove } of edits) {
+    if (remove) {
+      /*
+       * The line goes entirely, and its *own* newline with it, so what followed moves up into
+       * its place. Taking the newline before it instead joins it to whatever is above, which on
+       * an alert's marker line is the blank line separating the callout from the previous block:
+       * the callout ran into that block and a `# ` was left behind on a line of its own, drawing
+       * as empty. Only on the last line of the document is there no newline of its own to take,
+       * and there the one before it is the right one.
+       */
+      const last = line.to >= view.state.doc.length;
+      changes.push(last ? { from: Math.max(0, line.from - 1), to: line.to } : { from: line.from, to: line.to + 1 });
+      continue;
+    }
     if (text !== line.text) changes.push({ from: line.from, to: line.to, insert: text });
     const underline = setext.get(line.number)?.underline;
     if (underline && (drop ?? text !== line.text) && !dropped.has(underline.number)) {
@@ -427,11 +550,13 @@ export function toggleBullet(view: EditorView): boolean {
   return writeLines(
     view,
     lines.map((line, i) => {
+      const chrome = alertChromeEdit(line, true);
+      if (chrome) return chrome;
       const p = parsed[i];
       if (all) return { line, text: p.lead + p.rest };
       if (p.kind === 'bullet') return { line, text: line.text };
       if (p.kind === 'task') return { line, text: p.lead + p.marker + p.rest };
-      return { line, text: p.lead + '- ' + p.rest };
+      return { line, text: p.lead + '- ' + unheaded(p.rest) };
     })
   );
 }
@@ -450,6 +575,8 @@ export function toggleOrdered(view: EditorView): boolean {
   return writeLines(
     view,
     lines.map((line, i) => {
+      const chrome = alertChromeEdit(line, true);
+      if (chrome) return chrome;
       const p = parsed[i];
       if (all) return { line, text: p.lead + p.rest };
       const depth = p.lead.length;
@@ -457,7 +584,7 @@ export function toggleOrdered(view: EditorView): boolean {
       for (const d of [...counts.keys()]) if (d > depth) counts.delete(d);
       const n = (counts.get(depth) ?? 0) + 1;
       counts.set(depth, n);
-      return { line, text: `${p.lead}${n}. ${p.rest}` };
+      return { line, text: `${p.lead}${n}. ${unheaded(p.rest)}` };
     })
   );
 }
@@ -486,7 +613,20 @@ export function toggleQuote(view: EditorView): boolean {
   if (allQuoted) {
     for (const line of quotedUnmarkableLines(state)) byNumber.set(line.number, line);
     const all = [...byNumber.values()].sort((a, b) => a.number - b.number);
-    return writeLines(view, all.map((line) => ({ line, text: line.text.replace(QUOTE_RE, '$1'), drop: false })));
+    /*
+     * Taking the quote off a callout takes its marker line with it, because the quote is what
+     * made that line a marker: `[!NOTE]` outside a blockquote is not an alert in any renderer,
+     * so un-quoting one and leaving the text behind writes a line that means nothing and draws
+     * as the characters it is. `keepQuote` is false here for that reason and only here.
+     *
+     * Only this branch. Adding a level of quoting instead gives `> > [!NOTE]`, which is a
+     * nested quote holding literal text — on GitHub as well, whose alerts are only read at a
+     * blockquote's top level. Drawing it as text there is the file being shown as it is.
+     */
+    return writeLines(
+      view,
+      all.map((line) => alertChromeEdit(line, false) ?? { line, text: line.text.replace(QUOTE_RE, '$1'), drop: false })
+    );
   }
   const edits = lines.map((line) => ({ line, text: QUOTE_RE.test(line.text) ? line.text : '> ' + line.text, drop: false }));
   const selected = (n: number): boolean =>
@@ -514,13 +654,26 @@ export function toggleTask(view: EditorView): boolean {
   return writeLines(
     view,
     lines.map((line, i) => {
+      const chrome = alertChromeEdit(line, true);
+      if (chrome) return chrome;
       const p = parsed[i];
       if (allTasks) return { line, text: p.lead + p.rest };
       if (p.kind === 'task') return { line, text: line.text };
-      if (p.kind === 'bullet') return { line, text: p.lead + p.marker + '[ ] ' + p.rest };
-      return { line, text: p.lead + '- [ ] ' + p.rest };
+      if (p.kind === 'bullet') return { line, text: p.lead + p.marker + '[ ] ' + unheaded(p.rest) };
+      return { line, text: p.lead + '- [ ] ' + unheaded(p.rest) };
     })
   );
+}
+
+/** The innermost node at `pos`, looked for on the left and then on the right. */
+function fencedCodeAt(state: EditorState, pos: number): { name: string; from: number; to: number; parent: unknown } | null {
+  const tree = syntaxTree(state);
+  for (const side of [-1, 1] as const) {
+    for (let node = tree.resolveInner(pos, side) as { name: string; from: number; to: number; parent: unknown } | null; node; node = node.parent as typeof node) {
+      if (node.name === 'FencedCode') return node;
+    }
+  }
+  return null;
 }
 
 /**
@@ -531,7 +684,16 @@ export function toggleTask(view: EditorView): boolean {
 export function toggleCodeBlock(view: EditorView): boolean {
   const { state } = view;
   const sel = state.selection.main;
-  for (let node = syntaxTree(state).resolveInner(sel.head, -1) as { name: string; from: number; to: number; parent: unknown } | null; node; node = node.parent as typeof node) {
+  /*
+   * Looked for on both sides of the caret. Resolving to the left alone missed
+   * the block whenever the caret sat at the very start of the opening fence,
+   * because there the position is the node's own boundary and the thing to its
+   * left is whatever comes before the block. The command then read the caret as
+   * being outside any fence and wrapped the block in a second one, giving a
+   * ```` fence around a ``` fence, which is not Markdown anybody can read.
+   */
+  const inside = fencedCodeAt(state, sel.head);
+  for (let node = inside as { name: string; from: number; to: number; parent: unknown } | null; node; node = node.parent as typeof node) {
     if (node.name !== 'FencedCode') continue;
     const open = state.doc.lineAt(node.from);
     const close = state.doc.lineAt(node.to);
@@ -659,15 +821,56 @@ export function clearFormatting(view: EditorView): boolean {
 /**
  * Break the line without starting a new paragraph or list item: a backslash hard
  * break, with the new line indented to the list item's text or prefixed like the
- * quote it is in. In a code block this is a plain newline. A heading cannot hold
- * a line break, so there it does what Enter does.
+ * quote it is in. In a code block this is a plain newline.
+ *
+ * **Shift+Enter never breaks a heading.** Markdown's ATX heading is one line by
+ * definition, so there is no spelling for a line break inside one: a trailing `\`
+ * there is literal text. That is a real constraint rather than something Sheaf has
+ * not got around to, which is worth saying because the obvious alternatives keep
+ * being proposed. A document app keeps one heading across two visual lines because
+ * its heading is a styled block that can hold a break; Markdown's cannot.
+ *
+ * So, in a heading:
+ *
+ *   caret with text after it    nothing happens
+ *   caret at the end            what Enter does, which starts the next block
+ *
+ * Splitting it was what happened before, and it turned half a heading into body
+ * text. Making the halves two headings instead would be worse: Sheaf draws a
+ * heading rail beside the text, so a cosmetic keystroke would visibly restructure
+ * the document a panel away within the same second, and `## section` in lower case
+ * is nonsense to everything that reads the file.
+ *
+ * The refusal is not a dead key. The person presses it watching for the line to
+ * break and watches it not break, so the absence explains itself, which is the
+ * difference between this and a setting whose effect was invisible to begin with.
+ * Tab already declines the same way on a paragraph or a heading, for the same
+ * reason: the alternative writes something wrong into the file.
  */
 export function insertHardBreak(view: EditorView): boolean {
   const { state } = view;
   const inHeading = (pos: number): boolean => !!formatStateAt(state, pos).heading;
   if (state.selection.ranges.every((range) => inHeading(range.head))) {
+    // Only at the end, where starting the next block is the one remaining reading of
+    // the gesture. Anywhere else the key is taken and does nothing, because every way
+    // of honouring it damages the heading.
+    const atEnd = state.selection.ranges.every((range) => range.empty && range.head === state.doc.lineAt(range.head).to);
+    if (!atEnd) return true;
     return insertNewlineContinueMarkup(view) || insertNewlineAndIndent(view);
   }
+  /*
+   * A hard break is still a break, so it owes a formatted run the same care Enter
+   * does: it cannot land between a run's delimiters without ending the run, and at
+   * a link's `](` join it cannot land at all. That logic is written once, for
+   * Enter, and this defers to it rather than keeping a second copy that would
+   * drift. False from it means the caret is nowhere special, and the backslash
+   * below is the right answer.
+   */
+  // A callout's marker line is chrome, and a backslash written into `[!NOTE]` takes it apart
+  // exactly as a typed character does. Asked before the run logic for the same reason it is
+  // asked before it on Enter.
+  if (breakOnAlertMarker(view)) return true;
+  if (splitKeepingRuns(view)) return true;
   view.dispatch(
     state.changeByRange((range) => {
       if (formatStateAt(state, range.head).codeBlock || inHeading(range.head)) {
@@ -676,7 +879,33 @@ export function insertHardBreak(view: EditorView): boolean {
       const line = state.doc.lineAt(range.from);
       const m = /^(\s*(?:>\s?)*)((?:[-*+]|\d+[.)])\s+(?:\[[ xX]\]\s+)?)?/.exec(line.text)!;
       const cont = (m[1] ?? '') + ' '.repeat((m[2] ?? '').length);
-      const insert = '\\\n' + cont;
+      /*
+       * A hard break breaks something, so it needs text in front of it on the line. At
+       * the very start of a paragraph there is none, and the backslash was written
+       * anyway: it landed on a line of its own, where it draws as nothing and reads as
+       * a blank line nobody can account for, and the next thing typed there went in
+       * front of it. What the person asked for at that position is a line break, and a
+       * plain newline is one.
+       */
+      const textStart = lineTextStart(state, range.from);
+      /*
+       * On a *marked* line the same reasoning applies and neither answer fits. A plain
+       * newline leaves the marker alone on the line above and the words below it with
+       * none, so a bullet becomes an empty bullet followed by a paragraph. The backslash
+       * leaves a line holding `- [ ] ` or `> `, which draws as nothing at all. So the key
+       * writes nothing here, which is what it already does in a heading anywhere a break
+       * cannot go: where no answer honours the gesture, the honest one is to leave the
+       * document alone rather than pick the least bad edit.
+       *
+       * Measured to the start of the line's text rather than to column 0, because the
+       * text start is the first position a person can see the caret in on a marked line,
+       * and the marker-only line is reachable from every position in front of it.
+       * `lineTextStart` answers `line.from` inside code and in source mode, so a fence
+       * and a revealed block keep the backslash, where the marker is the content.
+       */
+      if (textStart > line.from && range.from <= textStart) return { range };
+      const noTextBefore = range.from === line.from && textStart === line.from;
+      const insert = noTextBefore ? '\n' : '\\\n' + cont;
       return { changes: { from: range.from, to: range.to, insert }, range: EditorSelection.cursor(range.from + insert.length) };
     }),
     state.update({ scrollIntoView: true })
@@ -685,53 +914,72 @@ export function insertHardBreak(view: EditorView): boolean {
 }
 
 /**
- * Insert a `[text](url)` scaffold, selecting `url` for immediate typing, or
- * remove the link when the selection starts inside one, so a link is never
- * written inside another. A link cannot cross a block, so a selection over
- * several lines is linked per paragraph or heading, with every `url` selected so
- * one address fills them all; a selection over lines with no text is left
- * alone. A range in a code block is left alone.
+ * Ask for a link: open the popover over the link the selection is already in, or over the
+ * words it is about to wrap.
+ *
+ * Nothing is written to the document here. It used to write `[text](url)` with `url`
+ * selected, which put raw brackets and a placeholder on the screen in an editor whose whole
+ * argument is that they are not, and left `[text](url)` in the file for anybody who clicked
+ * away instead of typing. The address now arrives from the popover, and the markup is written
+ * once, when there is an address to write.
+ *
+ * A link cannot cross a block, so a selection over several lines takes one span per paragraph
+ * or heading and the one address fills them all. A selection over lines with no text, and a
+ * range in a code block, are left alone.
  */
 export function insertLink(view: EditorView): boolean {
   const { state } = view;
   const sel = state.selection.main;
   const link = inlineLinkAt(state, Math.min(sel.from + 1, sel.to));
   if (link) {
-    removeLink(view, link);
+    editLinkInPopover(view, link, 'url');
+    return true;
+  }
+  const spans: { from: number; to: number }[] = [];
+  for (const range of state.selection.ranges) {
+    if (formatStateAt(state, range.from).codeBlock || formatStateAt(state, range.to).codeBlock) continue;
+    if (range.empty) spans.push({ from: range.head, to: range.head });
+    else if (state.doc.lineAt(range.from).number !== state.doc.lineAt(range.to).number) spans.push(...textSpans(state, range.from, range.to));
+    else spans.push({ from: range.from, to: range.to });
+  }
+  if (!spans.length) {
     view.focus();
     return true;
   }
-  const changes: ChangeSpec[] = [];
-  // Each written link by where it ends in the current document, or a range kept as it is; in selection order.
-  const out: ({ end: number } | { keep: SelectionRange })[] = [];
-  let mainAt = 0;
-  state.selection.ranges.forEach((range, i) => {
-    if (i === state.selection.mainIndex) mainAt = out.length;
-    if (formatStateAt(state, range.from).codeBlock || formatStateAt(state, range.to).codeBlock) {
-      out.push({ keep: range });
-      return;
-    }
-    if (state.doc.lineAt(range.from).number !== state.doc.lineAt(range.to).number) {
-      const spans = textSpans(state, range.from, range.to);
-      if (!spans.length) out.push({ keep: range });
-      for (const span of spans) {
-        changes.push({ from: span.from, insert: '[' }, { from: span.to, insert: '](url)' });
-        out.push({ end: span.to });
-      }
-      return;
-    }
-    const text = state.doc.sliceString(range.from, range.to) || 'text';
-    changes.push({ from: range.from, to: range.to, insert: `[${text}](url)` });
-    out.push({ end: range.to });
-  });
-  const set = state.changes(changes);
-  const ranges = out.map((o) => {
-    if ('keep' in o) return o.keep.map(set);
-    const after = set.mapPos(o.end, 1); // past "](url)"
-    return EditorSelection.range(after - 4, after - 1);
-  });
-  if (!set.empty) view.dispatch({ changes: set, selection: EditorSelection.create(ranges, mainAt) });
+  // A bare caret has no words yet, so the words are what it asks for first; a selection has
+  // them already and the address is the one thing missing.
+  openNewLinkPopover(view, spans, spans.length === 1 && spans[0].from === spans[0].to ? 'text' : 'url');
+  return true;
+}
+
+/**
+ * Cmd+Shift+K: take the syntax off the link under the caret, or off every link the
+ * selection reaches into, keeping the words. One undo step however many links there are.
+ *
+ * The key is consumed even when there is no link, because `Shift-Mod-k` is Delete Line
+ * in CodeMirror's default keymap and Delete Line in VS Code as well. A miss that fell
+ * through would take the line out of the document, which is the one outcome nobody
+ * pressing an unlink shortcut is ready for. Taking the key means Delete Line is no
+ * longer on it; it was never a shortcut Sheaf listed or documented.
+ */
+export function removeLinkAtSelection(view: EditorView): boolean {
+  const { state } = view;
+  const sel = state.selection.main;
+  const links = sel.empty ? [inlineLinkAt(state, sel.head)].filter((l): l is InlineLink => l !== null) : inlineLinksIn(state, sel.from, sel.to);
+  removeLinks(view, links);
   view.focus();
+  return true;
+}
+
+/**
+ * Cmd+Enter: open the link under the caret, through the same opener as Cmd-click, so a
+ * relative `.md` address opens in Sheaf and everything else goes to the browser. An
+ * autolink, a bare URL and a reference link all count, since all three are links a
+ * reader would click.
+ */
+export function openLinkAtCaret(view: EditorView): boolean {
+  const address = linkAddressAt(view.state, view.state.selection.main.head);
+  if (address) openLink(address);
   return true;
 }
 
@@ -844,6 +1092,11 @@ export function turnInto(view: EditorView, kind: BlockKind): boolean {
       // A heading's level, whether written with `#` or underlined with `===` or `---`.
       const level = setext.get(line.number)?.level ?? (heading ? heading.trim().length : 0);
       const to = (next: string, drop?: boolean): { line: Line; text: string; drop?: boolean } => ({ line, text: next, drop });
+      // An alert's marker line is chrome; `alertChromeEdit` carries the rule and the reasoning,
+      // and every path that marks lines asks it rather than keeping a copy. Plain text is the one
+      // command that takes the quote off too, so it is the one that does not keep it.
+      const chrome = alertChromeEdit(line, kind !== 'text');
+      if (chrome) return chrome;
       switch (kind) {
         case 'text':
           return to(body, true);
@@ -975,6 +1228,8 @@ type Item =
       options: DropdownOption[];
       /** A text label for the trigger that follows the selection, in place of the icon. */
       label?: (fs: FormatState) => string;
+      /** Whether the menu can act at all. Every option of a disabled dropdown is unreachable. */
+      enabled?: (view: EditorView) => boolean;
     }
   | { kind: 'sep' };
 
@@ -987,6 +1242,8 @@ const ITEMS: Item[] = [
     command: 'heading',
     icon: 'plus',
     title: 'Text style',
+    // Every option is a block kind, so the whole menu goes in a cell rather than each item.
+    enabled: blocksApply,
     label: (fs) => (fs.heading ? `H${fs.heading}` : 'Text'),
     // Six levels, because Markdown has six. The last three carry no shortcut: the
     // run of Mod-Alt digits ends at Task list, and a chord invented for a level
@@ -1003,25 +1260,36 @@ const ITEMS: Item[] = [
     ],
   },
   { kind: 'sep' },
-  { kind: 'button', command: 'bold', icon: 'bold', label: 'Bold', hintKey: 'Mod-b', run: (v) => toggleWrap(v, '**'), active: (fs) => fs.bold },
-  { kind: 'button', command: 'italic', icon: 'italic', label: 'Italic', hintKey: 'Mod-i', run: (v) => toggleWrap(v, '*'), active: (fs) => fs.italic },
-  { kind: 'button', command: 'strike', icon: 'strike', label: 'Strikethrough', hintKey: 'Mod-Shift-x', run: (v) => toggleWrap(v, '~~'), active: (fs) => fs.strike },
-  { kind: 'button', command: 'highlight', icon: 'highlight', label: 'Highlight', hintKey: 'Mod-Shift-h', run: (v) => toggleWrap(v, '=='), active: (fs) => fs.highlight },
-  { kind: 'button', command: 'code', icon: 'code', label: 'Inline code', hintKey: 'Mod-e', run: (v) => toggleWrap(v, '`'), active: (fs) => fs.code },
+  /*
+   * The marks are unavailable where their delimiters would be text rather than
+   * formatting: inside a code span, an autolink, a link's address or a footnote
+   * reference. `toggleWrap` refuses there, and a control that can be pressed and
+   * does nothing is its own defect, so the button says so first. Each mark asks
+   * about its own construct, which is what keeps Inline code available inside a
+   * code span, where it is used to turn one off.
+   */
+  { kind: 'button', command: 'bold', icon: 'bold', label: 'Bold', hintKey: 'Mod-b', run: (v) => toggleWrap(v, '**'), active: (fs) => fs.bold, enabled: (v) => marksApply(v, '**') },
+  { kind: 'button', command: 'italic', icon: 'italic', label: 'Italic', hintKey: 'Mod-i', run: (v) => toggleWrap(v, '*'), active: (fs) => fs.italic, enabled: (v) => marksApply(v, '*') },
+  { kind: 'button', command: 'strike', icon: 'strike', label: 'Strikethrough', hintKey: 'Mod-Shift-x', run: (v) => toggleWrap(v, '~~'), active: (fs) => fs.strike, enabled: (v) => marksApply(v, '~~') },
+  { kind: 'button', command: 'highlight', icon: 'highlight', label: 'Highlight', hintKey: 'Mod-Shift-h', run: (v) => toggleWrap(v, '=='), active: (fs) => fs.highlight, enabled: (v) => marksApply(v, '==') },
+  { kind: 'button', command: 'code', icon: 'code', label: 'Inline code', hintKey: 'Mod-e', run: (v) => toggleWrap(v, '`'), active: (fs) => fs.code, enabled: (v) => marksApply(v, '`') },
   { kind: 'button', command: 'link', icon: 'link', label: 'Link', hintKey: 'Mod-k', run: insertLink, active: (fs) => fs.link },
   { kind: 'button', command: 'clearFormatting', icon: 'clearFormatting', label: 'Clear formatting', run: clearFormatting },
   { kind: 'sep' },
-  { kind: 'button', command: 'bullet', icon: 'list', label: 'Bullet list', hintKey: 'Mod-Shift-8', run: toggleBullet, active: (fs) => fs.list === 'bullet' },
-  { kind: 'button', command: 'ordered', icon: 'listOrdered', label: 'Numbered list', hintKey: 'Mod-Shift-7', run: toggleOrdered, active: (fs) => fs.list === 'ordered' },
-  { kind: 'button', command: 'task', icon: 'task', label: 'Task list', hintKey: 'Mod-Alt-4', run: toggleTask, active: (fs) => fs.list === 'task' },
-  { kind: 'button', command: 'quote', icon: 'quote', label: 'Quote', hintKey: 'Mod-Shift-9', run: toggleQuote, active: (fs) => fs.quote },
-  { kind: 'button', command: 'codeBlock', icon: 'codeBlock', label: 'Code block', hintKey: 'Mod-Alt-8', run: toggleCodeBlock, active: (fs) => fs.codeBlock },
+  { kind: 'button', command: 'bullet', icon: 'list', label: 'Bullet list', hintKey: 'Mod-Shift-8', run: toggleBullet, active: (fs) => fs.list === 'bullet', enabled: blocksApply },
+  { kind: 'button', command: 'ordered', icon: 'listOrdered', label: 'Numbered list', hintKey: 'Mod-Shift-7', run: toggleOrdered, active: (fs) => fs.list === 'ordered', enabled: blocksApply },
+  { kind: 'button', command: 'task', icon: 'task', label: 'Task list', hintKey: 'Mod-Alt-4', run: toggleTask, active: (fs) => fs.list === 'task', enabled: blocksApply },
+  { kind: 'button', command: 'quote', icon: 'quote', label: 'Quote', hintKey: 'Mod-Shift-9', run: toggleQuote, active: (fs) => fs.quote, enabled: blocksApply },
+  { kind: 'button', command: 'codeBlock', icon: 'codeBlock', label: 'Code block', hintKey: 'Mod-Alt-8', run: toggleCodeBlock, active: (fs) => fs.codeBlock, enabled: blocksApply },
   { kind: 'sep' },
   {
     kind: 'dropdown',
     command: 'insert',
     icon: 'plus',
     title: 'Insert',
+    // A table, a CSV table, a fence, a divider and an image are all blocks, so this goes whole
+    // in a cell too. Nothing here is an inline insertion; Link is a button of its own.
+    enabled: blocksApply,
     options: [
       { label: 'Markdown table', run: insertPipeTable },
       { label: 'CSV data table', run: insertCsvTable },
@@ -1035,10 +1303,29 @@ const ITEMS: Item[] = [
 /** A control that follows the selection, registered when the toolbar mounts. */
 type Reflect = (view: EditorView, fs: FormatState) => void;
 let reflectors: Reflect[] = [];
+/*
+ * Every control that can be drawn unavailable, for the case where there is no editor to ask at
+ * all. Collected as the toolbar is built, because a reflector takes a view and so has nothing to
+ * say when there is not one.
+ */
+let disablable: (HTMLButtonElement | HTMLInputElement)[] = [];
 
 /** Reflect the formatting at the selection in the toolbar's buttons. */
-export function refreshToolbar(view: EditorView): void {
+/**
+ * Bring every control up to date against the editor the toolbar is acting on.
+ *
+ * `undefined` means there is no such editor, which happens while a CSV or TSV cell has focus: a
+ * data field is a plain text box holding data rather than Markdown, so there is nothing Bold
+ * could be applied to. Everything is drawn unavailable, rather than left looking live from the
+ * last refresh while every press does nothing, which is the same "it looks available and it is
+ * not" this whole area was wrong about.
+ */
+export function refreshToolbar(view: EditorView | undefined): void {
   if (!reflectors.length) return;
+  if (!view) {
+    for (const el of disablable) el.disabled = true;
+    return;
+  }
   const fs = formatStateAt(view.state);
   for (const reflect of reflectors) reflect(view, fs);
 }
@@ -1062,6 +1349,8 @@ function makeButton(icon: IconName, title: string, extraClass = ''): HTMLButtonE
 function makeDropdown(item: Extract<Item, { kind: 'dropdown' }>, getView: () => EditorView | undefined): HTMLElement {
   const wrap = document.createElement('div');
   wrap.className = 'sheaf-tb-dropdown';
+  const canAct = item.enabled;
+  // Registered below once the trigger exists, so a run with no editor can draw it unavailable.
 
   const trigger = document.createElement('button');
   trigger.type = 'button';
@@ -1118,6 +1407,18 @@ function makeDropdown(item: Extract<Item, { kind: 'dropdown' }>, getView: () => 
     if (focusFirst) entries()[0]?.focus();
     else menu.focus({ preventScroll: true });
   };
+  disablable.push(trigger);
+  if (canAct) {
+    /*
+     * Asked once now rather than assumed available until the next refresh, for the reason the
+     * buttons carry: a control whose usual answer is "yes" would otherwise be drawn wrong on
+     * first paint. `disabled` on the trigger is enough, because a menu that cannot be opened
+     * has no reachable options.
+     */
+    const view = getView();
+    trigger.disabled = view ? !canAct(view) : true;
+    reflectors.push((v) => void (trigger.disabled = !canAct(v)));
+  }
   trigger.addEventListener('click', (e) => (menu.hidden ? open(e.detail === 0) : close(menu.contains(document.activeElement))));
   trigger.addEventListener('keydown', (e) => {
     if (e.key === 'ArrowDown' && menu.hidden) {
@@ -1157,7 +1458,7 @@ function makeDropdown(item: Extract<Item, { kind: 'dropdown' }>, getView: () => 
     label.textContent = opt.label;
     const keys = document.createElement('span');
     keys.className = 'sheaf-tb-menu-key';
-    keys.textContent = opt.hintKey ? hint(opt.hintKey) : '';
+    if (opt.hintKey) drawKeyHint(keys, opt.hintKey);
     mi.append(label, keys);
     mi.addEventListener('mousedown', (e) => e.preventDefault());
     mi.addEventListener('click', () => {
@@ -1200,11 +1501,70 @@ function makeDropdown(item: Extract<Item, { kind: 'dropdown' }>, getView: () => 
  */
 let tocButton: HTMLButtonElement | undefined;
 
-/** Draw the table-of-contents button as pressed, or not, to match the setting. */
-export function reflectTableOfContents(on: boolean): void {
+/** What the table of contents is drawn as: the three states the setting takes. */
+export type TocButtonState = 'shown' | 'collapsed' | 'hidden';
+
+/**
+ * What the button says it is in, and what the next press will do.
+ *
+ * Three states and one button, so the state cannot be read off pressed-ness alone.
+ * Pressed means drawn at all, the folded look is its own class, and the tooltip names
+ * both where it is and what pressing it does next, because a cycling control that only
+ * says its own name leaves the person to press it and find out.
+ */
+const TOC_TITLE: Record<TocButtonState, string> = {
+  shown: 'Table of contents: showing. Fold the list away',
+  collapsed: 'Table of contents: folded. Hide it',
+  hidden: 'Table of contents: hidden. Show it',
+};
+
+/** The state one press moves to, and so the order the button cycles in. */
+export function nextTocState(state: TocButtonState): TocButtonState {
+  return state === 'shown' ? 'collapsed' : state === 'collapsed' ? 'hidden' : 'shown';
+}
+
+/**
+ * What the button is currently drawn as, which is what a press moves on from.
+ *
+ * The setting is the truth, but it comes back from the host a round trip later, and two
+ * presses in that window would both work out the same next state and the second would do
+ * nothing. So the button keeps what it is showing, moves on its own press, and is
+ * corrected by the next `reflectTableOfContents` if the host disagrees.
+ */
+let tocState: TocButtonState = 'hidden';
+
+export function tocButtonState(): TocButtonState {
+  return tocState;
+}
+
+/**
+ * The line-number button, kept so its state can be redrawn from outside `mountToolbar`.
+ *
+ * Whether the gutter is on is a setting, so it can change without this editor having been
+ * pressed: another editor's toggle, or an edit in the Settings pane. The button has to follow
+ * that, or it says the opposite of what the gutter is doing.
+ */
+let lineNumbersButton: HTMLButtonElement | null = null;
+
+/** Draw the line-number button to match whether the gutter is on. */
+export function reflectLineNumbers(on: boolean): void {
+  if (!lineNumbersButton) return;
+  lineNumbersButton.classList.toggle('is-active', on);
+  lineNumbersButton.setAttribute('aria-pressed', String(on));
+}
+
+/** Draw the table-of-contents button to match the state the panel is in. */
+export function reflectTableOfContents(state: TocButtonState | boolean): void {
   if (!tocButton) return;
-  tocButton.classList.toggle('is-active', on);
-  tocButton.setAttribute('aria-pressed', String(on));
+  const now: TocButtonState = state === true ? 'shown' : state === false ? 'hidden' : state;
+  tocState = now;
+  tocButton.classList.toggle('is-active', now !== 'hidden');
+  tocButton.classList.toggle('is-folded', now === 'collapsed');
+  tocButton.setAttribute('aria-pressed', String(now !== 'hidden'));
+  tocButton.title = TOC_TITLE[now];
+  // The name has to carry the state as well, because the tooltip is not read out and
+  // pressed-ness cannot say which of three. `.sheaf-tb-toc` is what finds the button.
+  tocButton.setAttribute('aria-label', TOC_TITLE[now]);
 }
 
 /**
@@ -1224,6 +1584,7 @@ export function mountToolbar(
   tableOfContentsOn = false
 ): void {
   reflectors = [];
+  disablable = [];
   for (const item of ITEMS) {
     if (item.kind === 'sep') {
       const sep = document.createElement('span');
@@ -1234,6 +1595,7 @@ export function mountToolbar(
     } else {
       const btn = makeButton(item.icon, titleFor(item.label, item.hintKey));
       btn.dataset.command = item.command;
+      disablable.push(btn);
       btn.addEventListener('click', () => {
         const view = getView();
         if (view) item.run(view);
@@ -1249,8 +1611,16 @@ export function mountToolbar(
       }
       if (item.enabled) {
         const enabled = item.enabled;
-        btn.disabled = true;
-        reflectors.push((view) => void (btn.disabled = !enabled(view)));
+        /*
+         * Asked once now rather than assumed false until the next update. Undo and
+         * Redo were the only buttons with this, and starting disabled happens to be
+         * right for them, so nothing noticed. It is wrong for anything whose usual
+         * answer is available: the marks would be drawn unavailable on first paint
+         * and come back the moment the caret moved.
+         */
+        const view = getView();
+        btn.disabled = view ? !enabled(view) : true;
+        reflectors.push((v) => void (btn.disabled = !enabled(v)));
       }
       container.appendChild(btn);
     }
@@ -1263,17 +1633,14 @@ export function mountToolbar(
   // View toggle: show/hide the line-number gutter. Reflects state via .is-active
   // and aria-pressed, updated from the boolean the toggle command returns.
   const lineNo = makeButton('lineNumbers', 'Toggle line numbers');
-  const reflect = (on: boolean): void => {
-    lineNo.classList.toggle('is-active', on);
-    lineNo.setAttribute('aria-pressed', String(on));
-  };
-  reflect(lineNumbersOn);
-  lineNo.addEventListener('click', () => reflect(onToggleLineNumbers()));
+  lineNumbersButton = lineNo;
+  reflectLineNumbers(lineNumbersOn);
+  lineNo.addEventListener('click', () => reflectLineNumbers(onToggleLineNumbers()));
   container.appendChild(lineNo);
 
-  // View toggle: the table of contents. Pressed-ness follows `sheaf.tableOfContents`,
+  // View toggle: the table of contents. What it is drawn as follows `sheaf.tableOfContents`,
   // so the button is drawn from `reflectTableOfContents` once the setting has been written.
-  tocButton = makeButton('listTree', 'Table of contents');
+  tocButton = makeButton('listTree', 'Table of contents', 'sheaf-tb-toc');
   tocButton.setAttribute('aria-pressed', 'false');
   reflectTableOfContents(tableOfContentsOn);
   tocButton.addEventListener('click', onToggleTableOfContents);

@@ -15,7 +15,7 @@
  */
 
 import { EditorSelection, Extension, StateEffect, StateField } from '@codemirror/state';
-import { BlockType, Decoration, EditorView, ViewPlugin } from '@codemirror/view';
+import { BlockType, Decoration, EditorView, ViewPlugin, ViewUpdate } from '@codemirror/view';
 import {
   BlockRange,
   TURN_INTO,
@@ -26,6 +26,8 @@ import {
   canTurnInto,
   currentTurnInto,
   deleteRange,
+  dropAnchor,
+  dropIndexNearPos,
   duplicateRange,
   moveBlockTo,
   moveRange,
@@ -35,7 +37,7 @@ import {
 import { fence, blockRefHost } from './refs';
 import { openSlashMenuAtCaret } from './slashMenu';
 import { revealRange } from './revealBlock';
-import { hint } from './shortcuts';
+import { drawKeyHint } from './shortcuts';
 
 // ---- Copy ref -----------------------------------------------------------------
 
@@ -136,7 +138,23 @@ const dragSourceField = StateField.define<{ from: number; to: number } | null>({
   create: () => null,
   update(value, tr) {
     for (const e of tr.effects) if (e.is(setDragSource)) return e.value;
-    if (value && tr.docChanged) return null;
+    /*
+     * Carried through a change rather than dropped by it.
+     *
+     * A write from outside lands while the button is still down, and dropping the value
+     * took the dimming off the block being carried while the drop line stayed where it
+     * was. The page then said two things at once: nothing is being carried, and it is
+     * going here. Mapping keeps the block marked as the one in hand, wherever the change
+     * moved it to.
+     *
+     * A block the change deleted maps to an empty range, and then there is nothing to
+     * carry: the drag ends, which the view plugin does visibly.
+     */
+    if (value && tr.docChanged) {
+      const from = tr.changes.mapPos(value.from, 1);
+      const to = tr.changes.mapPos(value.to, -1);
+      return to > from ? { from, to } : null;
+    }
     return value;
   },
   provide: (f) =>
@@ -150,6 +168,9 @@ const dragSourceField = StateField.define<{ from: number; to: number } | null>({
 });
 
 // ---- Handle view -----------------------------------------------------------------
+
+/** The grip's own height, which is what it has to be lifted by to clear a row. */
+const GRIP_HEIGHT = 24;
 
 const GRIP_ICON =
   '<svg viewBox="0 0 10 16" width="10" height="16" aria-hidden="true" fill="currentColor">' +
@@ -166,6 +187,8 @@ interface Drag {
   active: boolean;
   index: number | null;
   targets?: ReturnType<typeof blockDropTargets>;
+  /** Where the pointer was last seen, so the drop line can be drawn again after a change. */
+  lastY?: number;
 }
 
 class BlockHandleView {
@@ -178,6 +201,8 @@ class BlockHandleView {
   range: BlockRange | null = null;
   drag: Drag | null = null;
   hideTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Takes the scroll listener off whichever table the grip is currently shown beside. */
+  stopFollowing: (() => void) | null = null;
 
   constructor(readonly view: EditorView) {
     this.handle = document.createElement('div');
@@ -220,8 +245,49 @@ class BlockHandleView {
     return b;
   }
 
-  update(update: { docChanged: boolean; view: EditorView }): void {
-    if (update.docChanged && !this.drag) this.hide();
+  update(update: ViewUpdate): void {
+    if (!update.docChanged) return;
+    if (!this.drag) {
+      this.hide();
+      return;
+    }
+    /*
+     * A change arriving mid-drag: a write from outside, which is the pairing Sheaf exists
+     * for, or the person's own agent saving the file.
+     *
+     * The slots were worked out once when the drag began, on the reasoning that the
+     * document does not change during one. It does. Left alone, the release acted on a
+     * range that had moved and moved nothing at all, with no message and nothing to undo,
+     * while the drop line went on promising a landing.
+     *
+     * So the block in hand is found again in the document as it is now, from where the
+     * change carried its start, and the slots are worked out afresh. Where the block is
+     * gone, or is no longer one that may be moved, the drag ends and takes its line with
+     * it: better a gesture that visibly stops than a release that quietly does nothing.
+     */
+    const drag = this.drag;
+    // Where the drop was aimed, as a position rather than a slot number: a change can add
+    // or remove siblings, so the same number means a different gap afterwards.
+    const aimed = drag.targets && drag.index !== null ? dropAnchor(drag.targets, drag.index) : null;
+    const at = update.changes.mapPos(drag.range.from, 1);
+    const now = blockRangeAt(update.state, at);
+    if (!now || !now.movable) {
+      this.cancelDrag();
+      return;
+    }
+    drag.range = now;
+    // Worked out again from the new document, not mapped: a change can add or remove the
+    // gaps themselves, and a stale slot list is what put the line in the wrong place.
+    drag.targets = undefined;
+    drag.index = null;
+    if (!drag.active) return;
+    const aim = aimed === null ? null : update.changes.mapPos(aimed, 1);
+    // The line is drawn from measurements, and those are not to be taken during an update.
+    requestAnimationFrame(() => {
+      if (this.drag !== drag || !drag.active) return;
+      if (aim !== null) this.placeIndicator(drag.lastY ?? 0, aim);
+      else if (drag.lastY !== undefined) this.placeIndicator(drag.lastY);
+    });
   }
 
   // ---- hover ----
@@ -277,6 +343,7 @@ class BlockHandleView {
   hide(): void {
     this.cancelHide();
     if (this.menu) return;
+    this.unfollowTableScroll();
     this.handle.hidden = true;
     this.range = null;
   }
@@ -285,6 +352,39 @@ class BlockHandleView {
     this.cancelHide();
     if (this.range && this.range.from === range.from && this.range.to === range.to && !this.handle.hidden) return;
     this.range = range;
+    this.followTableScroll(range);
+    this.placeHandle(range);
+  }
+
+  /**
+   * Put the grip back where it belongs when a table scrolls sideways under it.
+   *
+   * `show` does nothing when it is called again for the range it already holds, which is what
+   * keeps a mousemove from measuring on every pixel. The cost is that a table scrolling under
+   * a grip that is already up never moved it: it stayed on the line it was placed on, and the
+   * columns slid past beneath. One listener on the grid, for as long as the grip belongs to
+   * that table, is what makes the placement follow.
+   */
+  followTableScroll(range: BlockRange): void {
+    this.unfollowTableScroll();
+    if (range.kind !== 'table') return;
+    const grid = this.tableAt(range.from)?.querySelector('.sheaf-table-grid');
+    if (!grid) return;
+    const onScroll = (): void => {
+      if (this.range === range && !this.handle.hidden) this.placeHandle(range);
+    };
+    grid.addEventListener('scroll', onScroll, { passive: true });
+    this.stopFollowing = () => grid.removeEventListener('scroll', onScroll);
+  }
+
+  /** Stop following whichever table the grip was last shown beside. */
+  unfollowTableScroll(): void {
+    this.stopFollowing?.();
+    this.stopFollowing = null;
+  }
+
+  /** Measure and write the grip's place for `range`. Separate from `show` so a scroll can redo it. */
+  placeHandle(range: BlockRange): void {
     const view = this.view;
     view.requestMeasure({
       read: () => {
@@ -295,23 +395,71 @@ class BlockHandleView {
         const indent = view.coordsAtPos(range.from);
         const lineHeight = Math.min(line.height, view.defaultLineHeight * 1.6);
         // Beside a table the grip lines up with the header row, below the table's controls bar.
-        const header = range.kind === 'table' ? this.tableAt(range.from)?.querySelector('tr')?.getBoundingClientRect() : undefined;
+        const table = range.kind === 'table' ? this.tableAt(range.from) : undefined;
+        const header = table?.querySelector('tr')?.getBoundingClientRect();
+        /*
+         * Unless that row has been scrolled under the grip, and then it goes up a line.
+         *
+         * A wide table's frame spans the pane with its left inset as padding inside the
+         * scroller, so at rest the first column sits on the text's left edge and the grip has
+         * the margin to itself. Scroll the table sideways and its content slides into that
+         * margin by design, which is the whole of what makes the pane usable. The grip was
+         * then drawn squarely on top of whichever column header had arrived under it: with
+         * the table forty columns along it read as a stray glyph inside the data.
+         *
+         * The strip above the header row is the one place in the frame with no cells at any
+         * scroll position, and it is where the table's own controls bar sits, which is to say
+         * it is already understood as the table's chrome rather than its content. The grip
+         * keeps its column, stays hoverable and stays pressable; only its line changes, and
+         * only while the content is actually under it.
+         *
+         * Asked of the first cell's edge rather than of every cell, because this runs on every
+         * hover and the corpus has a 200-column table in it. One rect answers it: if the first
+         * cell has passed the grip's right edge, content is in the grip's column.
+         */
+        const firstCell = table?.querySelector('th, td')?.getBoundingClientRect();
+        const gripRight = Math.max(content.left + padLeft, indent ? indent.left : 0) - 6;
+        const scrolledUnder = !!firstCell && firstCell.width > 0 && firstCell.left < gripRight;
+        /*
+         * And whether there is anywhere to put it. Every row of a scrolled table has a cell in
+         * the grip's column, so the strip above the header is the only clear place: with the
+         * table's first row against the top of the pane there is none, and lifting anyway puts
+         * the grip behind the formatting toolbar, where a press reaches a toolbar button.
+         *
+         * Nothing at all is the honest answer there, and it is one of the two this was allowed:
+         * beside the table, or not drawn while the table is scrolled. It comes back on the next
+         * scroll, in either direction, because the scroll listener re-places it.
+         */
+        const noRoom = scrolledUnder && !!header && header.top - GRIP_HEIGHT - 2 < scroller.top;
         // Beside anything else it sits on the block's first line, centred on that line's
         // own height, so a long paragraph's handle points at where it starts, and a
         // heading's centres on the heading's larger type.
         const first = indent && indent.bottom > indent.top ? indent : undefined;
         return {
           top: header?.height
-            ? header.top - scroller.top + view.scrollDOM.scrollTop + (header.height - 24) / 2
+            ? /*
+               * Centred on the header row, or clear above it when the content has scrolled
+               * under the grip.
+               *
+               * Clear above means the grip's whole height plus a gap, not a fraction of the
+               * bar's: the bar is `position: absolute` and lifted by `translateY(-100%)`, so it
+               * is outside the frame's own box and the space above the header is the previous
+               * line's rather than the table's. Clamping the lift to the table's box moved the
+               * grip nine pixels and left it still over the header row, which measured as a
+               * fix and looked like the bug.
+               */
+              header.top - (scrolledUnder ? GRIP_HEIGHT + 2 : (24 - header.height) / 2) - scroller.top + view.scrollDOM.scrollTop
             : first
               ? first.top - scroller.top + view.scrollDOM.scrollTop + (first.bottom - first.top - 24) / 2
               : line.top + view.documentTop - scroller.top + view.scrollDOM.scrollTop + (Math.min(line.height, lineHeight * 2) - 24) / 2,
           left: Math.max(content.left + padLeft, indent ? indent.left : 0) - scroller.left + view.scrollDOM.scrollLeft,
+          noRoom,
         };
       },
-      write: ({ top, left }) => {
+      write: ({ top, left, noRoom }) => {
         if (this.range !== range) return;
-        this.handle.hidden = false;
+        this.handle.hidden = noRoom;
+        if (noRoom) return;
         this.handle.style.top = `${Math.max(0, top)}px`;
         this.handle.style.left = `${left - this.handle.offsetWidth - 6}px`;
       },
@@ -378,11 +526,20 @@ class BlockHandleView {
       this.view.dispatch({ effects: setDragSource.of(source) });
       this.view.dom.classList.add('sheaf-block-drag-active');
     }
+    drag.lastY = event.clientY;
     this.placeIndicator(event.clientY);
   };
 
-  /** Draw the drop line at the allowed gap nearest the pointer. */
-  placeIndicator(clientY: number): void {
+  /**
+   * Draw the drop line at the allowed gap nearest the pointer, or, when `aimAt` is given,
+   * at the gap nearest that document position.
+   *
+   * `aimAt` is for a change that landed mid-drag. The person chose a place in the
+   * document, not a coordinate on the screen, so when the text moves under a still
+   * pointer the line goes with the text. Their next move re-aims it from the pointer
+   * again, as any drag does.
+   */
+  placeIndicator(clientY: number, aimAt?: number): void {
     const drag = this.drag!;
     const view = this.view;
     // The document does not change during a drag, so the slots are worked out once.
@@ -398,7 +555,7 @@ class BlockHandleView {
       else y = (view.lineBlockAt(s[index - 1].to).bottom + view.lineBlockAt(s[index].from).top) / 2;
       return { index, y: y + view.documentTop };
     });
-    drag.index = nearestDropIndex(ys, clientY);
+    drag.index = aimAt === undefined ? nearestDropIndex(ys, clientY) : dropIndexNearPos(targets, aimAt);
     const at = ys.find((t) => t.index === drag.index);
     // Over the block's own place a release changes nothing, so no line is drawn:
     // the dimmed block already marks where it will stay.
@@ -510,7 +667,8 @@ class BlockHandleView {
       btn.appendChild(label);
       const side = document.createElement('span');
       side.className = 'sheaf-block-menu-key';
-      side.textContent = item.children ? '›' : item.keyHint ? hint(item.keyHint) : '';
+      if (item.children) side.textContent = '›';
+      else if (item.keyHint) drawKeyHint(side, item.keyHint);
       btn.appendChild(side);
       btn.addEventListener('mousedown', (e) => e.preventDefault());
       if (item.children) {

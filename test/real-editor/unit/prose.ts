@@ -19,6 +19,7 @@ import {
   turnInto,
   mountToolbar,
   refreshToolbar,
+  reflectLineNumbers,
 } from '../../../src/webview/toolbar';
 import { formatStateAt } from '../../../src/webview/formatState';
 import { createShortcutsOverlay, buildEditingKeymap } from '../../../src/webview/shortcuts';
@@ -73,6 +74,25 @@ const at = (doc: string, needle: string, delta = 0): number => doc.indexOf(needl
 
 /** Type text at the selection the way input does. */
 const typeText = (p: Prose, text: string): void => p.view.dispatch(p.view.state.replaceSelection(text), { userEvent: 'input.type' } as any);
+
+/**
+ * Fill the link popover a link command opened and press Enter in the address field.
+ *
+ * Asking for a link writes nothing until it has an address, so a scenario that presses Mod-k
+ * and reads the document sees the document it started with. This is the rest of the gesture.
+ */
+function linkAddress(p: Prose, url: string, text?: string): void {
+  const pop = p.view.dom.querySelector('.sheaf-linkpop');
+  if (!pop) throw new Error('no link popover is open');
+  const field = (which: string): HTMLInputElement => pop.querySelector<HTMLInputElement>(`.sheaf-linkpop-${which}`)!;
+  if (text !== undefined) field('text').value = text;
+  field('url').value = url;
+  field('url').dispatchEvent(new G.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+}
+
+/** The words the popover is offering to link, or null when no popover is open. */
+const popoverWords = (p: Prose): string | null =>
+  p.view.dom.querySelector<HTMLInputElement>('.sheaf-linkpop-text')?.value ?? null;
 
 /* ---- Toolbar in jsdom ---- */
 
@@ -844,34 +864,38 @@ export const scenarios: Scenario[] = [
   {
     id: 'prose.link-insert.u01',
     feature: 'prose.link-insert',
-    name: 'Mod-k on a selected word links it with url selected, and typing replaces url',
+    name: 'Mod-k on a selected word asks for its address, writing nothing until it has one',
     run: () => {
       const p = mountProse('see docs now');
       p.select(4, 8);
       p.press('Mod-k');
-      const s = p.view.state.selection.main;
-      const selected = p.view.state.sliceDoc(s.from, s.to);
-      typeText(p, 'https://x.io');
+      const words = popoverWords(p);
+      const pending = p.doc();
+      linkAddress(p, 'https://x.io');
       const out = p.doc();
       p.destroy();
-      return { ok: selected === 'url' && out === 'see [docs](https://x.io) now', detail: JSON.stringify({ selected, out }) };
+      return {
+        ok: words === 'docs' && pending === 'see docs now' && out === 'see [docs](https://x.io) now',
+        detail: JSON.stringify({ words, pending, out }),
+      };
     },
   },
   {
     id: 'prose.link-insert.u02',
     feature: 'prose.link-insert',
-    name: 'The Link button with a bare caret writes [text](url) with url selected',
+    name: 'The Link button with a bare caret asks for the words and the address, and writes the link once it has both',
     run: () => {
       const p = mountProse('go ');
       p.select(3);
       const b = mountBar(p);
       b.click('link');
-      const s = p.view.state.selection.main;
-      const ok = p.doc() === 'go [text](url)' && p.view.state.sliceDoc(s.from, s.to) === 'url';
+      const words = popoverWords(p);
+      const pending = p.doc();
+      linkAddress(p, 'u', 'the plan');
       const d = p.doc();
       b.remove();
       p.destroy();
-      return { ok, detail: JSON.stringify(d) };
+      return { ok: words === '' && pending === 'go ' && d === 'go [the plan](u)', detail: JSON.stringify({ words, pending, d }) };
     },
   },
   {
@@ -890,8 +914,8 @@ export const scenarios: Scenario[] = [
     feature: 'prose.link-insert',
     name: 'Link over a selection across two paragraphs never writes a link split by a blank line',
     run: () => {
-      const out = edit('one\n\ntwo', 0, 8, (p) => insertLink(p.view));
-      return { ok: !/\[[^\]]*\n\n[^\]]*\]\(/.test(out), detail: JSON.stringify(out) };
+      const out = edit('one\n\ntwo', 0, 8, (p) => (insertLink(p.view), linkAddress(p, 'url')));
+      return { ok: out === '[one](url)\n\n[two](url)' && !/\[[^\]]*\n\n[^\]]*\]\(/.test(out), detail: JSON.stringify(out) };
     },
   },
   {
@@ -899,7 +923,7 @@ export const scenarios: Scenario[] = [
     feature: 'prose.link-insert',
     name: 'Link on a selection containing brackets writes a link that still parses as one link',
     run: () => {
-      const out = edit('a [b] c', 0, 7, (p) => insertLink(p.view));
+      const out = edit('a [b] c', 0, 7, (p) => (insertLink(p.view), linkAddress(p, 'url')));
       return { ok: out === '[a [b] c](url)' && count(out, 'Link') === 1, detail: JSON.stringify(out) };
     },
   },
@@ -913,7 +937,9 @@ export const scenarios: Scenario[] = [
     id: 'prose.link-insert.u07',
     feature: 'prose.link-insert',
     name: 'Link then one undo gives the word back',
-    run: () => same(edit('see docs', 4, 8, (p) => (p.press('Mod-k'), p.press('Mod-z'))), 'see docs'),
+    // The address has to be entered first: without it nothing is written and the undo has
+    // nothing to take back, so this would pass on a command that did nothing at all.
+    run: () => same(edit('see docs', 4, 8, (p) => (p.press('Mod-k'), linkAddress(p, 'u'), p.press('Mod-z'))), 'see docs'),
   },
 
   /* ---- prose.hard-break ---- */
@@ -1046,7 +1072,10 @@ export const scenarios: Scenario[] = [
       const task = edit('- [ ] a\n- [ ] b', 12, undefined, (p) => p.press('Tab'));
       const num = edit('1. a\n2. b', 7, undefined, (p) => p.press('Tab'));
       const back = edit('1. a\n2. b', 7, undefined, (p) => (p.press('Tab'), p.press('Mod-z')));
-      return { ok: task === '- [ ] a\n    - [ ] b' && num === '1. a\n    2. b' && back === '1. a\n2. b', detail: JSON.stringify([task, num, back]) };
+      // The nested item starts its own numbering, so `2.` becomes `1.`. The undo reading is
+      // what matters most here: the renumbering shares the indent's transaction, so one
+      // press takes both back rather than putting the old number on a still-nested item.
+      return { ok: task === '- [ ] a\n    - [ ] b' && num === '1. a\n    1. b' && back === '1. a\n2. b', detail: JSON.stringify([task, num, back]) };
     },
   },
 
@@ -1471,7 +1500,11 @@ export const scenarios: Scenario[] = [
         ['Strikethrough', 'Mod-Shift-x', 'ab', 0, 2, '~~ab~~'],
         ['Highlight', 'Mod-Shift-h', 'ab', 0, 2, '==ab=='],
         ['Inline code', 'Mod-e', 'ab', 0, 2, '`ab`'],
-        ['Insert link', 'Mod-k', 'ab', 0, 2, '[ab](url)'],
+        // Mod-k asks for the address rather than writing one, so this row's gesture ends with it.
+        ['Insert or edit link', 'Mod-k', 'ab', 0, 2, '[ab](url)'],
+        ['Remove link', 'Mod-Shift-k', '[ab](u)', 2, undefined, 'ab'],
+        // Opening a link leaves the file alone, so the row is read for its label and its silence.
+        ['Open link', 'Mod-Enter', '[ab](u)', 2, undefined, '[ab](u)'],
         ['Heading 1', 'Mod-Alt-1', 'ab', 1, undefined, '# ab'],
         ['Heading 2', 'Mod-Alt-2', 'ab', 1, undefined, '## ab'],
         ['Heading 3', 'Mod-Alt-3', 'ab', 1, undefined, '### ab'],
@@ -1488,7 +1521,15 @@ export const scenarios: Scenario[] = [
       createShortcutsOverlay(host);
       const labels = Array.from(host.querySelectorAll('.sheaf-sc-label')).map((e) => e.textContent);
       host.remove();
-      const bad = rows.filter(([label, key, doc, a, h, want]) => !labels.includes(label) || edit(doc, a, h, (p) => p.press(key)) !== want).map((r) => r[0]);
+      const run = (doc: string, a: number, h: number | undefined, key: string): string =>
+        edit(doc, a, h, (p) => {
+          p.press(key);
+          // A row that asks for a *new* link has its address typed in: the row promises a link,
+          // and stopping at the popover would compare the document with itself. A row acting on a
+          // link that already exists is left alone, or Open link would rewrite the address it opened.
+          if (p.view.dom.querySelector('.sheaf-linkpop[aria-label="New link"]')) linkAddress(p, 'url');
+        });
+      const bad = rows.filter(([label, key, doc, a, h, want]) => !labels.includes(label) || run(doc, a, h, key) !== want).map((r) => r[0]);
       return { ok: bad.length === 0, detail: `rows that do not match: ${JSON.stringify(bad)}` };
     },
   },
@@ -1545,6 +1586,28 @@ export const scenarios: Scenario[] = [
       p.destroy();
       const want = String(doc.split('\n').indexOf('target') + 1);
       return { ok: nums.includes(want) && nums.at(-1) === want, detail: `gutter ${JSON.stringify(nums)}, target is line ${want}` };
+    },
+  },
+  {
+    id: 'prose.line-numbers.u03',
+    feature: 'prose.line-numbers',
+    name: 'The button shows pressed when the host says the gutter was left on, with nobody pressing it',
+    run: () => {
+      // The setting can say the gutter is on without this editor having been pressed: it was
+      // already on when the document opened, or another editor turned it on. So the button has
+      // to be drawn from that rather than from the boolean it was mounted with, or the gutter
+      // comes back while the control that turns it off looks as though it already is off.
+      const p = mountProse('x');
+      const b = mountBar(p, () => false, false);
+      const btn = b.el.querySelector<HTMLButtonElement>('[title="Toggle line numbers"]')!;
+      const start = btn.getAttribute('aria-pressed');
+      reflectLineNumbers(true);
+      const afterAnswer = btn.getAttribute('aria-pressed') === 'true' && btn.classList.contains('is-active');
+      reflectLineNumbers(false);
+      const afterOff = btn.getAttribute('aria-pressed') === 'false' && !btn.classList.contains('is-active');
+      b.remove();
+      p.destroy();
+      return { ok: start === 'false' && afterAnswer && afterOff, detail: JSON.stringify({ start, afterAnswer, afterOff }) };
     },
   },
 ];

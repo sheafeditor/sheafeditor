@@ -370,16 +370,24 @@ export const scenarios: Scenario[] = [
   {
     id: 'menus.context-prose.u17',
     feature: 'menus.context-prose',
-    name: 'Link on a selected word wraps it and selects the url placeholder',
+    name: 'Link on a selected word asks for its address, and writes the link once it has one',
     run: async () => {
       const p = mountProse('hello world');
       p.select(6, 11);
       const m = menuFor(p);
       m.open();
       m.item('Link')!.click();
-      const sel = p.view.state.selection.main;
-      const ok = p.doc() === 'hello [world](url)' && p.view.state.sliceDoc(sel.from, sel.to) === 'url';
-      const detail = `${j(p.doc())} selected ${j(p.view.state.sliceDoc(sel.from, sel.to))}`;
+      // Nothing is written until the address arrives, so there is no `[world](url)` to clean up.
+      const pending = p.doc();
+      const pop = p.view.dom.querySelector('.sheaf-linkpop');
+      const words = pop?.querySelector<HTMLInputElement>('.sheaf-linkpop-text')?.value;
+      const url = pop?.querySelector<HTMLInputElement>('.sheaf-linkpop-url');
+      if (url) {
+        url.value = 'https://x.io';
+        url.dispatchEvent(new G.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+      }
+      const ok = pending === 'hello world' && words === 'world' && p.doc() === 'hello [world](https://x.io)';
+      const detail = `while asking ${j(pending)} with words ${j(words)}; after Enter ${j(p.doc())}`;
       m.cleanup();
       p.destroy();
       return { ok, detail };
@@ -405,13 +413,13 @@ export const scenarios: Scenario[] = [
   {
     id: 'menus.context-keyboard.u01',
     feature: 'menus.context-keyboard',
-    name: 'Shift+F10 opens the menu and focuses its first enabled item, Turn into',
+    name: 'Shift+F10 opens the menu and focuses its first enabled item, Edit Markdown',
     run: () => {
       const p = mountProse('hello world');
       p.select(3);
       const m = menuFor(p);
       const e = key(p.view.contentDOM, 'F10', { shiftKey: true });
-      const ok = m.visible() && m.focusedLabel() === 'Turn into' && e.defaultPrevented;
+      const ok = m.visible() && m.focusedLabel() === 'Edit Markdown' && e.defaultPrevented;
       const detail = `visible ${m.visible()} focused ${m.focusedLabel()} prevented ${e.defaultPrevented}`;
       m.cleanup();
       p.destroy();
@@ -440,10 +448,11 @@ export const scenarios: Scenario[] = [
       seen.push(m.focusedLabel());
       m.cleanup();
       p.destroy();
-      // With a bare caret in plain text the enabled items are Turn into, Edit Markdown, Highlight,
-      // Inline code, Link and Copy ref; Clear formatting is disabled, and the three commonest marks
-      // and the clipboard commands are not in this menu at all.
-      return same(seen.join('|'), 'Turn into|Copy ref|Turn into|Copy ref|Turn into|Edit Markdown');
+      // With a bare caret in plain text the enabled items are Edit Markdown, Copy ref, Turn into,
+      // Highlight, Inline code and Link; Clear formatting is disabled and last, so wrapping upward
+      // and End both land on Link. The three commonest marks and the clipboard commands are not in
+      // this menu at all.
+      return same(seen.join('|'), 'Edit Markdown|Link|Edit Markdown|Link|Edit Markdown|Copy ref');
     },
   },
   {
@@ -457,8 +466,10 @@ export const scenarios: Scenario[] = [
       const before = document.activeElement;
       const m = menuFor(p);
       key(p.view.contentDOM, 'F10', { shiftKey: true });
-      // Home, not End: Turn into leads the menu now, and End reaches Copy ref at the bottom.
+      // Edit Markdown and Copy ref lead the menu, so Turn into is two steps down from Home.
       key(document.activeElement!, 'Home');
+      key(document.activeElement!, 'ArrowDown');
+      key(document.activeElement!, 'ArrowDown');
       key(document.activeElement!, 'ArrowRight');
       const inSub = m.focusedLabel();
       key(document.activeElement!, 'Escape');
@@ -477,14 +488,14 @@ export const scenarios: Scenario[] = [
     feature: 'menus.context-keyboard',
     name: 'Enter on Highlight with a word selected marks it and closes the menu',
     run: () => {
-      // Two steps down from Turn into: Edit Markdown, then Highlight. Bold left this menu for the
-      // selection toolbar, and Highlight is the mark the menu carries.
+      // Three steps down from Edit Markdown: Copy ref, Turn into, then Highlight. Bold left this
+      // menu for the selection toolbar, and Highlight is the mark the menu carries.
       const p = mountProse('hello world');
       p.select(0, 5);
       const m = menuFor(p);
       key(p.view.contentDOM, 'F10', { shiftKey: true });
       const path = [m.focusedLabel()];
-      for (let i = 0; i < 2; i++) {
+      for (let i = 0; i < 3; i++) {
         key(document.activeElement!, 'ArrowDown');
         path.push(m.focusedLabel());
       }
@@ -522,9 +533,10 @@ export const scenarios: Scenario[] = [
       const m = menuFor(p);
       key(p.view.contentDOM, 'F10', { shiftKey: true });
       const sel = p.view.state.selection.main;
-      // End rather than a count of steps: Copy ref is the last item, and counting down the list
-      // breaks every time the menu's contents change.
-      key(document.activeElement!, 'End');
+      // Home then one step: Copy ref sits second, under Edit Markdown, whatever the click turned up
+      // below them.
+      key(document.activeElement!, 'Home');
+      key(document.activeElement!, 'ArrowDown');
       const on = m.focusedLabel();
       key(document.activeElement!, 'Enter');
       const ok = sel.from === 0 && sel.to === 3 && on === 'Copy ref' && m.copied[0] === 'doc.md:1-2\n\n```\na\nb\n```\n';
@@ -549,8 +561,8 @@ export const scenarios: Scenario[] = [
       const after = m.focusedLabel();
       m.cleanup();
       p.destroy();
-      // One step down from Turn into, which now leads the menu.
-      return { ok: moved === 'Edit Markdown' && after === 'Edit Markdown', detail: `${moved} then ${after}` };
+      // One step down from Edit Markdown, which now leads the menu.
+      return { ok: moved === 'Copy ref' && after === 'Copy ref', detail: `${moved} then ${after}` };
     },
   },
   {
@@ -563,15 +575,17 @@ export const scenarios: Scenario[] = [
       const m = menuFor(p);
       key(p.view.contentDOM, 'F10', { shiftKey: true });
       const first = m.focusedLabel();
-      // Home, not End: Turn into leads the menu now.
+      // Edit Markdown and Copy ref lead the menu, so Turn into is two steps down from Home.
       key(document.activeElement!, 'Home');
+      key(document.activeElement!, 'ArrowDown');
+      key(document.activeElement!, 'ArrowDown');
       key(document.activeElement!, 'ArrowRight');
       const sub = m.focusedLabel();
       key(document.activeElement!, 'ArrowDown');
       const next = m.focusedLabel();
       m.cleanup();
       p.destroy();
-      return { ok: first === 'Turn into' && sub === 'Text' && next === 'Code block', detail: `${first} ${sub} ${next}` };
+      return { ok: first === 'Edit Markdown' && sub === 'Text' && next === 'Code block', detail: `${first} ${sub} ${next}` };
     },
   },
   {
@@ -583,8 +597,10 @@ export const scenarios: Scenario[] = [
       p.select(2);
       const m = menuFor(p);
       key(p.view.contentDOM, 'F10', { shiftKey: true });
-      // Home, not End: Turn into leads the menu now.
+      // Edit Markdown and Copy ref lead the menu, so Turn into is two steps down from Home.
       key(document.activeElement!, 'Home');
+      key(document.activeElement!, 'ArrowDown');
+      key(document.activeElement!, 'ArrowDown');
       key(document.activeElement!, 'ArrowRight');
       key(document.activeElement!, 'ArrowDown');
       key(document.activeElement!, 'ArrowLeft');

@@ -1376,4 +1376,35 @@ export const scenarios = [
     const D = 'Intro text.\n\n- outer\n  - inner\n\n    | k | v |\n    | - | - |\n    | b | 2 |\n    | a | 1 |\n\nAfter text.\n';
     return menuCase('tables.shapes.e10', 'A table in a nested list item: Sort A to Z keeps every row indented', 'shape-nested', D, cell(0, 0), 'Sort column A to Z', D.replace('    | b | 2 |\n    | a | 1 |', '    | a | 1 |\n    | b | 2 |'));
   })(),
+  {
+    id: 'tables.align.e12',
+    feature: 'tables.align',
+    name: 'Each alignment is written as it is made, without waiting for focus to leave the table, and one Cmd+Z takes back one of them',
+    run: async (S) => {
+      // The area's own introduction says a table is written when focus leaves it. If every
+      // change is written as it is made, a person who aligns a column and changes their mind
+      // has two entries in the file's history rather than none, and Cmd+Z has to match.
+      await S.fresh('align-writes-now', inDoc(RAGGED));
+      const start = await S.disk();
+      await menuOn(S, cell(-1, 0), 'Align column right');
+      await S.sleep(600);
+      const afterAlign = await S.disk();
+      await menuOn(S, cell(-1, 0), 'Clear column alignment');
+      await S.sleep(600);
+      const afterClear = await S.disk();
+      await S.press('Meta+z');
+      await S.sleep(700);
+      const afterUndo = await S.disk();
+      await leave(S);
+      await S.sleep(500);
+      const ended = await S.disk();
+      const wroteAtOnce = afterAlign !== start;
+      const clearWroteToo = afterClear !== afterAlign;
+      const undoTookOne = afterUndo === afterAlign;
+      return {
+        ok: wroteAtOnce && clearWroteToo && undoTookOne && ended === afterUndo,
+        detail: `written when the alignment was made ${wroteAtOnce}; Clear wrote too ${clearWroteToo}; one Cmd+Z left the file at the aligned text ${undoTookOne}; after leaving the table ${ended === afterUndo ? 'unchanged' : j(ended)}`,
+      };
+    },
+  },
 ];

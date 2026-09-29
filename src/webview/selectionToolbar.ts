@@ -24,14 +24,15 @@ import {
   blockKindOf,
   BlockKind,
 } from './toolbar';
-import { COPY_REF_KEY, hint, registerShortcutGroup } from './shortcuts';
+import { COPY_REF_KEY, drawKeyHint, hint, registerShortcutGroup } from './shortcuts';
 import { floatingIcon, FloatingIcon } from './floatingIcons';
 import { blockRangeAt } from './blockModel';
-import { revealRange } from './revealBlock';
-import { buildRef, blockRefHost, hasRefKey } from './refs';
+import { revealRange, toggleWholeReveal } from './revealBlock';
+import { buildRef, blockRefHost, cellRefAt, hasRefKey } from './refs';
 import {
   floatingField,
   inlineLinkAt,
+  pendingLink,
   popoverLink,
   setDismissed,
   setPointerDown,
@@ -39,7 +40,7 @@ import {
   toolbarEligible,
   toolbarShown,
 } from './floatingState';
-import { createLinkPopover, linkHover } from './linkPopover';
+import { createLinkPopover, createNewLinkPopover, linkHover } from './linkPopover';
 
 registerShortcutGroup({
   title: 'Selection toolbar',
@@ -95,11 +96,17 @@ function revealableBlock(state: EditorState): { from: number; to: number } | nul
  * menu's item does, and put the toolbar away so it is not floating over what was
  * just revealed. The caret stays in the selection, which is inside the revealed
  * span; it only moves when the selection ran past the block's end.
+ *
+ * In a cell the block is the whole editor, since a cell editor's document is that one
+ * cell. Same button, same key, one scope in.
  */
-function runReveal(view: EditorView): void {
-  const block = revealableBlock(view.state);
-  if (!block) return;
-  revealRange(view, block);
+function runReveal(view: EditorView, whole: boolean): void {
+  if (whole) toggleWholeReveal(view);
+  else {
+    const block = revealableBlock(view.state);
+    if (!block) return;
+    revealRange(view, block);
+  }
   view.dispatch({ effects: setDismissed.of({ toolbar: true }) });
   view.focus();
 }
@@ -126,7 +133,7 @@ const MARKS: MarkButton[] = [
   { cmd: 'strike', label: 'Strikethrough', key: 'Mod-Shift-x', icon: 'strike', active: (s) => s.strike, run: (v) => toggleWrap(v, '~~') },
   { cmd: 'highlight', label: 'Highlight', key: 'Mod-Shift-h', icon: 'highlight', active: (s) => s.highlight, run: (v) => toggleWrap(v, '==') },
   { cmd: 'code', label: 'Inline code', key: 'Mod-e', icon: 'code', active: (s) => s.code, run: (v) => toggleWrap(v, '`') },
-  // Links the selection, or unlinks it when it starts inside an inline link.
+  // Opens the popover: over the link the selection is in, or over the words it will wrap.
   { cmd: 'link', label: 'Link', key: 'Mod-k', icon: 'link', run: insertLink },
   { cmd: 'clear', label: 'Clear formatting', icon: 'clear', run: clearFormatting },
 ];
@@ -162,11 +169,15 @@ function createSelectionToolbar(view: EditorView): TooltipView {
   const buttons: HTMLButtonElement[] = [];
 
   /*
-   * A table cell edits in an editor of its own, and two of this bar's controls mean
-   * nothing there. A cell holds one line of inline Markdown: it has no block to show
-   * the source of, and turning it into a heading would write `# ` into the cell,
-   * which no reader of the table renders as a heading. Both are left out rather than
-   * hidden, so the arrow keys do not stop on a button that is not there.
+   * A table cell edits in an editor of its own, and one of this bar's controls means
+   * nothing there: turning the cell into a heading would write `# ` into it, which no
+   * reader of the table renders as a heading. Turn into is left out rather than shown
+   * disabled, so the arrow keys do not stop on a button that is not there.
+   *
+   * The other two are here, because editing a cell is editing prose and the bar should
+   * not shrink when the prose happens to be in a table. Edit Markdown shows the cell's
+   * own source, which is what `Mod-Alt-e` in a cell already does, and Copy ref names
+   * the cell the way the grid's own menu names it.
    */
   const inCell = !!view.dom.closest('.sheaf-table-input');
 
@@ -176,9 +187,9 @@ function createSelectionToolbar(view: EditorView): TooltipView {
   const reveal = toolbarButton('source', titled(REVEAL_LABEL, REVEAL_KEY));
   reveal.dataset.cmd = 'reveal';
   reveal.addEventListener('click', () => {
-    if (!reveal.disabled) runReveal(view);
+    if (!reveal.disabled) runReveal(view, inCell);
   });
-  if (!inCell) buttons.push(reveal);
+  buttons.push(reveal);
 
   /*
    * Copy ref beside it, because handing an agent the lines you just selected is the
@@ -186,9 +197,7 @@ function createSelectionToolbar(view: EditorView): TooltipView {
    * menu and on a chord. The clipboard write goes through the host, as every other
    * Copy ref does, so there is one answer for what a selection's ref says.
    *
-   * Left out inside a table cell: the cell edits in a document of its own, whose
-   * line numbers are not the file's, and the grid's own menu names the cells
-   * properly. Left out with no host, since there would be nowhere to put the text.
+   * Left out with no host, since there would be nowhere to put the text.
    */
   const copyRef = toolbarButton('copy', titled('Copy ref', hasRefKey() ? COPY_REF_KEY : undefined));
   copyRef.dataset.cmd = 'copy-ref';
@@ -196,7 +205,9 @@ function createSelectionToolbar(view: EditorView): TooltipView {
   copyRef.addEventListener('click', () => {
     const host = blockRefHost();
     if (!host) return;
-    host.copyToClipboard(buildRef(view, host.getFileName()));
+    // In a cell the grid says where the row lands in the file; this editor's own line
+    // numbers count from 1 inside the cell and would name the same line every time.
+    host.copyToClipboard((inCell ? cellRefAt(view.dom) : null) ?? buildRef(view, host.getFileName()));
     // A clipboard write leaves nothing on screen, so the button says it took.
     copyRef.classList.add('is-copied');
     copyRef.innerHTML = floatingIcon('check');
@@ -207,8 +218,7 @@ function createSelectionToolbar(view: EditorView): TooltipView {
       copyRef.innerHTML = floatingIcon('copy');
     }, COPIED_FOR);
   });
-  const canCopyRef = !inCell && blockRefHost() !== null;
-  if (canCopyRef) buttons.push(copyRef);
+  if (blockRefHost() !== null) buttons.push(copyRef);
 
   if (buttons.length) {
     dom.append(...buttons, separator());
@@ -225,7 +235,8 @@ function createSelectionToolbar(view: EditorView): TooltipView {
     buttons.push(btn);
     dom.appendChild(btn);
   }
-  dom.appendChild(separator());
+  // Only where Turn into follows it: a rule at the end of the bar divides nothing.
+  if (!inCell) dom.appendChild(separator());
 
   const wrap = doc.createElement('div');
   wrap.className = 'sheaf-tb-dropdown sheaf-seltb-turn';
@@ -266,7 +277,7 @@ function createSelectionToolbar(view: EditorView): TooltipView {
     label.textContent = block.label;
     const keys = doc.createElement('span');
     keys.className = 'sheaf-tb-menu-key';
-    keys.textContent = block.key ? hint(block.key) : '';
+    if (block.key) drawKeyHint(keys, block.key);
     item.append(label, keys);
     item.addEventListener('click', () => {
       closeMenu(false);
@@ -354,7 +365,8 @@ function createSelectionToolbar(view: EditorView): TooltipView {
 
   const refresh = (state: EditorState): void => {
     const s = formatStateAt(state);
-    reveal.disabled = revealableBlock(state) === null;
+    // A cell always has something to show, since the whole of its document is the cell.
+    reveal.disabled = !inCell && revealableBlock(state) === null;
     syncRoving();
     for (const [def, btn] of markButtons) {
       if (def.active) {
@@ -366,7 +378,7 @@ function createSelectionToolbar(view: EditorView): TooltipView {
     const link = markButtons.get(MARKS.find((m) => m.cmd === 'link')!)!;
     const sel = state.selection.main;
     const linked = inlineLinkAt(state, Math.min(sel.from + 1, sel.to)) !== null;
-    const linkLabel = linked ? 'Remove link' : titled('Link', 'Mod-k');
+    const linkLabel = titled(linked ? 'Edit link' : 'Link', 'Mod-k');
     link.classList.toggle('is-active', linked);
     link.title = linkLabel;
     link.setAttribute('aria-label', linkLabel);
@@ -483,7 +495,9 @@ const floatingPlugin = ViewPlugin.fromClass(
       if (active === this.view.contentDOM) return;
       if (active && this.view.dom.contains(active) && active.closest('.sheaf-seltb, .sheaf-linkpop')) return;
       const { state } = this.view;
-      if (toolbarShown(state) || popoverLink(state)) {
+      // A pending link goes with the rest: clicking away from a link being written leaves the
+      // document untouched, which is the whole of what the pending state buys.
+      if (toolbarShown(state) || popoverLink(state) || pendingLink(state)) {
         this.view.dispatch({ effects: setDismissed.of({ toolbar: true, popover: true }) });
       }
     }
@@ -528,7 +542,7 @@ function dismissFloating(view: EditorView): boolean {
     view.dispatch({ effects: setDismissed.of({ toolbar: true }) });
     return true;
   }
-  if (popoverLink(view.state)) {
+  if (popoverLink(view.state) || pendingLink(view.state)) {
     view.dispatch({ effects: setDismissed.of({ popover: true }) });
     return true;
   }
@@ -545,9 +559,13 @@ export const selectionToolbar: Extension = [
   showTooltip.computeN([floatingField, 'selection', 'doc'], (state) => {
     const sel = state.selection.main;
     const bar = toolbarShown(state);
-    const link = bar ? null : popoverLink(state);
+    // A link that is not written yet is anchored on the words it will wrap, since there is no
+    // link in the document to sit under. Its first span is the one on screen.
+    const pending = pendingLink(state)?.spans[0];
+    const link = bar || pending ? null : popoverLink(state);
     return [
       bar ? { pos: sel.from, end: sel.to, above: true, create: createSelectionToolbar } : null,
+      pending ? { pos: pending.from, end: pending.to, create: createNewLinkPopover } : null,
       link ? { pos: link.from, end: link.to, create: createLinkPopover } : null,
     ];
   }),

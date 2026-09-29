@@ -5,6 +5,11 @@ const j = (x) => JSON.stringify(x);
 
 const DOC = '# Notes\n\n## Setup\n\nFirst.\n\n## Setup\n\nSecond.\n\nWrite here.\n';
 
+/** Long enough to scroll, with headings in it for the list to offer. */
+const LONG =
+  Array.from({ length: 60 }, (_, i) => (i % 10 === 0 ? `## Section ${i / 10 + 1}` : `Line ${i + 1} holds some words here`)).join('\n\n') +
+  '\n';
+
 /** The completion list, if one is showing: its rows and where it sits against the caret. */
 const list = (S) =>
   S.eval(() => {
@@ -55,6 +60,55 @@ export const scenarios = [
       await S.sleep(900);
       const d = await S.disk();
       return { ok: !!before && after === null && d === DOC.replace('Write here.', 'Write here [x](#se.'), detail: `before ${j(before)} after ${j(after)} disk ${j(d)}` };
+    },
+  },
+  {
+    id: 'links.complete.e03',
+    feature: 'links.complete',
+    name: 'A small scroll with the list open keeps it beside the caret, rather than where it opened',
+    run: async (S) => {
+      // The list is placed once, where the caret was when it opened. A scroll moves the
+      // caret and nothing re-places the list, so it is left behind over text it has
+      // nothing to do with, and picking a heading writes into a line that has moved.
+      await S.fresh('link-complete-small-scroll', LONG);
+      await S.caret('Line 5 holds', 'Line 5 holds'.length);
+      await S.type(' [x](#');
+      await S.sleep(500);
+      const before = await list(S);
+      await S.hover({ text: 'Line 3 holds', offset: 2 });
+      await S.page.mouse.wheel(0, 60);
+      await S.sleep(600);
+      const after = await list(S);
+      await S.shot('link-complete-small-scroll');
+      const ok =
+        !!before &&
+        !!after &&
+        after.caretBottom !== null &&
+        after.caretBottom > 0 &&
+        Math.abs(after.top - before.top) > 20 &&
+        Math.abs(after.top - after.caretBottom) < 24;
+      return { ok, detail: `before ${j(before)}; after ${j(after)}` };
+    },
+  },
+  {
+    id: 'links.complete.e04',
+    feature: 'links.complete',
+    name: 'Scrolling the line out of sight closes the list, rather than leaving it over the toolbar',
+    run: async (S) => {
+      await S.fresh('link-complete-big-scroll', LONG);
+      await S.caret('Line 5 holds', 'Line 5 holds'.length);
+      await S.type(' [x](#');
+      await S.sleep(500);
+      const before = await list(S);
+      await S.hover({ text: 'Line 3 holds', offset: 2 });
+      await S.page.mouse.wheel(0, 400);
+      await S.sleep(600);
+      const after = await list(S);
+      await S.shot('link-complete-big-scroll');
+      // Gone, or still beside the caret it belongs to. What it must not be is sitting
+      // at the top of the window over the toolbar with its line off screen.
+      const ok = !!before && (after === null || (after.caretBottom !== null && Math.abs(after.top - after.caretBottom) < 24));
+      return { ok, detail: `before ${j(before)}; after ${j(after)}` };
     },
   },
 ];

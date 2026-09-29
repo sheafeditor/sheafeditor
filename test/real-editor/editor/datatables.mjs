@@ -7,6 +7,7 @@
 //   node test/real-editor/run-editor.mjs datatables [id]
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { REPO } from '../session.mjs';
 
 const j = (x) => JSON.stringify(x);
 
@@ -227,6 +228,123 @@ export const scenarios = [
         j(after) === j(['Open:Import', 'Done:Search,Export']) &&
         disk === text.replace('Search,Open,5', 'Search,Done,5');
       return { ok, detail: `before ${j(before)}; after ${j(after)}; disk ${j(disk)}` };
+    },
+  },
+  {
+    id: 'tables.datatables.e22',
+    feature: 'tables.datatables',
+    name: 'A card being dragged across a board is under the pointer the whole way, with a gap where it will land',
+    run: async (S) => {
+      const text = `Plan.\n\n${TASKS}\n\n\`\`\`view\nfrom: #tasks\nlayout: board\ngroup: status\n\`\`\`\n`;
+      await S.fresh('view-board-carry', text);
+      await S.sleep(600);
+      const at = await S.eval(() => {
+        const mid = (el) => {
+          const r = el?.getBoundingClientRect();
+          return r ? { x: r.left + r.width / 2, y: r.top + r.height / 2, left: r.left, height: r.height } : null;
+        };
+        return {
+          card: mid(document.querySelector('.sheaf-board-card[data-row="0"]')),
+          done: mid(document.querySelector('.sheaf-board-col[data-value="Done"] .sheaf-board-col-head')),
+        };
+      });
+      if (!at.card || !at.done) return { ok: false, detail: 'no board card or Done column was drawn' };
+      /*
+       * Pressed and walked by hand rather than through `S.drag`, which moves and releases in one
+       * call. Everything this scenario asks about is true only while the button is down, so the
+       * readings have to be taken between the two, and at more than one step: a single jump would
+       * pass against a card that is only positioned once, on release.
+       *
+       * The pointer is driven in the window's coordinates and everything read above is in the
+       * webview frame's, so one real click on the card gives the offset between them. Without it
+       * the press lands somewhere above the document entirely and the card never lifts.
+       */
+      const clicked = await S.click({ sel: '.sheaf-board-card[data-row="0"]' });
+      const dx = clicked.x - at.card.x;
+      const dy = clicked.y - at.card.y;
+      const from = { x: clicked.x, y: clicked.y };
+      const to = { x: at.done.x + dx, y: at.done.y + dy };
+      await S.page.mouse.move(from.x, from.y);
+      await S.page.mouse.down();
+      const seen = [];
+      for (let i = 1; i <= 3; i++) {
+        await S.page.mouse.move(from.x + ((to.x - from.x) * i) / 3, from.y + ((to.y - from.y) * i) / 3);
+        await S.sleep(90);
+        seen.push(
+          await S.eval(() => {
+            const card = document.querySelector('.sheaf-board-card[data-row="0"]');
+            const slot = document.querySelector('.sheaf-board-slot');
+            return {
+              left: card ? Math.round(card.getBoundingClientRect().left) : null,
+              lifted: !!card?.classList.contains('is-dragging'),
+              gap: slot ? Math.round(slot.getBoundingClientRect().height) : null,
+              gapIn: slot?.closest('.sheaf-board-col')?.dataset.value ?? null,
+            };
+          })
+        );
+      }
+      await S.shot('board-carry');
+      await S.page.mouse.up();
+      await S.sleep(600);
+      const disk = await S.disk();
+      const last = seen[seen.length - 1];
+      const moved = last.left - Math.round(at.card.left);
+      const wanted = Math.round(at.done.x - at.card.x);
+      const ok =
+        seen.every((s) => s.lifted) &&
+        seen[0].left !== last.left &&
+        Math.abs(moved - wanted) <= 12 &&
+        last.gap === Math.round(at.card.height) &&
+        last.gapIn === 'Done' &&
+        disk === text.replace('Search,Open,5', 'Search,Done,5');
+      return { ok, detail: `steps ${j(seen)}; the pointer went ${wanted}px and the card ${moved}px; one line written: ${disk === text.replace('Search,Open,5', 'Search,Done,5')}` };
+    },
+  },
+  {
+    id: 'tables.datatables.e23',
+    feature: 'tables.datatables',
+    name: 'Escape part way through a board drag puts the card back and writes nothing',
+    run: async (S) => {
+      const text = `Plan.\n\n${TASKS}\n\n\`\`\`view\nfrom: #tasks\nlayout: board\ngroup: status\n\`\`\`\n`;
+      await S.fresh('view-board-escape', text);
+      await S.sleep(600);
+      const at = await S.eval(() => {
+        const mid = (el) => {
+          const r = el?.getBoundingClientRect();
+          return r ? { x: r.left + r.width / 2, y: r.top + r.height / 2 } : null;
+        };
+        return {
+          card: mid(document.querySelector('.sheaf-board-card[data-row="0"]')),
+          done: mid(document.querySelector('.sheaf-board-col[data-value="Done"] .sheaf-board-col-head')),
+        };
+      });
+      if (!at.card || !at.done) return { ok: false, detail: 'no board card or Done column was drawn' };
+      // One real click gives the offset between the window's coordinates and the frame's.
+      const clicked = await S.click({ sel: '.sheaf-board-card[data-row="0"]' });
+      const to = { x: at.done.x + (clicked.x - at.card.x), y: at.done.y + (clicked.y - at.card.y) };
+      await S.page.mouse.move(clicked.x, clicked.y);
+      await S.page.mouse.down();
+      await S.page.mouse.move((clicked.x + to.x) / 2, (clicked.y + to.y) / 2);
+      await S.sleep(120);
+      await S.page.mouse.move(to.x, to.y);
+      await S.sleep(120);
+      const carried = await S.eval(() => !!document.querySelector('.sheaf-board-slot'));
+      await S.press('Escape');
+      const after = await S.eval(() => {
+        const card = document.querySelector('.sheaf-board-card[data-row="0"]');
+        return {
+          gap: !!document.querySelector('.sheaf-board-slot'),
+          lifted: !!card?.classList.contains('is-dragging'),
+          transform: card?.style.transform ?? '',
+          home: card?.closest('.sheaf-board-col')?.dataset.value ?? null,
+        };
+      });
+      // The release after the Escape must not land the card either.
+      await S.page.mouse.up();
+      await S.sleep(600);
+      const disk = await S.disk();
+      const ok = carried && !after.gap && !after.lifted && !after.transform && after.home === 'Open' && disk === text;
+      return { ok, detail: `carried ${carried}; after ${j(after)}; the file changed: ${disk !== text}` };
     },
   },
   {
@@ -476,7 +594,18 @@ export const scenarios = [
       await S.sleep(500);
       const drawn = await S.eval(() => {
         const v = document.querySelector('.sheaf-view');
-        return { quoted: !!v?.classList.contains('is-quoted'), bar: v ? getComputedStyle(v).borderLeftWidth : null };
+        /*
+         * The bar is asked to equal the document's own `--md-quote-rule` rather than a number.
+         * It was `'3px'` copied from the stylesheet, and when that literal became the shared
+         * variable so a quoted block lines up with the quoted prose around it, this scenario
+         * went red for a change it does not test: what it is about is where a sort line is
+         * written, and that half passed throughout.
+         */
+        return {
+          quoted: !!v?.classList.contains('is-quoted'),
+          bar: v ? getComputedStyle(v).borderLeftWidth : null,
+          want: getComputedStyle(document.documentElement).getPropertyValue('--md-quote-rule').trim(),
+        };
       });
       const before = await S.eval(views);
       await S.click({ sel: '.sheaf-view th[data-c="2"] .sheaf-view-sort' });
@@ -485,7 +614,9 @@ export const scenarios = [
       const after = await S.eval(views);
       const ok =
         drawn.quoted &&
-        drawn.bar === '3px' &&
+        // Both readings have to be a real width, so two empty strings cannot satisfy it.
+        /^\d+(\.\d+)?px$/.test(drawn.want) &&
+        drawn.bar === drawn.want &&
         j(before) === j([{ rows: ['Search,Open,5', 'Import,Open,8'], said: [] }]) &&
         disk === text.replace('> where: status = Open\n', '> where: status = Open\n> sort: estimate\n') &&
         j(after) === j([{ rows: ['Search,Open,5', 'Import,Open,8'], said: [] }]);
@@ -589,6 +720,148 @@ export const scenarios = [
       return {
         ok,
         detail: `asked ${j(asked)}; drawn ${j(drawn)}; before ${j(before)}; file after showing unchanged ${unchanged === text}; dragged ${j(dragged)}; moved ${j(moved)}; after reload ${j(reloaded)}; grid back ${grid}`,
+      };
+    },
+  },
+  {
+    id: 'tables.datatables.e20',
+    feature: 'tables.datatables',
+    name: 'Create view on an unnamed table names it and writes a working view, and Show as board on that view turns it into cards',
+    run: async (S) => {
+      const text = 'Plan.\n\n```csv\nfeature,status\nSearch,Open\nExport,Done\nImport,Open\n```\n\nAfter.\n';
+      await S.fresh('view-entry', text);
+      await S.sleep(900);
+      // The offer stands where a name would be, on a block that has none.
+      const offered = await S.eval(() => document.querySelector('.sheaf-table-name-it')?.textContent ?? null);
+      await S.click({ sel: '.sheaf-table-grid td[data-r="0"][data-c="0"]' });
+      await S.click({ sel: '.sheaf-table-ctrl[data-cmd="overflow"]' });
+      await S.click({ sel: '.sheaf-table-menu-item[data-cmd="table.createView"]' });
+      await S.sleep(400);
+      // The name field, prefilled and waiting, with nothing written yet.
+      const asked = await S.eval(() => {
+        const field = document.querySelector('.sheaf-table-rename');
+        return field ? { value: field.value, focused: document.activeElement === field } : null;
+      });
+      const beforeName = await S.disk();
+      await S.type('work');
+      await S.press('Enter');
+      await S.sleep(900);
+      const named = await S.disk();
+      // The view is there and drawing the block's rows.
+      const view = await S.eval(() => ({
+        from: document.querySelector('.sheaf-view-from')?.textContent ?? null,
+        rows: document.querySelectorAll('.sheaf-view tbody tr').length,
+        layout: document.querySelector('.sheaf-view-layout')?.textContent ?? null,
+      }));
+      // And the layout control turns it into a board, asking which column first.
+      await S.click({ sel: '.sheaf-view-layout' });
+      await S.sleep(300);
+      const choices = await S.eval(() => [...document.querySelectorAll('.sheaf-view-menu .sheaf-view-menu-apply')].map((b) => b.textContent));
+      // The chooser's own button, by position, since 'status' is a header on screen too.
+      await S.click({ sel: '.sheaf-view-menu .sheaf-view-menu-apply:nth-of-type(2)' });
+      await S.sleep(600);
+      const board = await S.eval(() => ({
+        columns: [...document.querySelectorAll('.sheaf-board-col')].map((c) => c.dataset.value),
+        cards: document.querySelectorAll('.sheaf-board-card').length,
+        layout: document.querySelector('.sheaf-view-layout')?.textContent ?? null,
+      }));
+      const asBoard = await S.disk();
+      return {
+        ok:
+          offered === 'Name this table' &&
+          asked?.value === 'table' &&
+          asked.focused === true &&
+          // Nothing is written until the name is accepted.
+          beforeName === text &&
+          named === 'Plan.\n\n```csv id=work\nfeature,status\nSearch,Open\nExport,Done\nImport,Open\n```\n\n```view\nfrom: #work\n```\n\nAfter.\n' &&
+          view.from === '#work' &&
+          view.rows === 3 &&
+          view.layout === 'Show as board' &&
+          JSON.stringify(choices) === JSON.stringify(['feature', 'status']) &&
+          JSON.stringify(board.columns) === JSON.stringify(['Open', 'Done']) &&
+          board.cards === 3 &&
+          board.layout === 'Show as table' &&
+          asBoard === named.replace('from: #work\n', 'from: #work\nlayout: board\ngroup: status\n'),
+        detail: `offer ${j(offered)}; asked ${j(asked)}; named ${j(named.slice(0, 60))}; view ${j(view)}; choices ${j(choices)}; board ${j(board)}`,
+      };
+    },
+  },
+  {
+    id: 'tables.datatables.e21',
+    feature: 'tables.datatables',
+    name: 'The corpus document for views draws its views and boards, and reading it writes nothing',
+    run: async (S) => {
+      /*
+       * The corpus is where a person looks at a feature and where a session reproduces a bug, so a
+       * corpus document that does not draw is worse than a missing one: it reads as the feature
+       * being broken. This opens the real `sample/views.md` rather than a fixture, which is the
+       * only way to find out that the file somebody will actually open works.
+       *
+       * The rendered-corpus gate audits the same file and cannot answer this. It asks whether any
+       * syntax is showing where something should have drawn, and a view block that draws nothing at
+       * all shows no syntax either.
+       *
+       * It scrolls, and that is not incidental. CodeMirror draws the viewport, so a first reading of
+       * a document this long sees only what is on the first screen: the first attempt at this
+       * counted three views of the six and read it as four blocks failing to draw. Each view is
+       * collected by the `from:` line it shows, so a block seen on two screens counts once.
+       */
+      const src = join(REPO, 'sample', 'views.md');
+      const data = join(REPO, 'sample', 'data', 'releases.csv');
+      mkdirSync(join(S.ws, 'e2e', 'data'), { recursive: true });
+      const doc = join(S.ws, 'e2e', 'views.md');
+      writeFileSync(doc, readFileSync(src, 'utf8'));
+      // The view of a file resolves beside the document, so the file has to travel with it.
+      writeFileSync(join(S.ws, 'e2e', 'data', 'releases.csv'), readFileSync(data, 'utf8'));
+      const before = readFileSync(doc, 'utf8');
+      await S.sleep(300);
+      await S.open('e2e/views.md');
+      await S.sleep(1500);
+      /** Every view, board and grid on the screen right now, identified so two readings can be merged. */
+      const onScreen = () =>
+        S.eval(() => ({
+          // Identified by what the view draws, not by its `from:`, which four of the six share.
+          // Every one of the six differs in its rows, its columns or its grouping.
+          views: [...document.querySelectorAll('.sheaf-view')].map((v) =>
+            (v.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, 160)
+          ),
+          boards: [...document.querySelectorAll('.sheaf-board')].length,
+          cards: [...document.querySelectorAll('.sheaf-board-card')].length,
+          grids: [...document.querySelectorAll('.sheaf-table-grid')].length,
+        }));
+      const seen = { views: new Set(), boards: 0, cards: 0, grids: 0 };
+      const take = (r) => {
+        for (const v of r.views) seen.views.add(v);
+        seen.boards = Math.max(seen.boards, r.boards);
+        seen.cards = Math.max(seen.cards, r.cards);
+        seen.grids = Math.max(seen.grids, r.grids);
+      };
+      take(await onScreen());
+      // The caret first, because PageDown goes to whatever has focus and after opening a
+      // document that is not the editor. Without this the document never scrolled and the
+      // reading was the first screen eight times over.
+      await S.caret('Views and boards', 2);
+      // Down the document a screen at a time, so every block is drawn at least once.
+      for (let i = 0; i < 10; i++) {
+        await S.press('PageDown');
+        await S.sleep(400);
+        take(await onScreen());
+      }
+      const after = readFileSync(doc, 'utf8');
+      const views = seen.views.size;
+      return {
+        ok:
+          // Four view blocks in the document, each drawn as a view: a table view of the named
+          // block, two boards of it, and a view of the file beside it.
+          views === 4 &&
+          // Three of them are boards, and a board has cards.
+          seen.boards >= 2 &&
+          seen.cards > 0 &&
+          // The named csv block and the pipe table both draw as grids.
+          seen.grids >= 1 &&
+          // And reading a document writes nothing to it.
+          after === before,
+        detail: `${views} views ${j([...seen.views])}; boards ${seen.boards}; cards ${seen.cards}; grids ${seen.grids}${after === before ? '' : '; the document changed on being opened'}`,
       };
     },
   },

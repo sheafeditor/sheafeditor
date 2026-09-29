@@ -1,0 +1,34 @@
+Field notes, Wren-4 relay
+=========================
+
+Sheaf opens a .txt when you ask it to, and reads it exactly as it reads a .md.
+That is the whole point of this file: every line below is a construct that means
+something in Markdown, sitting in a file whose name says it is plain text.
+
+# This line looks like a heading
+
+And it is drawn as one, because the file is read as Markdown. Somebody keeping
+notes in a .txt gets the same editor as somebody keeping them in a .md, which is
+what this is for.
+
+- A list that is a list
+- With a second item
+- [ ] And a task nobody has done
+- [x] And one somebody has
+
+Some **bold**, some *italic*, and `a code span`.
+
+| reading | value |
+| :--- | ---: |
+| uplink | 41 |
+| downlink | 38 |
+
+    An indented block, which is code in Markdown and looks like an aligned
+    paragraph to anyone reading the file in a terminal.
+
+The ambiguous part is deliberate. A line of equals signs under the first line is
+a setext heading in Markdown and a hand-drawn underline in a plain text file, and
+which one a person meant is not knowable from the bytes. Sheaf draws the heading,
+because it reads the file as Markdown and says so.
+
+Nothing is written to this file unless somebody types into it.

@@ -1215,4 +1215,53 @@ export const scenarios = [
       };
     },
   },
+  {
+    id: 'prose.line-numbers.e05',
+    feature: 'prose.line-numbers',
+    name: 'Line numbers turned on are still on after Developer: Reload Window, and on the next document too',
+    run: async (S) => {
+      // The whole of this feature is that the answer outlives the window. A reload throws the
+      // webview and the extension host away, so only something outside both can carry it
+      // across, and nothing short of a real window proves that. This is store-agnostic on
+      // purpose: it presses the button and reads the gutter, so it holds the behaviour rather
+      // than the mechanism, and it passed unchanged when the mechanism became a setting.
+      const j = (x) => JSON.stringify(x);
+      const TEXT = 'First line.\n\nSecond line.\n';
+      await S.fresh('line-numbers', TEXT);
+      await S.sleep(800);
+      const gutter = () =>
+        S.eval(() => ({
+          shown: !!document.querySelector('.cm-lineNumbers'),
+          pressed: document.querySelector('[title="Toggle line numbers"]')?.getAttribute('aria-pressed') ?? null,
+        }));
+      const before = await gutter();
+      await S.click({ sel: '[title="Toggle line numbers"]' });
+      await S.sleep(500);
+      const on = await gutter();
+      await S.command('Developer: Reload Window');
+      await S.sleep(6000);
+      const reloaded = await gutter();
+      // A different document in the same workspace: this is kept for the person rather
+      // than for one file, so the second document opens with the gutter already there.
+      await S.fresh('line-numbers-other', TEXT);
+      await S.sleep(1200);
+      const other = await gutter();
+      const disk = await S.disk();
+      return {
+        ok:
+          before.shown === false &&
+          before.pressed === 'false' &&
+          on.shown === true &&
+          on.pressed === 'true' &&
+          reloaded.shown === true &&
+          // The button has to agree, or the gutter comes back with the control that hides
+          // it looking as though it is already off.
+          reloaded.pressed === 'true' &&
+          other.shown === true &&
+          other.pressed === 'true' &&
+          disk === TEXT,
+        detail: `before ${j(before)} on ${j(on)} reloaded ${j(reloaded)} other document ${j(other)} file ${show(disk)}`,
+      };
+    },
+  },
 ];

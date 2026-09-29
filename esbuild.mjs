@@ -1,5 +1,6 @@
 import * as esbuild from 'esbuild';
-import { copyFileSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -7,6 +8,37 @@ const production = process.argv.includes('--production');
 const watch = process.argv.includes('--watch');
 
 const REPO = dirname(fileURLToPath(import.meta.url));
+
+/*
+ * The stamp that says which build this is, injected into the Node-side bundles
+ * and read by src/buildStamp.ts.
+ *
+ * The environment comes first, and that is not a convenience: `package:clean`
+ * and the release workflow both build from a `git archive` export, which has no
+ * `.git` to ask, and those are precisely the builds somebody installs and then
+ * wonders about. Whoever made the export knows the commit, so they pass it.
+ *
+ * A build that can answer neither says `unknown` rather than guessing. A build
+ * from a tree with uncommitted changes says so, because its commit alone does
+ * not describe what is running.
+ */
+function buildStamp() {
+  const git = (...args) => {
+    const r = spawnSync('git', args, { cwd: REPO, encoding: 'utf8' });
+    return r.status === 0 ? r.stdout.trim() : '';
+  };
+  const version = JSON.parse(readFileSync(join(REPO, 'package.json'), 'utf8')).version;
+  const env = process.env;
+  const commit = env.SHEAF_BUILD_COMMIT || git('rev-parse', '--short', 'HEAD') || 'unknown';
+  const branch = env.SHEAF_BUILD_BRANCH || git('rev-parse', '--abbrev-ref', 'HEAD') || 'unknown';
+  const dirty =
+    env.SHEAF_BUILD_DIRTY !== undefined
+      ? env.SHEAF_BUILD_DIRTY === '1'
+      : commit !== 'unknown' && git('status', '--porcelain', '--untracked-files=no') !== '';
+  return JSON.stringify({ version, commit, branch, dirty, builtAt: new Date().toISOString() });
+}
+
+const stamp = buildStamp();
 
 /*
  * KaTeX's stylesheet and fonts, copied next to the webview so they load from
@@ -40,6 +72,37 @@ function copyKatexAssets() {
 
 copyKatexAssets();
 
+/*
+ * Mermaid, copied next to the webview as the module Mermaid publishes and the
+ * chunks it imports, so a document with a diagram draws it with no connection.
+ *
+ * It is copied rather than bundled into `webview.js`. It is several megabytes, and
+ * `src/webview/mermaid.ts` imports it only when a document holds a diagram, so a
+ * document without one never parses a byte of it. The published build is already
+ * split by diagram type and imports its chunks by relative path, so a pie chart
+ * loads the pie chart's code and nothing else. Source maps stay behind.
+ *
+ * The folder is emptied first: chunk names carry a hash, and an upgrade would
+ * otherwise leave the old version's chunks in the package beside the new ones.
+ *
+ * Mermaid is MIT licensed, so its notice travels with it, as KaTeX's does.
+ */
+function copyMermaidAssets() {
+  const from = join(REPO, 'node_modules', 'mermaid', 'dist');
+  const to = join(REPO, 'media', 'mermaid');
+  rmSync(to, { recursive: true, force: true });
+  mkdirSync(join(to, 'chunks', 'mermaid.esm.min'), { recursive: true });
+  copyFileSync(join(from, 'mermaid.esm.min.mjs'), join(to, 'mermaid.esm.min.mjs'));
+  for (const file of readdirSync(join(from, 'chunks', 'mermaid.esm.min'))) {
+    if (file.endsWith('.mjs')) {
+      copyFileSync(join(from, 'chunks', 'mermaid.esm.min', file), join(to, 'chunks', 'mermaid.esm.min', file));
+    }
+  }
+  copyFileSync(join(REPO, 'node_modules', 'mermaid', 'LICENSE'), join(to, 'LICENSE.txt'));
+}
+
+copyMermaidAssets();
+
 /** Shared options */
 const common = {
   bundle: true,
@@ -57,14 +120,44 @@ const extensionCtx = await esbuild.context({
   platform: 'node',
   target: 'node20',
   external: ['vscode'],
+  define: { __SHEAF_BUILD__: JSON.stringify(stamp) },
 });
 
-/** Webview bundle — runs in the browser sandbox of the custom editor webview. */
+/*
+ * The editor, split so that opening a document parses only what it needs.
+ *
+ * Built as modules with code splitting rather than as one script. The reason is
+ * `@codemirror/language-data`, the registry that gives a fenced code block its
+ * highlighting: every entry in it loads its own grammar with a dynamic import, and
+ * a single-file build inlines all of them, so a document with no code in it still
+ * parsed Angular, Vue, WAST, PHP and thirty more on every open. Split, the entry is
+ * about a third of what it was and a grammar arrives when a fence asks for it.
+ *
+ * The chunks sit in `media/editor/` and are fetched the way mermaid's already are:
+ * a module imported by a script carrying the nonce is fetched with that nonce, and
+ * so are its own imports, which is what makes this work under the webview's policy
+ * without widening it.
+ *
+ * The entry keeps the name `media/webview.js`, because that path is what the
+ * extension's page, the local server's page and the website's demo all load, and
+ * "the same bytes in every host" is easier to keep true when the name does not move.
+ *
+ * The folder is emptied first, for the reason the mermaid copy is: chunk names carry
+ * a hash, so yesterday's chunks would otherwise pile up beside today's and ship.
+ *
+ * No build stamp here on purpose. The editor bundle is the same bytes in every
+ * host, and a commit hash compiled into it would make that false while answering
+ * a question the host it is embedded in can already answer.
+ */
+rmSync(join(REPO, 'media', 'editor'), { recursive: true, force: true });
 const webviewCtx = await esbuild.context({
   ...common,
   entryPoints: ['src/webview/main.ts'],
-  outfile: 'media/webview.js',
-  format: 'iife',
+  outdir: 'media',
+  entryNames: 'webview',
+  chunkNames: 'editor/[name]-[hash]',
+  splitting: true,
+  format: 'esm',
   platform: 'browser',
   target: 'es2020',
 });
@@ -88,6 +181,7 @@ const serverCtx = await esbuild.context({
   // The line goes in here rather than at the top of the source, where TypeScript
   // and the bundler each have their own opinion about what to do with it.
   banner: { js: '#!/usr/bin/env node' },
+  define: { __SHEAF_BUILD__: JSON.stringify(stamp) },
 });
 
 /**

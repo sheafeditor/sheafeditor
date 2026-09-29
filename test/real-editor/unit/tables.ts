@@ -1080,6 +1080,26 @@ export const scenarios: Scenario[] = [
     run: () => withGrid(INTRO + '| a |\n| - |\n| AT&amp;T &lt;3 |' + OUTRO, (g) => same(String(g.cell(0, 0).textContent), 'AT&T <3')),
   },
   {
+    id: 'tables.cell-content.u12', feature: 'tables.cell-content', name: 'A highlight in a cell draws as a highlight, and equals signs that are not a mark stay as typed',
+    run: () => withGrid(INTRO + '| a | b | c |\n| - | - | - |\n| one ==two== three | a == b | x ===y=== z |' + OUTRO, (g) => {
+      const marked = g.cell(0, 0);
+      const spaced = g.cell(0, 1);
+      const tripled = g.cell(0, 2);
+      return all(
+        {
+          // The mark draws, and the equals signs are gone from what a person reads.
+          drawn: marked.querySelector('.tok-highlight')?.textContent === 'two',
+          text: marked.textContent === 'one two three',
+          // `==` has to touch the text it wraps, so a comparison is left alone.
+          comparison: spaced.textContent === 'a == b' && !spaced.querySelector('.tok-highlight'),
+          // Three or more equals signs are not a delimiter.
+          tripled: tripled.textContent === 'x ===y=== z' && !tripled.querySelector('.tok-highlight'),
+        },
+        { marked: marked.innerHTML, spaced: spaced.textContent, tripled: tripled.textContent }
+      );
+    }),
+  },
+  {
     id: 'tables.cell-content.u07', feature: 'tables.cell-content', name: 'Editing next to an emoji family keeps the emoji bytes',
     run: () => {
       const doc = INTRO + '| e | name   |\n| - | ------ |\n| 👨‍👩‍👧‍👦 | family |' + OUTRO;
@@ -1216,16 +1236,24 @@ export const scenarios: Scenario[] = [
     }),
   },
   {
-    id: 'tables.touch.u02', feature: 'tables.touch', name: 'A touch press-and-hold inside an open cell editor is left to the text field',
+    id: 'tables.touch.u02', feature: 'tables.touch', name: "A touch press-and-hold inside an open cell opens that cell's menu and leaves the keyboard in it",
     run: () => withGrid(T, (g) => {
       mountContextMenu(g.view.dom, { getView: () => g.view, getFileName: () => 'doc.md', copyToClipboard: () => {} });
       g.dbl(g.cell(0, 0));
       const inp = g.input()!;
+      inp.focus();
       const e = new G.MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 0, clientX: 5, clientY: 5 });
       Object.defineProperty(e, 'pointerType', { value: 'touch' });
       inp.dispatchEvent(e);
-      const menu = Array.from(document.querySelectorAll<HTMLElement>('.sheaf-ctx-menu')).some((m) => !m.hidden);
-      return all({ notPrevented: !e.defaultPrevented, noMenu: !menu, editing: document.activeElement === inp });
+      const menu = Array.from(document.querySelectorAll<HTMLElement>('.sheaf-ctx-menu')).find((m) => !m.hidden);
+      const text = menu?.textContent ?? '';
+      // The cell's menu, not the grid's: the finger landed in text being typed.
+      return all({
+        menu: !!menu,
+        cellItems: /Edit Markdown/.test(text) && /Clear formatting/.test(text),
+        noRowActions: !/Insert row above/.test(text),
+        editing: document.activeElement === inp,
+      });
     }),
   },
 ];

@@ -141,6 +141,23 @@ export const scenarios: Scenario[] = [
       }),
   },
   {
+    name: 'link completion: a document’s front matter is not offered as a heading to link to',
+    run: () =>
+      // The dialect has no node for front matter, so the closing `---` parses as a setext
+      // underline and `title: Notes` above it becomes a level-2 heading. It is metadata, no
+      // renderer gives it an anchor, and `#title-notes` would point at nothing.
+      withEditor('---\ntitle: Notes\n---\n\n## Setup\n\n## Setup\n\nSee ', noHost, async (p) => {
+        type(p, '[x](#');
+        const c = linkCompletionOf(p.view.state);
+        const labels = c?.items.map((i) => i.label) ?? [];
+        const inserts = c?.items.map((i) => i.insert) ?? [];
+        return (
+          JSON.stringify(labels) === JSON.stringify(['Setup', 'Setup']) &&
+          JSON.stringify(inserts) === JSON.stringify(['#setup', '#setup-1'])
+        );
+      }),
+  },
+  {
     name: 'link completion: typing after ](# narrows the headings',
     run: () =>
       withEditor('# Intro\n\n## Hazard flags\n\nSee ', noHost, async (p) => {

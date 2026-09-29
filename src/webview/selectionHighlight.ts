@@ -102,6 +102,24 @@ function clientRects(view: EditorView, from: number, to: number): Box[] {
   return Array.from(range.getClientRects());
 }
 
+/**
+ * Where a fenced block's panel is drawn, in client coordinates, or null if it is not drawn.
+ *
+ * Read off the pseudo-element rather than recomputed here. `.tok-code-block::before` positions
+ * itself from the line's own indent so a quoted or nested block's panel sits inside that block,
+ * and a second copy of that arithmetic in this file would be a fact declared twice with nothing
+ * comparing the two.
+ */
+function panelEdges(line: Element): { left: number; right: number } | null {
+  const before = getComputedStyle(line, '::before');
+  if (before.content === 'none') return null;
+  const left = parseFloat(before.left);
+  const right = parseFloat(before.right);
+  if (!Number.isFinite(left) || !Number.isFinite(right)) return null;
+  const rect = line.getBoundingClientRect();
+  return { left: rect.left + left, right: rect.right - right };
+}
+
 /** The rendered line element holding `pos`, for its line height. */
 function lineElementAt(view: EditorView, pos: number): Element | null {
   const { node } = view.domAtPos(pos);
@@ -141,7 +159,30 @@ function selectionBoxes(view: EditorView): Box[] {
       if (!rows.length) continue;
       const line = lineElementAt(view, a);
       const lineHeight = line ? parseFloat(getComputedStyle(line).lineHeight) : NaN;
-      boxes.push(...fillLineHeight(rows, lineHeight));
+      const filled = fillLineHeight(rows, lineHeight);
+      /*
+       * A whole line of a fenced block fills its panel rather than stopping at its last
+       * character.
+       *
+       * Everywhere else this layer measures the text, on purpose: a selection across prose that
+       * ran to the edge of the column would paint a band over empty page. A code block is the one
+       * place with a frame drawn behind it, and there a selection that stops where the text stops
+       * leaves a stripe of panel showing on every short line, which reads as the selection having
+       * missed rather than as the line being short.
+       *
+       * Only a line the selection covers *entirely*. The first and last lines of a drag start and
+       * end inside the text, and stretching those would claim characters the person did not take.
+       * So the test is the block's own bounds, not the class alone.
+       *
+       * The panel's edges are read from the pseudo-element that draws it, so the two cannot
+       * disagree about where it is: whatever `.tok-code-block::before` resolves to at this depth
+       * is what a selected line fills.
+       */
+      if (line?.classList.contains('tok-code-block') && a === block.from && b === block.to) {
+        const panel = panelEdges(line);
+        if (panel) for (const row of filled) ({ left: row.left, right: row.right } = panel);
+      }
+      boxes.push(...filled);
     }
   }
   return boxes;

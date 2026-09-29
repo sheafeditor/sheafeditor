@@ -30,6 +30,9 @@ Open any of these in the Extension Development Host (<kbd>F5</kbd>) with **Sheaf
 | [blocks.md](blocks.md) | Headings, quotes, rules, front matter |
 | [lists.md](lists.md) | Bullets, ordered lists, nesting, tasks |
 | [tables.md](tables.md) | Pipe tables and `csv`/`tsv` grids, small |
+| [views.md](views.md) | `view` blocks over a named block and over a file, as tables and as boards |
+| [data/releases.csv](data/releases.csv) | A `.csv` opened in its own grid, and what [views.md](views.md) reads by path |
+| [notes.txt](notes.txt) | A `.txt`, read as Markdown, with a line that is a heading only if it is |
 | [code-blocks.md](code-blocks.md) | Fenced code across languages |
 
 ## Realistic documents
@@ -57,6 +60,7 @@ Open any of these in the Extension Development Host (<kbd>F5</kbd>) with **Sheaf
 | [edge/images.md](edge/images.md) | Every image form, including the HTML upgrade for size and captions |
 | [edge/front-matter.md](edge/front-matter.md) | YAML front matter across the type system, plus TOML/JSON dialects as content |
 | [edge/dialects.md](edge/dialects.md) | GitHub alerts, note-app callouts, wiki links, definition lists, maths, mermaid, setext headings |
+| [edge/views.md](edge/views.md) | Every way a `view` query can be wrong: a name nothing has, a missing file, columns that do not exist, an unknown layout and key, no `from:` at all |
 | [edge/templating.md](edge/templating.md) | Liquid, Hugo shortcodes, mdBook includes, MDX, `:::` directives, MyST, KumaScript |
 | [edge/emoji.md](edge/emoji.md) | Emoji, flags, ZWJ sequences, skin tones and keycaps in prose, table cells, lists and headings, for testing one emoji replaced by another |
 | [edge/hard-breaks.md](edge/hard-breaks.md) | Backslash and trailing-space line breaks in prose, emphasis, quotes and lists, next to the look-alikes that must stay literal |
@@ -87,6 +91,7 @@ never churns the working tree.
 | [stress/long-handbook.md](stress/long-handbook.md) | ~3,100 lines | Scroll performance and decoration recycling over a structurally varied document |
 | [stress/long-narrative.md](stress/long-narrative.md) | ~700 lines | Same length problem, but prose-dense: inline decorations rather than block ones |
 | [stress/large-tables.md](stress/large-tables.md) | ~1,100 lines | 800×12 tall table, 40-column wide table, ragged widths, 20 tables back to back |
+| [stress/wide-tables.md](stress/wide-tables.md) | ~220 lines | 200-column table, and 200×200 at forty thousand cells: no pane holds the minimums, so the frame always scrolls sideways |
 | [stress/data-blocks.md](stress/data-blocks.md) | ~2,300 lines | A 2,000-row `csv` block, CSV quoting edge cases, a 300-row `tsv` block |
 | [stress/code-heavy.md](stress/code-heavy.md) | ~2,800 lines | 200 fenced blocks across 7 languages — lazy highlighting under load |
 | [stress/deep-nesting.md](stress/deep-nesting.md) | ~100 lines | Ten levels of bullets, six of quote, blocks nested inside list items |

@@ -21,6 +21,7 @@ import { EditorSelection } from '@codemirror/state';
 import { undoDepth } from '@codemirror/commands';
 import { createTableOfContents, documentHeadings, TableOfContents } from '../../src/webview/tableOfContents';
 import { mountToolbar } from '../../src/webview/toolbar';
+import { mountContextMenu } from '../../src/webview/contextmenu';
 
 /** A document in a page with the rail beside it, turned on unless `on` says otherwise. */
 function mountToc(doc: string, on = true): {
@@ -36,7 +37,7 @@ function mountToc(doc: string, on = true): {
   document.body.appendChild(host);
   const toc = createTableOfContents(host, () => view.view);
   toc.attach(view.view);
-  toc.setEnabled(on);
+  toc.setState(on ? 'shown' : 'hidden');
   const entries = (): HTMLAnchorElement[] => Array.from(toc.el.querySelectorAll<HTMLAnchorElement>('.sheaf-toc-entry'));
   return {
     view,
@@ -210,7 +211,7 @@ export const scenarios: Scenario[] = [
     run: () => {
       const t = mountToc(SPEC, false);
       const before = t.nav.hidden;
-      t.toc.setEnabled(true);
+      t.toc.setState('shown');
       const ok = before && !t.nav.hidden && t.entries().length === 4;
       t.remove();
       return ok;
@@ -365,12 +366,74 @@ export const scenarios: Scenario[] = [
       document.body.appendChild(bar);
       let pressed = 0;
       mountToolbar(bar, () => p.view, () => {}, () => {}, () => false, false, () => pressed++, false);
-      const btn = bar.querySelector<HTMLButtonElement>('[aria-label="Table of contents"]')!;
+      const btn = bar.querySelector<HTMLButtonElement>('.sheaf-tb-toc')!;
       const off = btn.getAttribute('aria-pressed') === 'false' && !btn.classList.contains('is-active');
       btn.click();
       const ok = off && pressed === 1;
       bar.remove();
       p.destroy();
+      return ok;
+    },
+  },
+  {
+    /*
+     * The rail is not in the document, so nothing about it can be read off the editor
+     * state. The menu is handed what the rail is doing, and these are the items it draws
+     * from that: the three states for this document, and the two that say how far the
+     * choice reaches.
+     */
+    name: 'the right-click menu on the rail offers the three states and how far the choice reaches',
+    run: () => {
+      const t = mountToc(SPEC);
+      t.toc.setState('collapsed');
+      document.querySelectorAll('.sheaf-ctx-menu').forEach((m) => m.remove());
+      const asked: string[] = [];
+      let own = false;
+      mountContextMenu(t.nav.parentElement!, {
+        getView: () => t.view.view,
+        getFileName: () => 'doc.md',
+        copyToClipboard: () => {},
+        outline: {
+          state: () => t.toc.state(),
+          isOwn: () => own,
+          setForDocument: (s) => asked.push(`set:${s}`),
+          everywhere: () => asked.push('everywhere'),
+          reset: () => asked.push('reset'),
+        },
+      });
+      const items = (): { label: string; off: boolean }[] => {
+        t.nav.dispatchEvent(new (globalThis as any).MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2 }));
+        return Array.from(document.querySelectorAll<HTMLButtonElement>('.sheaf-ctx-menu .sheaf-ctx-item')).map((b) => ({
+          label: b.querySelector('span')?.textContent ?? '',
+          off: b.disabled,
+        }));
+      };
+      const folded = items();
+      // Reset is nothing to offer on a document that never overrode the setting.
+      const resetOff = folded.find((i) => i.label === 'Reset to default')?.off === true;
+      own = true;
+      const withOwn = items();
+      // And each item does what it says, which reading the labels cannot tell you.
+      withOwn.find((i) => i.label === 'Show table of contents')!;
+      const buttons = Array.from(document.querySelectorAll<HTMLButtonElement>('.sheaf-ctx-menu .sheaf-ctx-item'));
+      buttons.find((b) => b.querySelector('span')?.textContent === 'Show table of contents')!.click();
+      buttons.find((b) => b.querySelector('span')?.textContent === 'Use this everywhere')!.click();
+      items();
+      Array.from(document.querySelectorAll<HTMLButtonElement>('.sheaf-ctx-menu .sheaf-ctx-item'))
+        .find((b) => b.querySelector('span')?.textContent === 'Reset to default')!
+        .click();
+      document.querySelectorAll('.sheaf-ctx-menu').forEach((m) => m.remove());
+      const ok =
+        folded.map((i) => i.label).join(', ') ===
+          'Show table of contents, Fold the list away, Hide table of contents, Use this everywhere, Reset to default' &&
+        // Folded, so folding is the one there is nothing to ask for.
+        folded.find((i) => i.label === 'Fold the list away')?.off === true &&
+        folded.find((i) => i.label === 'Show table of contents')?.off === false &&
+        resetOff &&
+        withOwn.find((i) => i.label === 'Reset to default')?.off === false &&
+        asked.join('|') === 'set:shown|everywhere|reset' &&
+        t.view.doc() === SPEC;
+      t.remove();
       return ok;
     },
   },
@@ -381,11 +444,60 @@ export const scenarios: Scenario[] = [
       const bar = document.createElement('div');
       document.body.appendChild(bar);
       mountToolbar(bar, () => p.view, () => {}, () => {}, () => false, false, () => {}, true);
-      const btn = bar.querySelector<HTMLButtonElement>('[aria-label="Table of contents"]')!;
+      const btn = bar.querySelector<HTMLButtonElement>('.sheaf-tb-toc')!;
       const ok = btn.getAttribute('aria-pressed') === 'true' && btn.classList.contains('is-active');
       bar.remove();
       p.destroy();
       return ok;
+    },
+  },
+  {
+    name: 'collapsed draws the header with its list folded away, and the header opens it again',
+    run: () => {
+      const t = mountToc('# One\n\nWords.\n\n## Two\n');
+      const header = t.nav.querySelector<HTMLButtonElement>('.sheaf-toc-header')!;
+      const listed = t.entries().length === 2 && header.getAttribute('aria-expanded') === 'true';
+      t.toc.setState('collapsed');
+      const list = t.nav.querySelector<HTMLElement>('.sheaf-toc-list')!;
+      // The rail is still there, which is the difference from hidden: a person can see
+      // the document has headings and one press brings them back.
+      const folded =
+        !t.nav.hidden &&
+        list.hidden &&
+        t.nav.classList.contains('is-folded') &&
+        header.getAttribute('aria-expanded') === 'false' &&
+        header.textContent === 'Contents';
+      header.click();
+      const opened = !list.hidden && t.entries().length === 2 && t.toc.state() === 'shown';
+      // And the header folds it again, since it is the one control for both directions.
+      header.click();
+      const foldedAgain = t.toc.state() === 'collapsed' && t.nav.querySelector<HTMLElement>('.sheaf-toc-list')!.hidden;
+      t.remove();
+      return listed && folded && opened && foldedAgain;
+    },
+  },
+  {
+    name: 'hidden draws nothing at all, where collapsed still draws the header',
+    run: () => {
+      const t = mountToc('# One\n\nWords.\n');
+      t.toc.setState('hidden');
+      const gone = t.nav.hidden && !t.toc.enabled();
+      t.toc.setState('collapsed');
+      const there = !t.nav.hidden && t.toc.enabled();
+      t.remove();
+      return gone && there;
+    },
+  },
+  {
+    name: 'a document with no headings says so when the list is open, and says nothing when it is folded',
+    run: () => {
+      const t = mountToc('Just words, no headings.\n');
+      const empty = t.nav.querySelector<HTMLElement>('.sheaf-toc-empty')!;
+      const said = !empty.hidden;
+      t.toc.setState('collapsed');
+      const quiet = empty.hidden;
+      t.remove();
+      return said && quiet;
     },
   },
   {

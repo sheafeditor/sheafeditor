@@ -485,7 +485,7 @@ export const scenarios = [
     },
   },
   {
-    id: 'tables.cell-edit.e12',
+    id: 'tables.cell-edit.e14',
     feature: 'tables.cell-edit',
     name: 'The same, with another cell left open when the write lands: Cmd+Z in that cell still brings the typing back',
     run: async (S) => {

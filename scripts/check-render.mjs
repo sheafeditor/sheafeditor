@@ -63,11 +63,11 @@ const TELLTALES = [
  * Constructs Sheaf does not draw yet. Each is reported as known instead of
  * failing, until the day it renders, when the run fails and asks for the entry
  * to be removed. Describe the gap; do not put tracker references here.
+ *
+ * Empty, as of emoji shortcodes drawing: every construct in the list above now
+ * renders, and any one of them showing its source is a failure.
  */
-const KNOWN_GAPS = {
-  'emoji shortcode': 'Shortcodes are parsed but drawn as typed; there is no name-to-character table.',
-  'footnote reference': 'The dialect has no footnote extension, so references and definitions show as written.',
-};
+const KNOWN_GAPS = {};
 
 /* ------------------------------------------------------------- documents -- */
 
