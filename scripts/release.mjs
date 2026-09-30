@@ -269,7 +269,21 @@ if (drift !== '') {
 }
 say('  ok   the staged tree is origin/main’s, exactly');
 
-must(`Committing Sheaf Editor ${version}`, 'git', ['commit', '-m', `Sheaf Editor ${version}`], releaseTree);
+/*
+ * Only when there is something to commit.
+ *
+ * A run that made the release commit and then failed before pushing leaves the branch
+ * already carrying this tree. The next run resets, takes `origin/main` again, finds nothing
+ * changed, and `git commit` exits non-zero saying "nothing to commit" — which this read as
+ * the commit having failed, when in fact it had already succeeded. Retrying a release should
+ * be safe, and this is the step that made it not be.
+ */
+if (run('git', ['diff', '--cached', '--quiet'], releaseTree).ok) {
+  say(`\n=== Sheaf Editor ${version} is already committed ===`);
+  say(`  ok   ${run('git', ['rev-parse', '--short', 'HEAD'], releaseTree).out} already carries this tree, so there is nothing to commit.`);
+} else {
+  must(`Committing Sheaf Editor ${version}`, 'git', ['commit', '-m', `Sheaf Editor ${version}`], releaseTree);
+}
 
 /*
  * Both pushes inside one agent, so the passphrase is asked for once instead of once per
