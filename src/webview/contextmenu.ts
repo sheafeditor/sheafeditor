@@ -96,7 +96,7 @@ type MenuItem =
       /** A checked item that is one choice among several (Turn into). */
       radio?: boolean;
     }
-  | { kind: 'submenu'; label: string; items: MenuItem[]; disabled?: boolean };
+  | { kind: 'submenu'; label: string; items: MenuItem[]; disabled?: boolean; icon?: TableIcon };
 
 /* ---- What was clicked ---------------------------------------------------- */
 
@@ -184,6 +184,23 @@ export function mountContextMenu(root: HTMLElement, deps: ContextMenuDeps): void
   // Copy ref's key is bound by the editor window, not in this page, so it is shown only where the
   // host has that window. Send to terminal is offered in exactly the same hosts, so its presence is
   // the answer; in a browser tab neither key does anything, and a hint there would be untrue.
+  /*
+   * Copy ref's key hint, shown only where the key exists.
+   *
+   * It reads as the wrong question, because Copy ref touches no terminal: it puts the file,
+   * the lines and the text on the clipboard. It is the right one. Both chords are manifest
+   * keybindings (`sheaf.copyRef` on `cmd+shift+c`, `sheaf.sendRefToTerminal` on
+   * `cmd+shift+alt+t`), so the keystroke is handled by the extension host and not by this
+   * bundle: see the note beside them in `shortcuts.ts`, which is why neither is in the
+   * editing keymap. A browser tab has no extension host, so pressing it there does nothing,
+   * and a hint for a key that does nothing is worse than no hint.
+   *
+   * A host with no terminal is a host that is not VS Code, which is what makes the terminal
+   * capability a usable stand-in for "these keys exist". `setBlockRefHost` in `main.ts`
+   * answers `hasEditorKeys` the same way and says so, and the toolbar's Copy ref reads that,
+   * so the two agree by construction. If a third host ever has one and not the other, this
+   * needs a capability of its own rather than a better guess.
+   */
   const copyRefKey = () => (deps.sendRefToTerminal ? COPY_REF_KEY : undefined);
   const menu = document.createElement('div');
   menu.className = 'sheaf-ctx-menu';
@@ -385,11 +402,11 @@ export function mountContextMenu(root: HTMLElement, deps: ContextMenuDeps): void
     if (link?.url) {
       const url = link.url;
       context.push(
-        { kind: 'item', label: 'Open link', keyHint: 'Mod-Enter', run: cmd(() => (deps.openLink ?? openLink)(url)) },
+        { kind: 'item', label: 'Open link', icon: 'open', keyHint: 'Mod-Enter', run: cmd(() => (deps.openLink ?? openLink)(url)) },
         // The address as written, not the href: a copied address is pasted
         // somewhere else, where Markdown's escapes mean nothing, and where a
         // `mailto:` this document never held would be in the way.
-        { kind: 'item', label: 'Copy link address', run: cmd(() => deps.copyToClipboard(linkAddress(url))) }
+        { kind: 'item', label: 'Copy link address', icon: 'copy', run: cmd(() => deps.copyToClipboard(linkAddress(url))) }
       );
     }
     if (link?.cuts) {
@@ -397,16 +414,18 @@ export function mountContextMenu(root: HTMLElement, deps: ContextMenuDeps): void
       context.push({
         kind: 'item',
         label: 'Remove link',
+        icon: 'unlink',
         keyHint: 'Mod-Shift-k',
         run: cmd((v) => v.dispatch({ changes: cuts, userEvent: 'delete' })),
       });
     }
-    if (code != null) context.push({ kind: 'item', label: 'Copy code', run: cmd(() => deps.copyToClipboard(code)) });
+    if (code != null) context.push({ kind: 'item', label: 'Copy code', icon: 'copy', run: cmd(() => deps.copyToClipboard(code)) });
     if (task) {
       const { at, done } = task;
       context.push({
         kind: 'item',
         label: done ? 'Mark not done' : 'Mark done',
+        icon: 'taskList',
         run: cmd((v) => v.dispatch({ changes: { from: at, to: at + 1, insert: done ? ' ' : 'x' }, userEvent: 'input' })),
       });
     }
@@ -438,22 +457,23 @@ export function mountContextMenu(root: HTMLElement, deps: ContextMenuDeps): void
     const hiddenHere = !inCell && mode === 'hidden' && inFrontMatter(state, 0);
     if (frontMatter || hiddenHere) {
       context.push(
-        { kind: 'item', label: 'Show front matter', disabled: mode === 'shown', run: cmd((v) => setFrontMatterForDocument(v, 'shown')) },
-        { kind: 'item', label: 'Collapse front matter', disabled: mode === 'collapsed', run: cmd((v) => setFrontMatterForDocument(v, 'collapsed')) },
-        { kind: 'item', label: 'Hide front matter', disabled: mode === 'hidden', run: cmd((v) => setFrontMatterForDocument(v, 'hidden')) },
+        { kind: 'item', label: 'Show front matter', icon: 'show', disabled: mode === 'shown', run: cmd((v) => setFrontMatterForDocument(v, 'shown')) },
+        { kind: 'item', label: 'Collapse front matter', icon: 'collapse', disabled: mode === 'collapsed', run: cmd((v) => setFrontMatterForDocument(v, 'collapsed')) },
+        { kind: 'item', label: 'Hide front matter', icon: 'hide', disabled: mode === 'hidden', run: cmd((v) => setFrontMatterForDocument(v, 'hidden')) },
         // The two that say how far the choice reaches, which is otherwise invisible: one
         // makes it every document, the other gives this one back to the setting.
-        { kind: 'item', label: 'Use this everywhere', run: cmd(frontMatterEverywhere) },
-        { kind: 'item', label: 'Reset to default', disabled: !frontMatterIsOwn(), run: cmd(resetFrontMatter) }
+        { kind: 'item', label: 'Use this everywhere', icon: 'everywhere', run: cmd(frontMatterEverywhere) },
+        { kind: 'item', label: 'Reset to default', icon: 'resetWidths', disabled: !frontMatterIsOwn(), run: cmd(resetFrontMatter) }
       );
     }
     // Bold, italic and strikethrough are off the menu but not off the document:
     // Clear formatting still has something to clear when the caret sits in one.
     const anyMark = fs.bold || fs.italic || fs.strike || fs.code || fs.highlight || fs.link;
-    const mark = (label: string, keyHint: string, marker: string, on: boolean): MenuItem => ({
+    const mark = (label: string, keyHint: string, marker: string, on: boolean, icon: TableIcon): MenuItem => ({
       kind: 'item',
       label,
       keyHint,
+      icon,
       checked: on,
       // Each mark asks about its own construct, so Inline code stays available
       // inside a code span, which is where it is used to turn one off.
@@ -462,10 +482,35 @@ export function mountContextMenu(root: HTMLElement, deps: ContextMenuDeps): void
     });
 
     const current = blockKindOf(fs);
+    /*
+     * The glyph for each block kind, which is the toolbar's own: the same command reached
+     * two ways should look the same both times.
+     *
+     * The check that says which kind the block already is does not compete with this. It is
+     * drawn in `.sheaf-ctx-menu.has-checks`'s 26px of left padding, and the glyph is the
+     * row's first flex child, so the two sit in their own columns and both stay aligned
+     * down the menu. Measured on an H1 block, where the row carries a tick, a glyph and
+     * `Mod-Alt-1` at once.
+     */
+    const BLOCK_ICON: Record<BlockKind, TableIcon> = {
+      text: 'paragraph',
+      h1: 'h1',
+      h2: 'h2',
+      h3: 'h3',
+      h4: 'h4',
+      h5: 'h5',
+      h6: 'h6',
+      bullet: 'bulletList',
+      ordered: 'orderedList',
+      task: 'taskList',
+      quote: 'quote',
+      code: 'codeBlock',
+    };
     const into = (label: string, kind: BlockKind, keyHint?: string): MenuItem => ({
       kind: 'item',
       label,
       keyHint,
+      icon: BLOCK_ICON[kind],
       checked: current === kind,
       radio: true,
       // From a code block the choices are to keep it or to turn it back into text.
@@ -481,6 +526,7 @@ export function mountContextMenu(root: HTMLElement, deps: ContextMenuDeps): void
       {
         kind: 'item',
         label: 'Edit Markdown',
+        icon: 'source',
         keyHint: 'Mod-Alt-e',
         // A cell always has something to show, since the whole of its document is the cell.
         disabled: !inCell && !blockRangeAt(state, pos),
@@ -489,6 +535,7 @@ export function mountContextMenu(root: HTMLElement, deps: ContextMenuDeps): void
       {
         kind: 'item',
         label: 'Copy ref',
+        icon: 'copyRef',
         keyHint: copyRefKey(),
         // The grid says where a cell's row lands in the file; the cell's own editor counts
         // from line 1 of that cell and would name the same line for every cell in the table.
@@ -497,17 +544,17 @@ export function mountContextMenu(root: HTMLElement, deps: ContextMenuDeps): void
       // Beside Copy ref, because it is the same reference going somewhere else: to the terminal's
       // prompt rather than the clipboard. Absent where the host has not offered it.
       ...(deps.sendRefToTerminal
-        ? [{ kind: 'item', label: 'Send to terminal', keyHint: SEND_REF_KEY, run: cmd(() => deps.sendRefToTerminal!()) } as MenuItem]
+        ? [{ kind: 'item', label: 'Send to terminal', icon: 'terminal', keyHint: SEND_REF_KEY, run: cmd(() => deps.sendRefToTerminal!()) } as MenuItem]
         : []),
       { kind: 'sep' },
       // Turn into is absent in a cell rather than disabled: a cell holds inline content, so
       // `# ` written into one is two characters of a value, and a control a person cannot
       // use leaves them working out why when there is no answer that helps.
       ...(inCell ? [] : turnIntoGroup(frontMatter, into)),
-      mark('Highlight', 'Mod-Shift-h', '==', fs.highlight),
-      mark('Inline code', 'Mod-e', '`', fs.code),
-      ...(link ? [] : [{ kind: 'item', label: 'Link', keyHint: 'Mod-k', disabled: noInline, run: cmd(insertLink) } as MenuItem]),
-      { kind: 'item', label: 'Clear formatting', disabled: noInline || (!selected.length && !anyMark), run: cmd(clearFormatting) },
+      mark('Highlight', 'Mod-Shift-h', '==', fs.highlight, 'highlight'),
+      mark('Inline code', 'Mod-e', '`', fs.code, 'code'),
+      ...(link ? [] : [{ kind: 'item', label: 'Link', icon: 'link', keyHint: 'Mod-k', disabled: noInline, run: cmd(insertLink) } as MenuItem]),
+      { kind: 'item', label: 'Clear formatting', icon: 'clear', disabled: noInline || (!selected.length && !anyMark), run: cmd(clearFormatting) },
     ];
     if (context.length) items.push({ kind: 'sep' }, ...context);
     return items;
@@ -519,6 +566,7 @@ export function mountContextMenu(root: HTMLElement, deps: ContextMenuDeps): void
       {
         kind: 'submenu',
         label: 'Turn into',
+        icon: 'turnInto',
         disabled: frontMatter,
         items: [
           into('Text', 'text', 'Mod-Alt-0'),
@@ -562,8 +610,9 @@ export function mountContextMenu(root: HTMLElement, deps: ContextMenuDeps): void
       btn.className = 'sheaf-ctx-item';
       btn.setAttribute('role', 'menuitem');
       btn.tabIndex = -1;
-      // Before the label, so one column of glyphs runs down the menu.
-      if (item.kind === 'item' && item.icon) btn.insertAdjacentHTML('afterbegin', tableIcon(item.icon));
+      // Before the label, so one column of glyphs runs down the menu. A submenu's own row
+      // carries one too: a gap in a column of glyphs reads as a missing one.
+      if (item.icon) btn.insertAdjacentHTML('afterbegin', tableIcon(item.icon));
       const label = document.createElement('span');
       label.className = 'sheaf-ctx-label';
       label.textContent = item.label;

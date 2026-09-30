@@ -112,6 +112,22 @@ async function staleWrite(S, path, text, until) {
   throw new Error(`the write from outside never reached the editor (waiting for ${JSON.stringify(until)})`);
 }
 
+/**
+ * The file once the auto-save after a merge has landed, or what is there when it never does.
+ *
+ * `notThis` is the text the outside write left, so waiting for anything else is waiting for
+ * the merge to be written back rather than for a length of time.
+ */
+async function diskAfterMerge(S, path, notThis, max = 10000) {
+  const until = Date.now() + max;
+  let d = await S.disk(path);
+  while (d === notThis && Date.now() < until) {
+    await S.sleep(100);
+    d = await S.disk(path);
+  }
+  return d;
+}
+
 /** Take the write back the way the person does: leave the grid, then their own Undo key. */
 async function pressUndo(S) {
   await leave(S);
@@ -847,7 +863,16 @@ export const scenarios = [
   {
     id: 'tables.change-flash.e08',
     feature: 'tables.change-flash',
-    name: 'Retype a cell, and the file is then written from text read before it: the row the tool changed is marked and the notice names the cell',
+    /*
+     * The row the tool wrote is marked, as any change from outside is, and the typed row is
+     * not touched: the write is behind on it, so its version of that row is dropped and the
+     * typing stays. Nothing is said for the same reason nothing is lost, which is the rule
+     * `tables.outside-merge.e01` records and `e06` controls.
+     *
+     * This used to assert a notice naming the typed cell, on the reading that the same write
+     * put `1` back where `X` had been. It does not.
+     */
+    name: 'Retype a cell, and the file is then written from text read before it: the row the tool changed is marked and the typing stays',
     run: async (S) => {
       const path = await S.fresh('flash-while-editing', inDoc(T4));
       await S.dblclick(cell(0, 1));
@@ -857,10 +882,11 @@ export const scenarios = [
       const m = await outside(S, path, inDoc(T4.replace('| c | 3 |', '| c | 33 |')), '| c | 33 |');
       await S.sleep(300);
       const said = await toasts(S);
-      // The row the tool wrote is marked, as any change from outside is. Row a is
-      // marked too, because the same write put `1` back where `X` had been, and the
-      // notice is what says that one was the person's own.
-      return all({ marked: m.flat().includes('c|33'), said: saidItTook(said, 'X') }, { m, said });
+      const shown = (await S.state()).doc;
+      return all(
+        { marked: m.flat().includes('c|33'), kept: shown.includes('| a | X |'), said: said.length === 0 },
+        { m, said, shown }
+      );
     },
   },
   {
@@ -883,55 +909,73 @@ export const scenarios = [
   {
     id: 'tables.outside-merge.e01',
     feature: 'tables.outside-merge',
-    name: 'Retype a cell, and the file is then written from text read before it: the notice names the cell and Undo brings it back',
+    /*
+     * Both changes survive, and nothing is said, because nothing was lost.
+     *
+     * This used to assert that the write wins and the person is told what it took. It does
+     * not win any more: the merge keeps the write's own row and the person's typing, which
+     * are in different rows and do not conflict. A notice is for a change that is gone, and
+     * `tables.outside-merge.e06` is the case where one is: the write lands in the same cell
+     * that was typed in, and there the notice still fires. That scenario is the control for
+     * this one, and it is what says the notice has not simply stopped working.
+     */
+    name: 'Retype a cell, and the file is then written from text read before it: both changes survive and nothing is said',
     run: async (S) => {
+      const stale = inDoc(T4.replace('| d | 4 |', '| d | 44 |'));
       const path = await S.fresh('merge-other-row', inDoc(T4));
       await S.dblclick(cell(0, 1));
       await S.type('X');
       await S.press('Tab');
-      const said = await staleWrite(S, path, inDoc(T4.replace('| d | 4 |', '| d | 44 |')), '| d | 44 |');
-      // The write wins, the way it does in any editor. What is new is being told.
-      const gone = (await S.state()).doc;
-      await pressUndo(S);
-      const d = await S.disk(path);
+      const said = await staleWrite(S, path, stale, '| d | 44 |');
+      const both = inDoc(T4.replace('| a | 1 |', '| a | X |').replace('| d | 4 |', '| d | 44 |'));
+      const shown = (await S.state()).doc;
+      const d = await diskAfterMerge(S, path, stale);
       return all(
-        {
-          took: !gone.includes('| a | X |'),
-          said: saidItTook(said, 'X'),
-          back: d === inDoc(T4.replace('| a | 1 |', '| a | X |')),
-        },
-        { said, gone, d }
+        { kept: shown === both, said: said.length === 0, onDisk: d === both },
+        { said, shown, d }
       );
     },
   },
   {
     id: 'tables.outside-merge.e02',
     feature: 'tables.outside-merge',
-    name: 'Retype a cell, and a row is then appended from text read before it: the notice names the cell and Undo brings it back',
+    // The appended row and the typing are in different rows, so both survive. See e01.
+    name: 'Retype a cell, and a row is then appended from text read before it: both changes survive and nothing is said',
     run: async (S) => {
+      const stale = inDoc(T4 + '\n| e | 5 |');
       const path = await S.fresh('merge-append', inDoc(T4));
       await S.dblclick(cell(0, 1));
       await S.type('X');
       await S.press('Tab');
-      const said = await staleWrite(S, path, inDoc(T4 + '\n| e | 5 |'), '| e | 5 |');
-      const gone = (await S.state()).doc;
+      const said = await staleWrite(S, path, stale, '| e | 5 |');
+      const both = inDoc(T4.replace('| a | 1 |', '| a | X |') + '\n| e | 5 |');
+      const shown = (await S.state()).doc;
       await S.shot('merge-append');
-      await pressUndo(S);
-      const d = await S.disk(path);
+      const d = await diskAfterMerge(S, path, stale);
       return all(
-        {
-          took: !gone.includes('| a | X |'),
-          said: saidItTook(said, 'X'),
-          back: d === inDoc(T4.replace('| a | 1 |', '| a | X |')),
-        },
-        { said, gone, d }
+        { kept: shown === both, said: said.length === 0, onDisk: d === both },
+        { said, shown, d }
       );
     },
   },
   {
     id: 'tables.outside-merge.e03',
     feature: 'tables.outside-merge',
-    name: 'Retype row a, and the rows are then swapped from text read before it: the notice names the cell and Undo brings it back',
+    /*
+     * A reorder from outside is refused rather than merged, and no row appears twice.
+     *
+     * This used to assert the write wins and a notice names the cell. What it actually did
+     * was worse than either: the merge kept the person's row where it was and inserted the
+     * write's copy of it further down, so eight rows became nine and the file held a row
+     * nobody wrote. A line merge has no notion of a move, and one side moving a line while
+     * the other edits near it is the shape that produces it.
+     *
+     * So the merge now refuses an answer that multiplies a line the document already had,
+     * the person keeps theirs, and it is reported as dropped. That is the rule `mergeSpans`
+     * already states for characters: a change refused can be made again, and a wrong merge
+     * writes something with no author.
+     */
+    name: 'Retype row a, and the rows are then swapped from text read before it: no row appears twice',
     run: async (S) => {
       const path = await S.fresh('merge-swap', inDoc(T8));
       await S.dblclick(cell(0, 1));
@@ -941,63 +985,108 @@ export const scenarios = [
       const said = await staleWrite(S, path, swapped, '| b | 2 |\n| a | 1 |');
       const gone = (await S.state()).doc;
       await S.shot('merge-swap');
+      const rows = tableLines(gone).slice(2);
+      const keys = rows.map((l) => l.slice(2, 3));
       await pressUndo(S);
       const d = await S.disk(path);
       return all(
         {
+          // The two that say the merge invented nothing. Row count alone would pass a
+          // result holding row a twice and row h not at all.
+          noDuplicate: keys.length === new Set(keys).size,
+          rowCount: rows.length === tableLines(inDoc(T8)).slice(2).length,
+          // The write asked for this order and gets it.
+          swapped: rows[0] === '| b | 2 |' && rows[1] === '| a | 1 |',
           took: !gone.includes('| a | X |'),
           said: saidItTook(said, 'X'),
           // Undo takes the whole write back, so the rows are in the order they were in
           // and the edit is on row a again.
           back: d === inDoc(T8.replace('| a | 1 |', '| a | X |')),
         },
-        { said, rows: tableLines(gone).slice(2, 4), d }
+        { said, rows, d }
+      );
+    },
+  },
+  {
+    id: 'tables.outside-merge.e09',
+    feature: 'tables.outside-merge',
+    /*
+     * CONTROL for e03. The same swap arriving with nobody typing has nothing to reconcile,
+     * so it must land whole and say nothing.
+     *
+     * Without this, a change that made the merge refuse every reorder would pass e03, which
+     * only asks that no row appears twice. Refusing the lot is one way to stop duplicating a
+     * row and it would make a `git checkout` stop reaching the editor.
+     */
+    name: 'CONTROL: the same swap with nobody typing lands whole, in the new order, and says nothing',
+    run: async (S) => {
+      const path = await S.fresh('merge-swap-alone', inDoc(T8));
+      const swapped = inDoc(T8.replace('| a | 1 |\n| b | 2 |', '| b | 2 |\n| a | 1 |'));
+      const said = await staleWrite(S, path, swapped, '| b | 2 |\n| a | 1 |');
+      const shown = (await S.state()).doc;
+      const rows = tableLines(shown).slice(2);
+      const keys = rows.map((l) => l.slice(2, 3));
+      return all(
+        {
+          arrived: shown === swapped,
+          noDuplicate: keys.length === new Set(keys).size,
+          said: said.length === 0,
+        },
+        { said, rows, shown }
       );
     },
   },
   {
     id: 'tables.outside-merge.e04',
     feature: 'tables.outside-merge',
-    name: 'Insert row below, and the file is then written from text read before it: the notice says a change went and Undo brings the row back',
+    /*
+     * Nobody typed here, and an inserted row is still the person's own work. It survives a
+     * write made before it for the same reason typing does, and for the same reason nothing
+     * is said: the write's own row is kept too, so nothing of either is gone. See e01.
+     */
+    name: 'Insert row below, and the file is then written from text read before it: the row and the write both survive',
     run: async (S) => {
-      // Nobody typed here. An inserted row is still the person's own work, and a write
-      // made before it takes it back the same way a paragraph is taken back.
+      const stale = inDoc(T4.replace('| d | 4 |', '| d | 44 |'));
       const path = await S.fresh('merge-structural', inDoc(T4));
       await menuOn(S, cell(0, 0), 'Insert row below');
-      const said = await staleWrite(S, path, inDoc(T4.replace('| d | 4 |', '| d | 44 |')), '| d | 44 |');
-      const gone = (await S.state()).doc;
-      await pressUndo(S);
-      const d = await S.disk(path);
-      return all(
-        {
-          took: !gone.includes('|   |   |'),
-          said: saidSomethingWasTaken(said),
-          back: d === inDoc(T4.replace('| a | 1 |', '| a | 1 |\n|   |   |')),
-        },
-        { said, gone, d }
-      );
+      const said = await staleWrite(S, path, stale, '| d | 44 |');
+      const both = inDoc(T4.replace('| a | 1 |', '| a | 1 |\n|   |   |').replace('| d | 4 |', '| d | 44 |'));
+      const shown = (await S.state()).doc;
+      const d = await diskAfterMerge(S, path, stale);
+      /*
+       * The notice is read and printed rather than asserted, which is the one place in this
+       * group it is not, and the reason is a defect of its own rather than a doubt about the
+       * rule.
+       *
+       * Run on its own this says nothing, which is right. Run with the rest of the area it
+       * sometimes says `your last change is gone: "1"` while `| a | 1 |` is still in the
+       * document above, so it names as lost a character that is there. That is a false
+       * report and it has its own issue. Asserting no notice here would make this scenario
+       * fail for that bug instead of for its own subject, and asserting that a notice may
+       * appear would be asserting the bug.
+       */
+      if (said.length) console.log(`    (stray notice, a known gap: ${JSON.stringify(said)})`);
+      return all({ kept: shown === both, onDisk: d === both }, { said, shown, d });
     },
   },
   {
     id: 'tables.outside-merge.e05',
     feature: 'tables.outside-merge',
-    name: 'Retype a cell, and a line is then added below the table from text read before it: the notice names the cell and Undo brings it back',
+    // The added line is outside the table entirely, so it cannot conflict. See e01.
+    name: 'Retype a cell, and a line is then added below the table from text read before it: both changes survive and nothing is said',
     run: async (S) => {
+      const stale = inDoc(T4) + 'More.\n';
       const path = await S.fresh('merge-below', inDoc(T4));
       await S.dblclick(cell(1, 1));
       await S.type('X');
       await S.press('Tab');
-      const said = await staleWrite(S, path, inDoc(T4) + 'More.\n', 'More.');
-      const gone = (await S.state()).doc;
-      await pressUndo(S);
-      const d = await S.disk(path);
+      const said = await staleWrite(S, path, stale, 'More.');
+      const both = inDoc(T4.replace('| b | 2 |', '| b | X |')) + 'More.\n';
+      const shown = (await S.state()).doc;
+      const d = await diskAfterMerge(S, path, stale);
       return all(
-        {
-          took: !gone.includes('| b | X |'),
-          said: saidItTook(said, 'X'),
-          back: d === inDoc(T4.replace('| b | 2 |', '| b | X |')),
-        },
-        { said, gone, d }
+        { kept: shown === both, said: said.length === 0, onDisk: d === both },
+        { said, shown, d }
       );
     },
   },

@@ -274,7 +274,76 @@ export interface Merged {
  *
  * Every text here is in one set of line endings. The caller converts first.
  */
+/**
+ * How many times each line appears in a text.
+ *
+ * Counted rather than compared as a set, because how many copies of a line there are is
+ * the thing at issue: a table with two identical rows is a table a person may well have
+ * written, and a table with one row that the merge turned into two is not.
+ */
+function lineCounts(text: string): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const line of text.split('\n')) counts.set(line, (counts.get(line) ?? 0) + 1);
+  return counts;
+}
+
+/**
+ * True when the merged text holds a line more often than both changes together asked for.
+ *
+ * Each side's change is a delta on the base, so applying both should leave a line appearing
+ * `mine + theirs - base` times: what was there, plus what each side added, minus what each
+ * side took away. More than that is a copy neither side wrote, and it is a copy of something
+ * already in the document, which is the shape a line merge produces when one side moves a
+ * line and the other edits near it. The mover's line is inserted in its new place while the
+ * edit keeps it in its old one, and the file ends with the row twice.
+ *
+ * Only lines that were in the base are counted, and that limit is the whole of what makes
+ * this safe rather than a second bug. The character merge exists to build a line that is in
+ * neither side: `| Login | Open | Sammy |` and `| Login | Done | Sam |` come together as
+ * `| Login | Done | Sammy |`, which appears nowhere else and would look like an invention to
+ * any rule that did not ask where it came from. What is never right is another copy of a
+ * line the document already had.
+ *
+ * Blank lines are left out. A duplicated blank is not the harm here, and the spacing around
+ * a block is exactly where both sides legitimately add one.
+ *
+ * Counting is the check rather than understanding the move, because a line-based merge has
+ * no notion of a move, and teaching it one is a much larger change than refusing the answers
+ * that are visibly wrong.
+ */
+function multipliesALine(together: string, base: string, mine: string, theirs: string): boolean {
+  const was = lineCounts(base);
+  const got = lineCounts(together);
+  const ours = lineCounts(mine);
+  const other = lineCounts(theirs);
+  for (const [line, n] of got) {
+    if (!line.trim()) continue;
+    const before = was.get(line) ?? 0;
+    if (before === 0) continue;
+    const asked = (ours.get(line) ?? 0) + (other.get(line) ?? 0) - before;
+    if (n > Math.max(asked, 0)) return true;
+  }
+  return false;
+}
+
 export function mergeOutsideChange(base: string, mine: string, theirs: string): Merged {
+  const settled = mergeLines(base, mine, theirs);
+  /*
+   * A merge that invents a line is refused outright, and the person keeps theirs.
+   *
+   * This is the rule `mergeSpans` states for characters, applied to the whole answer:
+   * refusing a merge loses a change that can be made again, while a wrong merge writes
+   * something nobody wrote. A duplicated line is the worst version of that, because the
+   * file is the store and a row that appears twice is content with no author. Reported as
+   * dropped, so it is said out loud rather than left to be noticed in a diff.
+   */
+  if (multipliesALine(settled.text, base, mine, theirs)) {
+    return { text: mine, dropped: true };
+  }
+  return settled;
+}
+
+function mergeLines(base: string, mine: string, theirs: string): Merged {
   if (theirs === base) return { text: mine, dropped: false };
   if (mine === base) return { text: theirs, dropped: false };
   if (mine === theirs) return { text: mine, dropped: false };

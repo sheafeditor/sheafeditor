@@ -712,8 +712,31 @@ function renderInline(src: string): string {
  * Read from `prefix`, the markers and indent the table's lines carry: empty is the top level
  * and anything at all is a block this table sits inside.
  */
-export function tableUsesPane(prefix: string): boolean {
-  return prefix === '';
+export function tableUsesPane(prefix: string, listDepth = 0): boolean {
+  return prefix === '' && listDepth === 0;
+}
+
+/**
+ * How many list items a position is inside.
+ *
+ * From the tree, never from the leading whitespace, for the reason `lineRhythms` gives for
+ * the same question about prose: two spaces, four spaces and a tab are three different
+ * widths in a proportional font and none of them is a designed step, and an ordered item's
+ * content starts three columns in rather than two, so counting spaces puts a numbered level
+ * three at depth four.
+ *
+ * This is deliberately not the table's `prefix`. That string is what `dressTable` writes
+ * back, and a pipe table reads and writes its own indentation, so putting the indent there
+ * would have it written a second time and doubled in the file on the first edit to any cell.
+ * Where a table sits and what it writes are two different questions and now have two
+ * different answers.
+ */
+export function listDepthAt(state: EditorState, pos: number): number {
+  let depth = 0;
+  for (let node = syntaxTree(state).resolveInner(pos, 1); node; node = node.parent as typeof node) {
+    if (node.name === 'ListItem') depth++;
+  }
+  return depth;
 }
 
 /**
@@ -740,8 +763,29 @@ export function laidInColumn(laid: number, grid: HTMLElement): boolean {
   return laid <= grid.clientWidth - 2 * inset + 1;
 }
 
-export function frameClasses(prefix: string): string {
-  return `${prefix.includes('>') ? ' is-quoted' : ''}${tableUsesPane(prefix) ? ' can-use-pane' : ''}`;
+/**
+ * Everything the frame says about the block it sits in: its classes, and the indent it takes.
+ *
+ * At module scope rather than in `toDOM`, which is what the widget-closure budget asks for
+ * and which it caught: the two lines this replaces put that closure three over. The rule is
+ * that a widget's `toDOM` holds the DOM wiring and the decisions live outside it, taking
+ * their inputs explicitly, which is what this does.
+ */
+function dressFrame(wrap: HTMLElement, kind: 'pipe' | 'csv', prefix: string, listDepth: number): void {
+  wrap.className = `sheaf-table${kind === 'csv' ? ' is-csv' : ''}${frameClasses(prefix, listDepth)}`;
+  // The number the indent is worked out from, set the way a prose line sets it, so the frame
+  // and the item's own text are laid out by one rule rather than by two that agree.
+  if (listDepth > 0) wrap.style.setProperty('--md-list-depth', String(listDepth));
+}
+
+export function frameClasses(prefix: string, listDepth = 0): string {
+  return (
+    `${prefix.includes('>') ? ' is-quoted' : ''}` +
+    // Inside a list item, so the frame indents to where that item's own text starts. The
+    // distance is the stylesheet's, read from `--md-list-depth` the way a prose line reads it.
+    `${listDepth > 0 ? ' is-listed' : ''}` +
+    `${tableUsesPane(prefix, listDepth) ? ' can-use-pane' : ''}`
+  );
 }
 
 /** The rendered link a pointer event landed on, if it landed on one. */
@@ -2377,7 +2421,9 @@ class TableWidget extends WidgetType {
     /** The marks of the list item or blockquote the table sits in, on every line (see `bareTable`). */
     readonly prefix: string = '',
     /** The name a data block's info string gives it, which views read it by. */
-    readonly name: TableName | null = null
+    readonly name: TableName | null = null,
+    /** How many list items the table sits inside, for the indent its frame draws at. */
+    readonly listDepth: number = 0
   ) {
     super();
   }
@@ -2489,7 +2535,7 @@ class TableWidget extends WidgetType {
     };
 
     const wrap = document.createElement('div');
-    wrap.className = `sheaf-table${kind === 'csv' ? ' is-csv' : ''}${frameClasses(prefix)}`;
+    dressFrame(wrap, kind, prefix, this.listDepth);
     gridEntries.set(wrap, {
       get from() {
         return pos.from;
@@ -5806,12 +5852,15 @@ function buildTableDecorations(state: EditorState, prev: DecorationSet | null): 
     data: TableData,
     lang: string,
     prefix: string,
-    name: TableName | null = null
+    name: TableName | null = null,
+    listDepth = 0
   ): void => {
-    const sig = JSON.stringify({ data, lang, prefix, name });
+    // The depth is in the signature: a table dragged into or out of a list item is the same
+    // cells at a different indent, and a widget kept on `eq` would draw at the old one.
+    const sig = JSON.stringify({ data, lang, prefix, name, listDepth });
     decos.push(
       Decoration.replace({
-        widget: new TableWidget(kind, from, to, data, sig, lang, prefix, name),
+        widget: new TableWidget(kind, from, to, data, sig, lang, prefix, name, listDepth),
         block: true,
       }).range(from, to)
     );
@@ -5832,7 +5881,7 @@ function buildTableDecorations(state: EditorState, prev: DecorationSet | null): 
         const prefix = containerPrefix(line.text, node.from - from, true);
         const bare = bareTable(doc.sliceString(from, to), prefix);
         const data = bare && parsePipeTable(bare.text);
-        if (data && data.headers.length) push(from, to, 'pipe', data, '', prefix);
+        if (data && data.headers.length) push(from, to, 'pipe', data, '', prefix, null, listDepthAt(state, node.from));
       } else if (node.name === 'FencedCode') {
         const raw = doc.sliceString(node.from, node.to);
         const info = fenceLang(raw);
@@ -5851,7 +5900,7 @@ function buildTableDecorations(state: EditorState, prev: DecorationSet | null): 
         const grid = parseDelimited(fenceBody(bare.text), info === 'tsv' ? '\t' : ',');
         if (grid.length) {
           const [headers, ...rows] = grid;
-          push(from, to, 'csv', { headers, aligns: headers.map(() => null), rows }, info, prefix, names.get(from) ?? null);
+          push(from, to, 'csv', { headers, aligns: headers.map(() => null), rows }, info, prefix, names.get(from) ?? null, listDepthAt(state, node.from));
         }
       }
     },

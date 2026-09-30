@@ -1721,6 +1721,91 @@ const allScenarios = [
     },
   },
   {
+    id: 'render.code-fence.e02',
+    feature: 'render.code-fence',
+    /*
+     * What the 10px fence line costs, which is the question a decision about raising it to a
+     * full line turns on and which nothing measured.
+     *
+     * Two things are being separated. A fence line draws the block's panel behind itself, so
+     * the 10px is the inset at the top and bottom of a code block rather than a blank line
+     * inside it, and a reader counting lines counts the code. That is the case for leaving it
+     * as it is. Against that, the line is still a line the caret can reach, and a caret drawn
+     * 10px tall beside 24px ones would be the real cost.
+     *
+     * Both are read here so the decision points at numbers. The heights are asserted loosely,
+     * because this is not the check that pins the drawing, and the caret is asserted as
+     * reaching the line at all, which is the part that would be a bug.
+     */
+    name: 'A code fence line draws the block panel behind it, and the caret still reaches it',
+    run: async (S) => {
+      const DOC = 'Before.\n\n```js\nconst x = 1;\nconst y = 2;\n```\n\nAfter.\n';
+      await S.fresh('code-fence-inset', DOC);
+      await S.sleep(800);
+
+      const panel = await S.eval(() => {
+        const rows = [...document.querySelectorAll('.cm-content > .cm-line')];
+        const fence = rows.find((l) => l.classList.contains('sheaf-code-fence-line'));
+        const body = rows.find((l) => l.textContent.includes('const x = 1;'));
+        const plain = rows.find((l) => l.textContent.trim() === 'Before.');
+        if (!fence || !body || !plain) return null;
+        // The panel is a ::before on each line of the block, so what the fence paints is
+        // read from the pseudo-element rather than from the line's own background.
+        const paint = (el) => {
+          const s = getComputedStyle(el, '::before');
+          return { bg: s.backgroundColor, width: Math.round(parseFloat(s.width) || 0) };
+        };
+        return {
+          fence: { h: Math.round(fence.getBoundingClientRect().height), ...paint(fence) },
+          body: { h: Math.round(body.getBoundingClientRect().height), ...paint(body) },
+          plain: { h: Math.round(plain.getBoundingClientRect().height), ...paint(plain) },
+        };
+      });
+
+      // Up from the first line of code is the opening fence, which is the only way to put the
+      // caret there: the backticks are hidden, so there is no text to aim at.
+      await S.caret('const x = 1;', 0);
+      await S.press('ArrowUp');
+      await S.sleep(300);
+      const caret = await S.eval(() => {
+        const rows = [...document.querySelectorAll('.cm-content > .cm-line')];
+        const fence = rows.find((l) => l.classList.contains('sheaf-code-fence-line'));
+        const cur = document.querySelector('.cm-cursor-primary') ?? document.querySelector('.cm-cursor');
+        if (!fence || !cur) return { onFence: false };
+        const f = fence.getBoundingClientRect();
+        const c = cur.getBoundingClientRect();
+        /*
+         * From the fence's top edge, not from its centre. The caret is taller than the line
+         * it is on and hangs below it into the first line of code, so a centre test reads a
+         * caret that is correctly placed as a caret on another line. Measured: 17px of caret
+         * on a 10px line, starting exactly at the fence's top.
+         */
+        return {
+          onFence: Math.abs(c.top - f.top) <= 2,
+          caretHeight: Math.round(c.height),
+          fenceHeight: Math.round(f.height),
+          belowTheLine: Math.round(c.bottom - f.bottom),
+        };
+      });
+
+      const d = await S.disk();
+      if (!panel) return { ok: false, detail: 'the block drew no fence line, body line or plain line to compare' };
+      const painted = panel.fence.bg === panel.body.bg && panel.fence.width > 0;
+      return {
+        ok:
+          painted &&
+          panel.fence.bg !== panel.plain.bg &&
+          panel.fence.h > 0 &&
+          panel.fence.h < panel.body.h &&
+          caret.onFence &&
+          d === DOC,
+        detail:
+          `fence ${JSON.stringify(panel.fence)}, body ${JSON.stringify(panel.body)}, outside ${JSON.stringify(panel.plain)}; ` +
+          `caret ${JSON.stringify(caret)}${d === DOC ? '' : '; the file changed'}`,
+      };
+    },
+  },
+  {
     id: 'render.spacing.e01',
     feature: 'render.spacing',
     name: 'A heading carries the same space above it at every level, so a section is separated by more than the blank line',

@@ -1426,7 +1426,8 @@ export async function runAll(): Promise<Result[]> {
       mountContextMenu(h.view.dom, { getView: () => h.view, getFileName: () => 'doc.md', copyToClipboard: () => {} });
       const labels = (): string[] => {
         const menu = Array.from(document.querySelectorAll<HTMLElement>('.sheaf-ctx-menu')).find((m) => !m.hidden);
-        return menu ? [...menu.querySelectorAll('.sheaf-ctx-item')].map((b) => b.firstElementChild?.textContent?.trim() ?? '') : [];
+        // `.sheaf-ctx-label`, not the first child: the first child is the row's glyph now.
+        return menu ? [...menu.querySelectorAll('.sheaf-ctx-item')].map((b) => b.querySelector('.sheaf-ctx-label')?.textContent?.trim() ?? '') : [];
       };
       h.dblclick(h.cell(0, 1)!);
       const cm = cellView(h.cell(0, 1))!;
@@ -4594,7 +4595,8 @@ export async function runAll(): Promise<Result[]> {
       input.dispatchEvent(e);
       const menu = Array.from(document.querySelectorAll<HTMLElement>('.sheaf-ctx-menu')).find((m) => !m.hidden) ?? null;
       // The first span is the label; the key hint is drawn into a second one beside it.
-      const labels = menu ? [...menu.querySelectorAll('.sheaf-ctx-item')].map((b) => b.firstElementChild?.textContent?.trim()) : [];
+      // `.sheaf-ctx-label`, not the first child: the first child is the row's glyph now.
+      const labels = menu ? [...menu.querySelectorAll('.sheaf-ctx-item')].map((b) => b.querySelector('.sheaf-ctx-label')?.textContent?.trim()) : [];
       h.view.destroy();
       document.querySelectorAll('.sheaf-ctx-menu').forEach((m) => m.remove());
       /*
@@ -4623,7 +4625,11 @@ export async function runAll(): Promise<Result[]> {
       input.focus();
       input.dispatchEvent(new G.MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, clientX: 5, clientY: 5 }));
       const menu = Array.from(document.querySelectorAll<HTMLElement>('.sheaf-ctx-menu')).find((m) => !m.hidden) ?? null;
-      const item = [...(menu?.querySelectorAll<HTMLElement>('.sheaf-ctx-item') ?? [])].find((b) => b.textContent?.startsWith('Edit Markdown'));
+      const item = [...(menu?.querySelectorAll<HTMLElement>('.sheaf-ctx-item') ?? [])].find(
+        // The label, not the row's whole text: a glyph can carry a character of its own, and
+        // the heading ones do, so a row reads "1Heading 1" to anything matching on the row.
+        (b) => b.querySelector('.sheaf-ctx-label')?.textContent?.startsWith('Edit Markdown')
+      );
       const unavailable = !!item && (item.hasAttribute('disabled') || item.getAttribute('aria-disabled') === 'true');
       item?.click();
       const cm = cellView(h.cell(1, 0));
@@ -9864,6 +9870,40 @@ async function boardChecks(): Promise<Result[]> {
           ]) &&
         !table &&
         said.length === 0 &&
+        unchanged
+      );
+    })
+  );
+
+  results.push(
+    await scenario('a view\u2019s cards show a field as the exact text it holds, brackets and all', () => {
+      /*
+       * A view reads a CSV block, and a field there is a value rather than prose, so a card
+       * shows it the way that block's own grid does. The pipe table's board renders instead,
+       * because a pipe table is Markdown, and the difference reads as an oversight in
+       * whichever one you meet second.
+       *
+       * Pinned because the docs now say it. `drawBoard` renders when it is given a `render`,
+       * so adding one here in passing would quietly start drawing a data field as prose, and
+       * nothing would have said otherwise.
+       */
+      const block =
+        '```csv id=tasks\nfeature,status\n[guide](https://example.com/g),Open\n**bold**,Done\n```';
+      const doc = P + block + '\n\n```view\nfrom: #tasks\nlayout: board\ngroup: status\n```\n';
+      const h = mount(doc, [viewBlocks]);
+      const shown = boardShows(h);
+      const board = h.view.dom.querySelector('.sheaf-board');
+      // Nothing drawn, not merely nothing clickable: a rendered link is an <a>, bold a <strong>.
+      const drawn = board ? board.querySelectorAll('a, strong, em').length : -1;
+      const unchanged = h.doc() === doc;
+      h.view.destroy();
+      return (
+        JSON.stringify(shown) ===
+          JSON.stringify([
+            { name: 'Open', count: '1', cards: ['[guide](https://example.com/g)'] },
+            { name: 'Done', count: '1', cards: ['**bold**'] },
+          ]) &&
+        drawn === 0 &&
         unchanged
       );
     })

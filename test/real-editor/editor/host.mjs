@@ -1150,7 +1150,13 @@ export const scenarios = [
      * of it, and every reader who met the red traced it back to an already-filed issue before
      * finding that out. A standing failure with nothing saying it is expected reads as news.
      */
-    known: 'typing and closing the tab straight away raises the save dialog, because the close outruns the debounced save',
+    known:
+      'typing and closing the tab straight away raises the save dialog, and this is decided rather than ' +
+      'pending: VS Code asks at the instant of the press and an extension hears about that press at the ' +
+      'same instant, so the flush is 10ms too late however fast it is. Measured: blur and save-start in ' +
+      'the same millisecond, document clean 10ms later, dialog up anyway. The only lever is the 700ms ' +
+      'debounce, and shrinking it buys a narrower window at the cost of writing more often into a file ' +
+      'other tools watch. Said in docs/settings.md instead, with files.autoSave as the way out.',
     run: async (S) => {
       const path = await S.fresh('as-five', 'Some words.\n');
       await S.caret('words', 2);

@@ -508,6 +508,23 @@ body {
   padding-left: calc(var(--md-quote-step) - var(--md-quote-rule));
 }
 /*
+ * A table attached to a list item begins where that item's own text begins.
+ *
+ * The same arithmetic a prose line inside a list is laid out by, reading the same two
+ * properties, so the table and the words above it line up by construction rather than by two
+ * numbers that happen to match. `--md-list-depth` is set on the frame by the widget, the way
+ * the rhythm decoration sets it on a line.
+ *
+ * `margin` rather than `padding`, because the frame draws the table's own edge and a padding
+ * here would put the indent inside the table, leaving the frame itself starting at the
+ * bullets. Only a table in a list gets it, which is what `is-listed` is for: at depth zero
+ * the same expression still comes to `--md-line-base`, and a top-level table sits at the
+ * line's edge rather than at its text.
+ */
+.sheaf-table.is-listed {
+  margin-left: calc(var(--md-line-base, 6px) + var(--md-list-depth, 0) * var(--md-indent-step, 32px));
+}
+/*
  * A table uses the pane, not the writing column.
  *
  * Prose wants a measure and a table wants room. Held to the column, a wide table stopped at

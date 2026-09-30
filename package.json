@@ -353,6 +353,9 @@
     "test:editor": "node test/real-editor/run-editor.mjs",
     "test:editor:unit": "node test/real-editor/run-unit.mjs",
     "package:clean": "node scripts/package-clean.mjs",
+    "release:check": "node scripts/release.mjs",
+    "release": "node scripts/release.mjs --cut",
+    "release:status": "node scripts/release-status.mjs",
     "check-editing": "node --max-old-space-size=8192 scripts/check-editing.mjs"
   },
   "devDependencies": {

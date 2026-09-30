@@ -74,6 +74,23 @@ async function waitImages(S, count, ms = 4000) {
 }
 
 /** Scroll the document with the mouse wheel until `text` is on screen. */
+/*
+ * Wheel until `text` is on screen, near the top.
+ *
+ * `far` is a cap on one step, never the step itself. It used to be the step: when the text
+ * was not in the DOM this wheeled `far` and looked again, and with `far` at 6000 against a
+ * 786px viewport a landmark could sit between two samples and never be seen once. In
+ * `sample/stress/data-blocks.md` that is what happens to the TSV heading below the
+ * 2,000-row block: it is stepped over at around 122,000px and the loop runs to the end of
+ * the document, 11,000px past it, having reported the text as unrendered every time. Read
+ * from the end that looks like a scroll that overshot, which is why it was filed as one.
+ *
+ * So an undrawn landmark is located from CodeMirror's height map instead, which knows where
+ * every line is whether or not it is drawn, and the wheel is capped at what is left to go.
+ * The gesture is still a wheel, because that is the thing under test; only the distance is
+ * better informed. Success still requires the text actually rendered and positioned, since
+ * a caller reaches for it next.
+ */
 async function scrollTo(S, text, { far = 300, dir = 1 } = {}) {
   await S.hover({ sel: '.cm-scroller' });
   for (let i = 0; i < 150; i++) {
@@ -87,13 +104,24 @@ async function scrollTo(S, text, { far = 300, dir = 1 } = {}) {
         range.setStart(n, k);
         range.setEnd(n, k + t.length);
         const b = range.getBoundingClientRect();
-        return { top: b.top, bottom: b.bottom, vh: innerHeight };
+        return { top: b.top, bottom: b.bottom, vh: innerHeight, drawn: true };
       }
-      return null;
+      // Not drawn. The height map still holds its position, in the scroller's own
+      // coordinates, so take the distance from there rather than striding blind.
+      const tile = content && (content.cmTile || content.cmView);
+      const view = tile && ((tile.root && tile.root.view) || tile.view);
+      if (!view) return null;
+      const at = view.state.doc.toString().indexOf(t);
+      if (at < 0) return null;
+      const block = view.lineBlockAt(at);
+      const away = block.top - view.scrollDOM.scrollTop;
+      return { top: away, bottom: away + block.height, vh: innerHeight, drawn: false };
     }, text);
-    if (r && r.top > 60 && r.bottom < r.vh * 0.45) return true;
-    // Not rendered yet: wheel a long way in the given direction; on screen or near it: wheel by the distance.
-    await S.page.mouse.wheel(0, r ? Math.round(r.top - r.vh * 0.25) : far * dir);
+    if (r && r.drawn && r.top > 60 && r.bottom < r.vh * 0.45) return true;
+    // How far is left, capped so one wheel cannot carry the landmark past the viewport.
+    const want = r ? Math.round(r.top - r.vh * 0.25) : far * dir;
+    const step = r ? Math.sign(want) * Math.min(Math.abs(want), far) : want;
+    await S.page.mouse.wheel(0, step);
     await S.sleep(150);
   }
   return false;
@@ -1138,6 +1166,150 @@ export const scenarios = [
       await leave(S);
       const d = await diskChange(S, file, DOC);
       return { ok: d === DOC.replace('"line one\nline two"', '"first\nsecond"'), detail: show(d) };
+    },
+  },
+  {
+    id: 'data.large-blocks.e07',
+    feature: 'data.large-blocks',
+    /*
+     * Where the wheel down to the TSV heading actually goes, step by step.
+     *
+     * `data.large-blocks.e02` ends at the very bottom of the document with the table it was
+     * aiming at 11,000px above the viewport, and the height map is not the reason: the space
+     * held for the big block matches the space it takes to within a pixel, measured in e06.
+     * So the miss happens during the scroll, and a single reading at the end cannot say on
+     * which step or why. This records every step: where the landmark was seen, what was
+     * wheeled, and where the document ended up.
+     */
+    name: 'Wheeling down to the TSV heading lands on it rather than running to the end of the document',
+    run: async (S) => {
+      await S.open('stress/data-blocks.md');
+      const reached = await scrollTo(S, 'Same grid, tab-delimited', { far: 6000 });
+      await S.sleep(400);
+      await S.shot('large-e07-landed');
+      const where = await S.eval(() => {
+        const content = document.querySelector('.cm-content');
+        const tile = content && (content.cmTile || content.cmView);
+        const view = tile && ((tile.root && tile.root.view) || tile.view);
+        const walker = document.createTreeWalker(content, NodeFilter.SHOW_TEXT);
+        const scroll = view
+          ? { top: Math.round(view.scrollDOM.scrollTop), height: Math.round(view.scrollDOM.scrollHeight) }
+          : null;
+        for (let n; (n = walker.nextNode()); ) {
+          const k = n.data.indexOf('Same grid, tab-delimited');
+          if (k < 0) continue;
+          const range = document.createRange();
+          range.setStart(n, k);
+          range.setEnd(n, k + 24);
+          const b = range.getBoundingClientRect();
+          return { drawn: true, top: Math.round(b.top), vh: innerHeight, scroll };
+        }
+        return { drawn: false, vh: innerHeight, scroll };
+      });
+      /*
+       * The end of the document is the failure this is here for, so it is named rather than
+       * left to fall out of the landmark test: `scrollTo` used to wheel a fixed 6000px while
+       * the text was not drawn, step over a 786px viewport, and run to the bottom.
+       */
+      const atTheEnd = where.scroll ? where.scroll.top >= where.scroll.height - where.vh - 20 : false;
+      return {
+        ok: reached && where.drawn && where.top > 60 && where.top < where.vh * 0.45 && !atTheEnd,
+        detail: `scrollTo ${reached ? 'reached' : 'gave up'}; ${JSON.stringify(where)}${atTheEnd ? '; at the end of the document' : ''}`,
+      };
+    },
+  },
+  {
+    id: 'data.large-blocks.e06',
+    feature: 'data.large-blocks',
+    /*
+     * The space a big block holds while it is out of view, against the space it takes once
+     * it is drawn. If those differ, everything below the block moves by the difference the
+     * moment it is drawn or thrown away, which is what a person scrolling past it sees.
+     *
+     * Read from CodeMirror's own height map rather than from the page, because the height
+     * map is what positions everything below and it holds a number for a block whether or
+     * not that block is in the DOM. The table's drawn height is read beside it, so the two
+     * are compared at one moment rather than across two runs.
+     */
+    name: 'The space held for a 2,000-row block is the space it takes when it is drawn',
+    run: async (S) => {
+      const file = await S.open('stress/data-blocks.md');
+      const before = readFileSync(file, 'utf8');
+      const probe = () =>
+        S.eval(() => {
+          const content = document.querySelector('.cm-content');
+          const tile = content && (content.cmTile || content.cmView);
+          const view = tile && ((tile.root && tile.root.view) || tile.view);
+          if (!view) return { error: 'no view' };
+          const doc = view.state.doc.toString();
+          const block = (needle) => {
+            const at = doc.indexOf(needle);
+            if (at < 0) return null;
+            const b = view.lineBlockAt(at);
+            return { at, top: Math.round(b.top), held: Math.round(b.height) };
+          };
+          const table = (badge) => {
+            const t = [...document.querySelectorAll('.sheaf-table')].find(
+              (el) => el.querySelector('.sheaf-table-badge')?.textContent === badge
+            );
+            if (!t) return null;
+            const r = t.getBoundingClientRect();
+            return { rows: t.querySelectorAll('tbody tr').length, drawn: Math.round(r.height), top: Math.round(r.top) };
+          };
+          return {
+            scrollTop: Math.round(view.scrollDOM.scrollTop),
+            scrollHeight: Math.round(view.scrollDOM.scrollHeight),
+            csv: block('```csv'),
+            tsv: block('```tsv'),
+            csvDrawn: table('CSV'),
+            tsvDrawn: table('TSV'),
+          };
+        });
+
+      // The big block is at the top of this document, so it draws without scrolling. Wait
+      // for all 2,000 rows rather than for a table: a partly drawn one measures wrong.
+      for (let i = 0; i < 60; i++) {
+        const rows = await S.eval(() => document.querySelector('.sheaf-table')?.querySelectorAll('tbody tr').length ?? 0);
+        if (rows >= 2000) break;
+        await S.sleep(200);
+      }
+      await S.sleep(600);
+      const atTop = await probe();
+
+      // Away, far enough that CodeMirror throws the block's DOM out, then back.
+      await scrollTo(S, 'A small one, for scale', { far: 6000 });
+      await S.sleep(600);
+      const atBottom = await probe();
+      await scrollTo(S, 'A 2,000-row CSV block', { far: 6000, dir: -1 });
+      await S.sleep(800);
+      const backAtTop = await probe();
+
+      const d = readFileSync(file, 'utf8');
+      if (atTop?.error || atBottom?.error || backAtTop?.error) {
+        return { ok: false, detail: `no editor view to read: ${JSON.stringify({ atTop, atBottom, backAtTop })}` };
+      }
+      /*
+       * Two things, and they fail for different reasons. The held height must match the
+       * drawn one while the block is on screen, and the held height must not change when
+       * the block leaves the screen and comes back: a block that shrinks or grows on being
+       * thrown away moves everything below it under whoever is reading down there.
+       */
+      const matchesWhenDrawn = atTop.csvDrawn ? Math.abs(atTop.csv.held - atTop.csvDrawn.drawn) : null;
+      const heldDrift = Math.abs(atTop.csv.held - atBottom.csv.held);
+      const docDrift = Math.abs(atTop.scrollHeight - atBottom.scrollHeight);
+      return {
+        ok:
+          atTop.csvDrawn?.rows === 2000 &&
+          matchesWhenDrawn !== null &&
+          matchesWhenDrawn <= 40 &&
+          heldDrift <= 40 &&
+          docDrift <= 40 &&
+          d === before,
+        detail:
+          `held vs drawn while on screen ${matchesWhenDrawn}, held drift when scrolled away ${heldDrift}, ` +
+          `document height drift ${docDrift}; at top ${JSON.stringify(atTop)}; at bottom ${JSON.stringify(atBottom)}; ` +
+          `back at top ${JSON.stringify(backAtTop)}${d === before ? '' : '; the file changed'}`,
+      };
     },
   },
   {

@@ -43,6 +43,37 @@ export const scenarios = [
     },
   },
   {
+    id: 'tables.drag-move.moved-row-number-names-its-line',
+    feature: 'tables.drag-move',
+    /*
+     * A row number's tooltip names the line that row is on in the file. After a drag it has
+     * to name the line the row moved to, not the one it came from.
+     *
+     * Read against the file rather than against a number written here: the tooltip is a claim
+     * about the document, so the document is what settles it. Asserted for every row, because
+     * a drag that moved one row moves the ones it passed, and checking only the dragged row
+     * would pass a table where the others were left naming their old lines.
+     */
+    name: 'After dragging a row, every row number names the line that row is really on',
+    run: async (S) => {
+      await S.fresh('drag-line-labels', DOC);
+      await S.sleep(500);
+      await S.click(gutter(0));
+      await S.sleep(200);
+      await S.drag(gutter(0), gutter(2));
+      await S.sleep(600);
+      const said = await S.eval(() =>
+        [...document.querySelectorAll('.sheaf-table tbody .sheaf-table-gutter')].map((g) => g.title)
+      );
+      const d = await S.disk();
+      const lines = d.split('\n');
+      // What each drawn row says, against the line its own first cell is actually on.
+      const rows = rowsOnDisk(d);
+      const want = rows.map((name) => `Select row (line ${lines.findIndex((l) => l.startsWith(`| ${name}`)) + 1})`);
+      return { ok: j(said) === j(want), detail: `tooltips ${j(said)}, from the file ${j(want)}` };
+    },
+  },
+  {
     id: 'tables.drag-move.moved-row-stays-selected',
     feature: 'tables.drag-move',
     name: 'A row dragged to a new place is still the selected row when it lands',

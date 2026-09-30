@@ -79,9 +79,6 @@ const clickOut = (S) => S.caret('After', 2);
 const toasts = (S) =>
   S.page.$$eval('.notifications-toasts .notification-list-item-message', (els) => els.map((e) => e.textContent.trim()));
 
-/** True when one of the notices names `text` as what a write from outside took. */
-const saidItTook = (said, text) => said.some((t) => t.includes(`your last change is gone: "${text}"`));
-
 /**
  * A tool writing the whole file from text it read before the person's last edit, once
  * that edit has reached disk. Written any sooner, the file is newer than the document,
@@ -468,42 +465,47 @@ export const scenarios = [
   {
     id: 'tables.cell-edit.e10',
     feature: 'tables.cell-edit',
-    name: 'A cell typed into, and the file then written above the table from text read before it: the notice names the cell and Undo brings it back',
+    /*
+     * Both survive and nothing is said, because nothing was lost.
+     *
+     * This asserted that the write wins and the person is told what it took. It does not win:
+     * the write changed the line above the table and the typing is in a cell, so the merge
+     * keeps both. A notice is for a change that is gone, and `tables.outside-merge.e06` is
+     * where one is, a write into the very cell being typed in, which still fires.
+     */
+    name: 'A cell typed into, and the file then written above the table from text read before it: both survive and nothing is said',
     run: async (S) => {
       const path = await open(S, 'edit-outside', T);
       await typeInto(S, cell(0, 0), 'pears');
-      const said = await staleWrite(S, path, T.replace('Intro line here', 'Intro line changed'), 'Intro line changed');
-      const gone = (await S.state()).doc;
+      const stale = T.replace('Intro line here', 'Intro line changed');
+      const said = await staleWrite(S, path, stale, 'Intro line changed');
+      const both = stale.replace('| apple |', '| pears |');
+      const shown = (await S.state()).doc;
       await clickOut(S);
-      await S.press('Meta+z');
       await S.sleep(800);
       const d = await S.disk(path);
-      return res(
-        !gone.includes('| pears |') && saidItTook(said, 'pears') && d === T.replace('| apple |', '| pears |'),
-        { said, gone: show(gone), d: show(d) }
-      );
+      return res(shown === both && said.length === 0 && d === both, { said, shown: show(shown), d: show(d) });
     },
   },
   {
     id: 'tables.cell-edit.e14',
     feature: 'tables.cell-edit',
-    name: 'The same, with another cell left open when the write lands: Cmd+Z in that cell still brings the typing back',
+    // The same as e10, with a cell open and holding the keyboard when the write lands: an
+    // open cell must not change what the merge keeps.
+    name: 'The same, with another cell left open when the write lands: both still survive',
     run: async (S) => {
       const path = await open(S, 'edit-outside-open', T);
       await typeInto(S, cell(0, 0), 'pears');
       // A cell open and untouched, holding the keyboard, when the write arrives.
       await S.dblclick(cell(1, 1));
-      const said = await staleWrite(S, path, T.replace('Intro line here', 'Intro line changed'), 'Intro line changed');
-      const gone = (await S.state()).doc;
-      await S.press('Meta+z');
-      await S.sleep(800);
+      const stale = T.replace('Intro line here', 'Intro line changed');
+      const said = await staleWrite(S, path, stale, 'Intro line changed');
+      const both = stale.replace('| apple |', '| pears |');
+      const shown = (await S.state()).doc;
       await clickOut(S);
       await S.sleep(800);
       const d = await S.disk(path);
-      return res(
-        !gone.includes('| pears |') && saidItTook(said, 'pears') && d === T.replace('| apple |', '| pears |'),
-        { said, gone: show(gone), d: show(d) }
-      );
+      return res(shown === both && said.length === 0 && d === both, { said, shown: show(shown), d: show(d) });
     },
   },
   {

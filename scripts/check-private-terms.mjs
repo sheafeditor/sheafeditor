@@ -20,8 +20,9 @@
  * a new mechanism: a second list would drift from the first, and the first is the one with
  * the reasons written beside each entry.
  *
- * Without the variable this says so and exits 0, the same way `check-docs.mjs` does, because
- * a contributor has no way to obtain the list and a missing list is not a leak.
+ * With no list to be found this says so and exits 0, the same way `check-docs.mjs` does,
+ * because a contributor has no way to obtain the list and a missing list is not a leak. The
+ * gates runner is what decides whether a skip is acceptable, and by default it is not.
  */
 import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -70,9 +71,36 @@ const NOT_HERE = /competitor/i;
  */
 const COPYRIGHT = /©|\(c\)\s|copyright/i;
 
-const listed = process.env.SHEAF_DOCS_PRIVATE_TERMS;
+/*
+ * Where the list is, found rather than told.
+ *
+ * `SHEAF_DOCS_PRIVATE_TERMS` still names it and still wins, and it used to be the only way.
+ * That made this step depend on whose shell was running it: the variable was set for one
+ * kind of session and not in an ordinary terminal, so the same command checked the terms in
+ * one place and skipped in the other, and a skipped step fails a gates run. A release was
+ * cut on a green run that had never run this, and refused on the same commit minutes later.
+ *
+ * So the default is a checkout beside this one, looked for by the file's own name rather
+ * than by the directory holding it. Naming that directory here would put a private
+ * repository's name in a file that ships, which is the rule this very script enforces, and
+ * it caught exactly that on the first run of this change.
+ *
+ * Both the ordinary case and a worktree, which sits three levels further down.
+ */
+const LIST = 'docs-private-terms.txt';
+const beside = (up) => {
+  const dir = join(REPO, up);
+  if (!existsSync(dir)) return undefined;
+  return readdirSync(dir)
+    .map((name) => join(dir, name, LIST))
+    .find((p) => existsSync(p));
+};
+const listed = process.env.SHEAF_DOCS_PRIVATE_TERMS ?? beside('..') ?? beside(join('..', '..', '..', '..'));
 if (!listed) {
-  console.log('skipped: SHEAF_DOCS_PRIVATE_TERMS is not set, so there is no list of private terms to check against.');
+  console.log(
+    'skipped: no list of private terms. Set SHEAF_DOCS_PRIVATE_TERMS, or keep the private checkout ' +
+      'beside this one. A machine without it, such as a runner, has nothing to leak and nothing to check.'
+  );
   process.exit(0);
 }
 if (!existsSync(listed)) {

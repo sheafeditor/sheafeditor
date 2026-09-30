@@ -300,6 +300,80 @@ export const scenarios = [
     },
   },
   {
+    id: 'menus.context-prose.e18',
+    feature: 'menus.context-prose',
+    /*
+     * Every row in the prose menu carries a glyph, in one column, and the check that says
+     * which block kind this already is does not fight it.
+     *
+     * Read on an H1, which is the row that carries all three at once: a tick, a glyph and
+     * `Mod-Alt-1`. The worry was that the tick and the glyph want the same place. They do
+     * not: `.sheaf-ctx-menu.has-checks` gives every row 26px of left padding and draws the
+     * tick inside it, and the glyph is the row's first flex child after that padding. This
+     * measures it rather than trusting the reading.
+     */
+    name: 'Every row of the prose menu draws a glyph in one column, and a ticked row still shows its tick and its key hint',
+    run: async (S) => {
+      await S.fresh('ctx-icons', '# A title here\n\nA paragraph under it.\n');
+      await S.rightClick({ text: 'A title', offset: 2 });
+      await S.sleep(300);
+      const read = () =>
+        S.eval(() =>
+          [...document.querySelectorAll('.sheaf-ctx-menu:not([hidden]) .sheaf-ctx-item')].map((b) => {
+            const svg = b.querySelector('svg.sheaf-table-icon');
+            const label = b.querySelector('.sheaf-ctx-label');
+            const key = b.querySelector('.sheaf-ctx-key');
+            const box = (el) => (el ? Math.round(el.getBoundingClientRect().left) : null);
+            return {
+              label: label?.textContent ?? '',
+              icon: !!svg,
+              iconLeft: box(svg),
+              labelLeft: box(label),
+              keyLeft: box(key),
+              checked: b.classList.contains('is-checked'),
+              padLeft: Math.round(parseFloat(getComputedStyle(b).paddingLeft)),
+              // The numeral a heading glyph carries, which is what tells the six apart.
+              numeral: svg?.querySelector('text')?.textContent ?? null,
+            };
+          })
+        );
+      const top = await read();
+      // The six heading rows live in the submenu, so open it and read those too.
+      await S.hover({ sel: '.sheaf-ctx-item', hasText: 'Turn into' });
+      await S.sleep(400);
+      await S.shot('ctx-icons-turn-into');
+      const all = await read();
+      const sub = all.filter((r) => !top.some((t) => t.label === r.label));
+
+      const bare = all.filter((r) => !r.icon).map((r) => r.label);
+      const iconCols = [...new Set(all.filter((r) => r.icon).map((r) => r.iconLeft))];
+      const labelCols = [...new Set(all.map((r) => r.labelLeft))];
+      const headings = sub.filter((r) => /^Heading \d$/.test(r.label));
+      const numerals = headings.map((r) => r.numeral);
+      const ticked = all.find((r) => r.checked && r.label === 'Heading 1');
+      const d = await S.disk();
+      return {
+        ok:
+          bare.length === 0 &&
+          // One column each. Two menus are on screen at once, so a column per menu.
+          iconCols.length <= 2 &&
+          labelCols.length <= 2 &&
+          headings.length === 6 &&
+          new Set(numerals).size === 6 &&
+          !!ticked &&
+          ticked.padLeft >= 26 &&
+          ticked.icon &&
+          ticked.keyLeft !== null &&
+          ticked.keyLeft > ticked.labelLeft &&
+          d === '# A title here\n\nA paragraph under it.\n',
+        detail:
+          `${all.length} rows, ${bare.length} without a glyph ${JSON.stringify(bare)}; icon columns ${JSON.stringify(iconCols)}, ` +
+          `label columns ${JSON.stringify(labelCols)}; heading numerals ${JSON.stringify(numerals)}; ` +
+          `Heading 1 ${JSON.stringify(ticked)}${d === '# A title here\n\nA paragraph under it.\n' ? '' : '; the file changed'}`,
+      };
+    },
+  },
+  {
     id: 'menus.context-cell.e01',
     feature: 'menus.context-cell',
     name: "Right-click inside an open table cell: Sheaf's own menu opens for that cell, with no block kinds and no row actions",

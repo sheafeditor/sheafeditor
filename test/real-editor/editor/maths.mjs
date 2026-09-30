@@ -138,11 +138,29 @@ export const scenarios = [
       const path = await S.open('wren-4/beacon.md');
       await S.sleep(1200);
       const before = await S.disk(path);
-      // The equations are below the first screenful, and only what is drawn is typeset.
+      /*
+       * The equations are below the first screenful, and only what is drawn is typeset. So
+       * page down until they are on screen, rather than a fixed four times.
+       *
+       * Four was a guess at a distance, and it is the kind of guess that goes wrong quietly:
+       * it lands short, nothing is typeset, and the failure reads as "nothing typesets in
+       * this document" when what happened is that the screen is somewhere else. This was
+       * reported red exactly that way, with the screen showing the document's opening prose.
+       * Paging none at all is the control, and it reproduces that report line for line.
+       *
+       * Each screenful is given a moment before it is paged past, because KaTeX runs after
+       * the block is drawn. A fixed sleep there is a race lost on a slow machine and won on
+       * a fast one, and losing it also reads as zero equations.
+       */
       await S.caret('Wren-4 transmits', 2);
-      for (let i = 0; i < 4; i++) await S.press('PageDown');
-      await S.sleep(1200);
-      const m = await typeset(S);
+      let m = await typeset(S);
+      for (let i = 0; i < 12 && m.count < 2; i++) {
+        await S.press('PageDown');
+        for (let w = 0; w < 6 && m.count < 2; w++) {
+          await S.sleep(200);
+          m = await typeset(S);
+        }
+      }
       const onScreen = (await S.rendered()).split('\n').filter((l) => l.trim()).slice(0, 3);
       const after = await S.disk(path);
       return {

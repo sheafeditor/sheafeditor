@@ -193,7 +193,21 @@ export function quoteLost(lost: string): string {
  * table is not helped by being told their typing is gone.
  */
 export function noticeAboutLostText(lost: string): string {
-  return `Sheaf: this file changed outside the editor, and your last change is gone: "${quoteLost(lost)}". Undo brings it back.`;
+  /*
+   * A quote is worth showing only when there is something in it to recognise.
+   *
+   * A change that is not typing has no words of its own: inserting a row loses
+   * `"  |   |\n| "`, which is two spaces, three pipes and a newline, and reading that back
+   * to somebody tells them nothing about what went. Sorting a column and deleting a row are
+   * the same. So a loss with no letter or digit in it is reported as a change rather than
+   * quoted, and the sentence still carries the two things that matter: something is gone,
+   * and Undo brings it back.
+   */
+  const quoted = quoteLost(lost);
+  if (!/[\p{L}\p{N}]/u.test(quoted)) {
+    return 'Sheaf: this file changed outside the editor, and your last change is gone. Undo brings it back.';
+  }
+  return `Sheaf: this file changed outside the editor, and your last change is gone: "${quoted}". Undo brings it back.`;
 }
 
 /**

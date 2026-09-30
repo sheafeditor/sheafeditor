@@ -123,7 +123,22 @@ function resolveInFrame(spec) {
     };
   }
   let els = [...document.querySelectorAll(spec.sel)].filter(visible);
-  if (spec.hasText != null) els = els.filter((el) => el.textContent.trim().startsWith(spec.hasText) || (el.getAttribute('title') || '').startsWith(spec.hasText) || (el.getAttribute('aria-label') || '').startsWith(spec.hasText));
+  /*
+   * An element's text, without anything marked decorative.
+   *
+   * A glyph is `aria-hidden`, and one of them now carries a character: the heading icons in
+   * the right-click menu draw their level as an SVG `<text>`, so the Heading 1 row's raw
+   * `textContent` reads "1Heading 1" and matching on it stopped finding the row. Dropping
+   * `aria-hidden` subtrees is the same rule a screen reader applies, so what is matched here
+   * is what a person sees and hears as the element's name.
+   */
+  const shownText = (el) => {
+    if (!el.querySelector('[aria-hidden="true"]')) return el.textContent.trim();
+    const copy = el.cloneNode(true);
+    for (const hidden of copy.querySelectorAll('[aria-hidden="true"]')) hidden.remove();
+    return copy.textContent.trim();
+  };
+  if (spec.hasText != null) els = els.filter((el) => shownText(el).startsWith(spec.hasText) || (el.getAttribute('title') || '').startsWith(spec.hasText) || (el.getAttribute('aria-label') || '').startsWith(spec.hasText));
   const el = els[spec.nth || 0];
   if (!el) return { error: `no visible element ${spec.sel}${spec.hasText != null ? ` with text ${JSON.stringify(spec.hasText)}` : ''}` };
   const r = el.getBoundingClientRect();

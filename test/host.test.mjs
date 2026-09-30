@@ -3860,6 +3860,60 @@ async function hostCases() {
    * trust separates those, and a check whose exception list grows every release is worse than
    * a narrower one that always means what it says.
    */
+  /**
+   * Judge one `[Unreleased]` section against what the product declares, or say there is
+   * nothing there to judge.
+   *
+   * The distinction is the whole of this function. An empty section resolves no setting,
+   * command or chord for exactly the same reason a parse broken by a stray backtick does,
+   * and the first is the file's normal state for as long as it takes the next change to
+   * land: stamping a version moves every accumulated line under the new heading and leaves
+   * the accumulator bare. Reading that as a broken parse failed the release that had just
+   * stamped it, and it would have failed every release after it, because a release is the
+   * one moment the section is guaranteed to be empty.
+   */
+  function judgeUnreleased(notes, { settings, titles, chords }) {
+    const named = { settings: [], commands: [], chords: [] };
+    const missing = [];
+
+    for (const [, token] of notes.matchAll(/`(sheaf\.[A-Za-z][A-Za-z0-9.]*)`/g)) {
+      named.settings.push(token);
+      if (!settings.has(token)) missing.push(`setting \`${token}\``);
+    }
+    for (const [, title] of notes.matchAll(/\*\*(Sheaf: [^*]+?)\*\*/g)) {
+      named.commands.push(title);
+      // The notes write the category with the title, as the palette shows it.
+      const bare = title.replace(/^Sheaf: /, '');
+      if (!titles.has(bare)) missing.push(`command **${title}**`);
+    }
+    for (const [, chord] of notes.matchAll(/\*\*((?:Cmd|Ctrl|Alt|Shift|Opt)(?:\+[A-Za-z0-9]+)+)\*\*/g)) {
+      named.chords.push(chord);
+      if (!chords.has(chord.toLowerCase().replace(/opt/g, 'alt'))) missing.push(`chord **${chord}**`);
+    }
+
+    const found = named.settings.length + named.commands.length + named.chords.length;
+    const written = notes.split('\n').filter((l) => l.trim()).length;
+
+    // Nothing written, so nothing to resolve. Said out loud rather than passed quietly.
+    if (!written) return { ok: true, detail: '[Unreleased] is empty, which is what it holds from a release until the next change lands' };
+
+    /*
+     * The guard the original slip needs, now that it can only fire on a section that has
+     * something in it. A matcher that finds nothing reports nothing wrong, so notes that
+     * were written and resolved to nothing are a parse to look at.
+     */
+    if (!found) {
+      return { ok: false, detail: `read ${written} written lines of [Unreleased] and resolved no setting, command or chord, so the patterns matched nothing and this proved nothing` };
+    }
+
+    return {
+      ok: missing.length === 0,
+      detail: missing.length
+        ? `the unreleased notes name ${JSON.stringify(missing)}, which neither the manifest nor the editor's shortcut registry declares; the notes become the release body and both store listings, so this is wrong permanently once tagged`
+        : `${named.settings.length} settings, ${named.commands.length} commands, ${named.chords.length} chords, all declared`,
+    };
+  }
+
   check('every setting, command and chord the unreleased notes name exists', () => {
     const text = readFileSync(path.join(here, '..', 'CHANGELOG.md'), 'utf8');
     const section = /## \[Unreleased\]\n([\s\S]*?)\n## \[/.exec(text);
@@ -3887,39 +3941,33 @@ async function hostCases() {
       for (const mod of ['cmd', 'ctrl']) chords.add(parts.map((p) => (p === 'mod' ? mod : p)).join('+'));
     }
 
-    const named = { settings: [], commands: [], chords: [] };
-    const missing = [];
+    return judgeUnreleased(notes, { settings, titles, chords });
+  });
 
-    for (const [, token] of notes.matchAll(/`(sheaf\.[A-Za-z][A-Za-z0-9.]*)`/g)) {
-      named.settings.push(token);
-      if (!settings.has(token)) missing.push(`setting \`${token}\``);
-    }
-    for (const [, title] of notes.matchAll(/\*\*(Sheaf: [^*]+?)\*\*/g)) {
-      named.commands.push(title);
-      // The notes write the category with the title, as the palette shows it.
-      const bare = title.replace(/^Sheaf: /, '');
-      if (!titles.has(bare)) missing.push(`command **${title}**`);
-    }
-    for (const [, chord] of notes.matchAll(/\*\*((?:Cmd|Ctrl|Alt|Shift|Opt)(?:\+[A-Za-z0-9]+)+)\*\*/g)) {
-      named.chords.push(chord);
-      if (!chords.has(chord.toLowerCase().replace(/opt/g, 'alt'))) missing.push(`chord **${chord}**`);
-    }
-
-    /*
-     * The guard the original slip needs. A matcher that finds nothing reports nothing wrong,
-     * and a parse broken by a stray backtick reads exactly like a clean release. So the run
-     * fails when it resolved nothing at all, and the counts are printed either way.
-     */
-    const found = named.settings.length + named.commands.length + named.chords.length;
-    if (!found) {
-      return { ok: false, detail: `read ${notes.split('\n').length} lines of [Unreleased] and resolved no setting, command or chord, so the patterns matched nothing and this proved nothing` };
-    }
-
+  /*
+   * CONTROL for the check above, because the check itself passes on an empty section now and
+   * an empty section is what it will read for most of a release cycle. Without this, a change
+   * that made it pass on everything would look identical from the outside.
+   *
+   * The release it was written from is the first case: a section holding one blank line, which
+   * the guard read as a parse failure and failed the tagged build on.
+   */
+  check('CONTROL: an empty [Unreleased] passes, notes that resolve to nothing fail, and a wrong name still fails', () => {
+    const declared = { settings: new Set(['sheaf.lineNumbers']), titles: new Set(['Open Raw Markdown']), chords: new Set(['cmd+b']) };
+    const cases = {
+      empty: judgeUnreleased('\n', declared),
+      blanksOnly: judgeUnreleased('\n   \n\n', declared),
+      resolvesNothing: judgeUnreleased('\n### Fixed\n\n- A table drawn under a list item sits under the item.\n', declared),
+      allDeclared: judgeUnreleased('\n- `sheaf.lineNumbers` is off by default, and **Cmd+B** still bolds.\n', declared),
+      undeclared: judgeUnreleased('\n- `sheaf.notAThing` was added, and **Sheaf: Nowhere** opens it.\n', declared),
+    };
+    const want = { empty: true, blanksOnly: true, resolvesNothing: false, allDeclared: true, undeclared: false };
+    const wrong = Object.keys(want).filter((k) => cases[k].ok !== want[k]);
     return {
-      ok: missing.length === 0,
-      detail: missing.length
-        ? `the unreleased notes name ${JSON.stringify(missing)}, which neither the manifest nor the editor's shortcut registry declares; the notes become the release body and both store listings, so this is wrong permanently once tagged`
-        : `${named.settings.length} settings, ${named.commands.length} commands, ${named.chords.length} chords, all declared`,
+      ok: wrong.length === 0,
+      detail: wrong.length
+        ? `${JSON.stringify(wrong)} judged the wrong way: ${wrong.map((k) => `${k} → ${cases[k].ok} (${cases[k].detail})`).join('; ')}`
+        : 'empty and blank-only sections pass, written notes that resolve to nothing fail, and an undeclared name still fails',
     };
   });
 

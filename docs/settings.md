@@ -43,6 +43,10 @@ Sets the width of the centered text column. Any CSS length works:
 
 **Off:** your edits still update the document, and you save with Cmd+S or leave it to VS Code's own `files.autoSave`.
 
+**Closing a tab within a moment of typing asks whether to save.** The short moment is about three quarters of a second, and closing the tab inside it means VS Code asks about the file before Sheaf has written it. Answer **Save**, or **Cancel** and close again: your typing is in the document either way, and only **Don't Save** throws it away. Pause for a moment before closing and the question never comes.
+
+This is the one place Sheaf's own saving cannot reach. VS Code decides to ask at the instant you press the close button, and an extension hears about that press at the same instant rather than before it, so the file is written a few milliseconds after the question is already on screen. Setting VS Code's own `files.autoSave` avoids it completely, because then the saving happens inside the editor rather than through an extension.
+
 ## Reveal syntax on the current line
 
 `sheaf.revealSyntaxOnLine`, default `false`.

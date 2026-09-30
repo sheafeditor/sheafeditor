@@ -134,15 +134,22 @@ const DRAWN_MARK = /::(before|after)\s*$/;
  *
  * A fenced block's opening and closing lines draw 10px tall. The backticks are hidden and the
  * language is not drawn at all, so at full height each fence would be an empty line of body text
- * inside the block. That is the same trade the blank-line shrinking made, and it has the same
- * cost: a reader cannot tell the strip from a line of their file.
+ * inside the block. That is the same trade the blank-line shrinking made.
  *
  * **Decided, 2026-09-29: it stays at 10px.** The rule it breaks is that every line is one line
- * height whatever it holds, and the force behind that rule is movement — the blank line grew
- * when the caret arrived and shrank when it left, so the document shifted while somebody was
- * working in it. A fence line does not move: measured, the caret alone leaves it hidden and
- * 10px, and only Edit Markdown brings it back to full height. So the expensive half of the
- * argument does not reach it, and what is left is honesty alone.
+ * height whatever it holds, and the force behind that rule is movement. The blank line grew when
+ * the caret arrived and shrank when it left, so the document shifted while somebody was working
+ * in it. A fence line does not move: measured, the caret alone leaves it hidden and 10px, and
+ * only Edit Markdown brings it back to full height.
+ *
+ * The cost this was thought to carry turns out not to be there. `render.code-fence.e02` measures
+ * what a fence line paints: rgb(36,37,38) across 726px, the same colour and the same width as a
+ * line of code in the block, against a transparent nothing on a line outside it. The block's
+ * panel is a `::before` on each of its lines, fences included, so the 10px is the inset at the
+ * top and bottom of the block rather than a strip a reader could mistake for a line of their
+ * file. A reader counting lines counts the code, which is the honest answer. The same scenario
+ * reads the caret there: 17px tall from the fence's top, hanging into the first line of code,
+ * which draws as a caret at the start of the block.
  *
  * Against that, the two alternatives both cost more than the inconsistency does. A full line
  * puts two empty-looking lines inside every code block, which on a page of short snippets is a

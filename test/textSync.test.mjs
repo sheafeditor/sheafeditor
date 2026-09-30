@@ -295,6 +295,23 @@ const cases = [
     const shrank = merged(base, 'one\ntwo\nthree!\n', 'o\ntwo\nthree\n');
     return grew === 'one and a half\ntwo\nthree!\n' && shrank === 'o\ntwo\nthree!\n';
   }],
+  ['two lines swapped on one side, with the other side typing in one of them, never leaves a line twice', () => {
+    /*
+     * A sort or a reorder from outside, landing while somebody types in a row it moves.
+     *
+     * The merge may decide either order and may decide whose version of the row wins. What
+     * it may never do is finish with more lines than either side had: the file is the store,
+     * and a line that appears twice is content nobody wrote. It came out with nine lines
+     * where both sides had eight, the moved row appearing in its old place and its new one.
+     */
+    const base = 'Intro\n\n| k | v |\n| - | - |\n| a | 1 |\n| b | 2 |\n| c | 3 |\n\nAfter\n';
+    const mine = base.replace('| a | 1 |', '| a | X |');
+    const theirs = base.replace('| a | 1 |\n| b | 2 |', '| b | 2 |\n| a | 1 |');
+    const { text } = mergeOutsideChange(base, mine, theirs);
+    const rows = text.split('\n').filter((l) => /^\| [abc] \|/.test(l));
+    const keys = rows.map((l) => l.slice(2, 3));
+    return rows.length === 3 && new Set(keys).size === 3;
+  }],
   ['nothing to put together when only one side changed, or both made the same change', () => {
     const base = 'Alpha\n';
     return (
@@ -669,6 +686,49 @@ const cases = [
     const typing = recently();
     typing.record('Intro.\n\nSome words.\n');
     return typing.dropped('Intro.\n\nSome woZZrds.\n', 'Intro changed.\n\nSome woZZrds.\n') === undefined;
+  }],
+  ['lost text: a row added, then a write to a row below it, takes nothing', () => {
+    /*
+     * A structural change rather than typing: Insert row below, then a tool writes the file
+     * from text it read before that and changes a different row. Both survive the merge, so
+     * nothing is gone and nothing should be named.
+     *
+     * Worth its own check because the run an inserted row leaves is not the shape the ones
+     * above have. Typing is a few characters in one place; an inserted line moves every line
+     * under it, so the span it reports is long and reaches down the document to whatever the
+     * write touched.
+     */
+    const T = 'Intro\n\n| n | v |\n| - | - |\n| a | 1 |\n| b | 2 |\n| c | 3 |\n| d | 4 |\n\nAfter\n';
+    const mine = T.replace('| a | 1 |', '| a | 1 |\n|   |   |');
+    const typing = recently();
+    typing.record(T);
+    /*
+     * Against the merged document, which is what the editor ends up holding: nothing is
+     * gone, so nothing is named.
+     *
+     * Against the write exactly as it arrived, before the merge puts the row back, this
+     * answers `"  |   |\n| "`: the scaffolding of the row, which is not something a person
+     * would recognise as their change even when a row really has gone. That is a separate
+     * defect with an issue of its own and it is not asserted here, because what this check
+     * is for is the path the editor actually takes.
+     */
+    return typing.dropped(mine, mine.replace('| d | 4 |', '| d | 44 |')) === undefined;
+  }],
+  ['lost text: a change with no words in it is reported as a change, not quoted back', () => {
+    /*
+     * An edit that is not typing has nothing to recognise in it. Inserting a row loses the
+     * row's scaffolding, and `"  |   |\n| "` read back to somebody says nothing about what
+     * went, so the notice says a change is gone and leaves it there.
+     *
+     * The control is the line below it: a loss with words in it is still quoted, since that
+     * is the whole reason the quote exists.
+     */
+    const bare = noticeAboutLostText('  |   |\n| ');
+    const words = noticeAboutLostText('the quick brown fox');
+    return (
+      bare === 'Sheaf: this file changed outside the editor, and your last change is gone. Undo brings it back.' &&
+      words.includes('is gone: "the quick brown fox". Undo brings it back.')
+    );
   }],
   ['lost text: a write with nothing typed before it takes nothing', () => {
     return recently().dropped('Some words.\n', 'Other words.\n') === undefined;

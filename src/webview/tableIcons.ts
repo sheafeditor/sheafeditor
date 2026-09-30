@@ -14,13 +14,77 @@
  * never read as each other at sixteen pixels.
  */
 
+import { PATHS as FLOATING_PATHS } from './floatingIcons';
+
 /*
  * Boxed angle brackets, the same geometry the main toolbar draws for showing a
  * block as its source. A table's `</>` button is that command, so it is that icon.
  */
 const BOXED_BRACKETS = '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="m10 9-3 3 3 3"/><path d="m14 15 3-3-3-3"/>';
 
+/*
+ * A heading, with its level as a numeral beside the H.
+ *
+ * Six hand-drawn variants differing only in the height of a bar do not read at the size a
+ * menu row draws them, which is 13px here. Every editor that shows heading levels in a menu
+ * settles this the same way, and so does this: one shape, one digit.
+ *
+ * The numeral is a `<text>` rather than a path, so it takes the interface font and stays
+ * crisp at any size. It has to turn the stroke off and the fill on, because the surrounding
+ * `<svg>` sets `stroke="currentColor" fill="none"` for the line art and a glyph drawn that
+ * way comes out as an outline.
+ */
+const heading = (level: number): string =>
+  '<path d="M4 5v14"/><path d="M12 5v14"/><path d="M4 12h8"/>' +
+  `<text x="15" y="19" font-size="11" font-weight="700" fill="currentColor" stroke="none">${level}</text>`;
+
+/*
+ * One set of glyphs, not two.
+ *
+ * The main toolbar's icons and the table's were separate maps that already held the same
+ * `source` and `chevron` geometry twice, and the right-click menu is what made the split
+ * untenable: it draws table commands and prose commands in one column, so a row could only
+ * carry a glyph if its name happened to be in whichever map the renderer imported. The two
+ * render functions were identical apart from the class they put on the `<svg>`, which is the
+ * part that genuinely differs, so that is the part that stays separate.
+ *
+ * The toolbar's names come first, so a name defined in both resolves to the table's. Today
+ * that is only `source` and `chevron`, and they are the same geometry either way.
+ */
 const PATHS = {
+  ...FLOATING_PATHS,
+
+  // Heading levels, for Turn into.
+  h1: heading(1),
+  h2: heading(2),
+  h3: heading(3),
+  h4: heading(4),
+  h5: heading(5),
+  h6: heading(6),
+
+  /*
+   * Turn into, on the row that opens the submenu. One block becoming another, which is a
+   * different idea from any of the kinds inside it, so it is its own shape rather than a
+   * borrowed one. Leaving the row bare was the alternative and it is worse: a gap in a
+   * column of glyphs reads as a missing one.
+   *
+   * Two full-width arrows, not two small blocks with an arrow between them. That was the
+   * first drawing and it fails at the size this is used: a menu row draws it at 13px, so a
+   * 3px arrow inside the 24-unit box lands under two pixels and disappears, leaving what
+   * reads on screen as two little boxes and nothing joining them. Anything smaller than
+   * about a quarter of the box is not there at this size.
+   */
+  turnInto: '<path d="m16 3 4 4-4 4"/><path d="M20 7H5"/><path d="m8 21-4-4 4-4"/><path d="M4 17h15"/>',
+
+  // Front matter: shown, collapsed, hidden, and how far the choice reaches.
+  show: '<path d="M2.06 12.35a1 1 0 0 1 0-.7 10.75 10.75 0 0 1 19.88 0 1 1 0 0 1 0 .7 10.75 10.75 0 0 1-19.88 0"/><circle cx="12" cy="12" r="3"/>',
+  hide:
+    '<path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68"/>' +
+    '<path d="M6.61 6.61A13.5 13.5 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61"/>' +
+    '<path d="M14.12 14.12a3 3 0 1 1-4.24-4.24"/><path d="m2 2 20 20"/>',
+  collapse: '<path d="M12 22v-6"/><path d="M12 8V2"/><path d="m9 19 3 3 3-3"/><path d="m9 5 3-3 3 3"/><path d="M4 12h16"/>',
+  everywhere: '<circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/>',
+
   // Row commands. The arrow points at the side the new row lands on.
   rowAbove: '<rect x="3" y="13" width="18" height="8" rx="1.5"/><path d="M12 10V3"/><path d="m8.5 6.5 3.5-3.5 3.5 3.5"/>',
   rowBelow: '<rect x="3" y="3" width="18" height="8" rx="1.5"/><path d="M12 14v7"/><path d="m8.5 17.5 3.5 3.5 3.5-3.5"/>',

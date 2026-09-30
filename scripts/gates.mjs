@@ -181,6 +181,29 @@ for (const [label, cmd, args] of STEPS) {
    */
   const verdict = readVerdict(r.seen);
   for (const why of verdict.skipped) skipped.push(`${label}: ${why}`);
+  /*
+   * A skip stops the run where it happens, the way a failure does.
+   *
+   * It used to be collected and reported at the end, so a step that skipped in the first ten
+   * seconds was announced twenty minutes later, after every other step had run for nothing.
+   * A release was cut that way: the command ran the whole of the gates and then refused, and
+   * the person waiting was never asked for the passphrase it was building up to.
+   *
+   * Nothing is lost by stopping. A skip is not a result to be weighed against the others; it
+   * is the run saying it cannot answer, and the answer does not improve by carrying on.
+   * `SHEAF_ALLOW_SKIPPED_GATES=1` still accepts the gap, and then the run continues and the
+   * list at the end is what it always was.
+   */
+  if (verdict.skipped.length && process.env.SHEAF_ALLOW_SKIPPED_GATES !== '1') {
+    process.stderr.write(`\n${label} did not run:\n`);
+    for (const why of verdict.skipped) process.stderr.write(`  - ${why}\n`);
+    process.stderr.write(
+      '\nStopped here rather than running the rest, because a step that did not run has not\n' +
+        'passed and nothing after it changes that. Fix what it is missing, or set\n' +
+        'SHEAF_ALLOW_SKIPPED_GATES=1 to accept the gap and say so wherever you report it.\n'
+    );
+    process.exit(1);
+  }
   const complaint = complaintFor(label, verdict);
   if (complaint) {
     process.stderr.write(`\n${complaint}\n`);

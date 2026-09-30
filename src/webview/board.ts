@@ -34,7 +34,20 @@ export interface BoardRows {
   keep?: readonly string[];
   /** The card that takes Tab, by row. */
   picked?: number | null;
-  /** A cell's value as HTML. Absent, a value is drawn as its plain text. */
+  /**
+   * A cell's value as HTML. Absent, a value is drawn as its plain text.
+   *
+   * Which of the two a board wants follows from what its rows are, and the two callers
+   * differ on purpose. A pipe table's board passes `renderInline`, because a pipe table is
+   * prose: `[guide](…)` on a card is a link, the same as in its grid. A view's board passes
+   * nothing, because a view reads a CSV or TSV block and a field there is a value, so
+   * `**done**` is eight characters and a bracketed address is an address you can read, the
+   * same as in that block's grid. Each board agrees with the grid of the thing it draws.
+   *
+   * Written here rather than at either call, because the difference reads as an oversight in
+   * whichever board you meet second and was reported as one. `tables.entry.ts` pins the
+   * view's half, and the rule is on the Datatables and Boards pages.
+   */
   render?: (value: string) => string;
   /** What the rows say when there are none to draw. */
   empty?: string;

@@ -117,6 +117,12 @@ writeFileSync(
   join(root, 'quoted.md'),
   'Intro.\n\n> | St | Role |\n> | --- | --- |\n> | ok | Writer |\n'
 );
+/* And the same table attached to a list item, which is the ordinary way to hang a small
+   table off one point in a list. Its lines carry the item's indent in the file. */
+writeFileSync(
+  join(root, 'listed.md'),
+  'Intro.\n\n- one\n\n  | St | Role |\n  | --- | --- |\n  | ok | Writer |\n\n- two\n'
+);
 
 /** The drawn column widths, and the length of the cell being typed into. */
 const read = (page) =>
@@ -725,6 +731,74 @@ try {
 
   const quoted = await openDoc('quoted.md');
   console.log(`  a quoted table: frame ${quoted.frame?.left}..${quoted.frame?.right}, text at ${quoted.para?.left}`);
+
+  /*
+   * And a table attached to a list item, which should start where that item's text starts,
+   * the way a quoted one starts where the quote's text starts.
+   *
+   * Measured against the item's own words rather than against a number: the indent a list
+   * gives its content is the thing being matched, so reading it from the item is what makes
+   * this a comparison rather than a second copy of the same guess.
+   */
+  await openDoc('listed.md');
+  const listed = await page.evaluate(() => {
+    // The bullet is drawn into the line's own text, so it reads '•one' rather than 'one'.
+    const item = [...document.querySelectorAll('.cm-line')].find((l) => /one$/.test(l.textContent.trim()));
+    const frame = document.querySelector('.sheaf-table');
+    const firstCell = document.querySelector('.sheaf-table th, .sheaf-table td');
+    if (!item || !frame) return null;
+    // Where the item's words begin, not where its bullet does: a marker is drawn in the
+    // indent, so the text's own left edge is what the table has to line up with.
+    const walk = document.createTreeWalker(item, NodeFilter.SHOW_TEXT);
+    let wordsLeft = null;
+    for (let n; (n = walk.nextNode()); ) {
+      const i = n.data.indexOf('one');
+      if (i < 0) continue;
+      const r = document.createRange();
+      r.setStart(n, i);
+      r.setEnd(n, i + 3);
+      wordsLeft = Math.round(r.getBoundingClientRect().left);
+      break;
+    }
+    return {
+      itemLeft: Math.round(item.getBoundingClientRect().left),
+      wordsLeft,
+      frameLeft: Math.round(frame.getBoundingClientRect().left),
+      cellLeft: firstCell ? Math.round(firstCell.getBoundingClientRect().left) : null,
+      usesPane: frame.classList.contains('can-use-pane'),
+      itemDepth: getComputedStyle(item).getPropertyValue('--md-list-depth').trim() || null,
+      frameLineDepth: (() => {
+        const line = frame.closest('.cm-line');
+        return line ? getComputedStyle(line).getPropertyValue('--md-list-depth').trim() || null : 'no cm-line';
+      })(),
+      step: getComputedStyle(document.documentElement).getPropertyValue('--md-indent-step').trim(),
+    };
+  });
+  console.log(
+    `  a table under a list item: the item's line at ${listed?.itemLeft}, its words at ${listed?.wordsLeft}, ` +
+      `the table's first cell at ${listed?.cellLeft} (can-use-pane ${listed?.usesPane}, item depth ${listed?.itemDepth}, table line depth ${listed?.frameLineDepth}, step ${listed?.step})`
+  );
+  if (!listed || listed.wordsLeft === null || listed.wordsLeft === undefined) {
+    failures.push(`the list fixture drew no item to measure the table against: ${JSON.stringify(listed)}`);
+  } else {
+    /*
+     * Measured against the item's own words, not against a number written here. The indent a
+     * list gives its content is the thing being matched, so reading it off the item is what
+     * makes this a comparison rather than a second copy of the same guess.
+     *
+     * Two assertions, because either alone passes something wrong. A table drawn at the right
+     * place while still claiming the pane would overhang the item it belongs to; a table that
+     * gave up the pane and stayed at the bullets would still be drawn in the wrong place.
+     */
+    if (Math.abs(listed.cellLeft - listed.wordsLeft) > 2) {
+      failures.push(
+        `a table under a list item starts at ${listed.cellLeft} while the item's own words start at ${listed.wordsLeft}.`
+      );
+    }
+    if (listed.usesPane) {
+      failures.push('a table under a list item may not take the pane: it belongs to the item, not to the document.');
+    }
+  }
   if (quoted.frame !== null && quoted.frame.left < (quoted.para?.left ?? 0)) {
     failures.push(
       `a table inside a blockquote starts at ${quoted.frame.left}, left of the prose at ${quoted.para?.left}. ` +
