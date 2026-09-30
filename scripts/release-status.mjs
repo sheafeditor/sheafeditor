@@ -4,11 +4,12 @@
  *   npm run release:status            the last few runs
  *   npm run release:status -- --watch poll until the newest run finishes
  *
- * No credentials, and that is the point rather than a limitation. `sheafeditor/sheafeditor`
- * is public, so GitHub serves its workflow runs and every job's step list to anyone who
- * asks. A token would buy one more thing, the raw log text of a step, and cost a stored
- * secret; the step list already says which step failed, which is the question anybody asks
- * first and usually last.
+ * Runs and step lists need no credentials, because `sheafeditor/sheafeditor` is public and
+ * GitHub serves both to anyone who asks. Log text is the one thing it does not, and knowing
+ * which step failed turned out not to be enough: a release failed three times at the same
+ * step for three different reasons, and each one cost a round trip to a person reading the
+ * Actions tab. So a read-only token is used for that one request when there is one, and
+ * everything else works exactly the same without it.
  *
  * It exists because a release failed and the only way to see that was a person opening the
  * Actions tab and describing it. The failure was `Gates`, on a tag, with everything after it
@@ -19,6 +20,10 @@
  * a couple of watched releases in an hour is fine and a loop left running all day is not.
  */
 
+import { spawnSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+
 const REPO = 'sheafeditor/sheafeditor';
 const API = `https://api.github.com/repos/${REPO}`;
 const WATCH = process.argv.includes('--watch');
@@ -26,6 +31,65 @@ const WATCH = process.argv.includes('--watch');
 const EVERY_MS = 20_000;
 
 const say = (line) => process.stdout.write(`${line}\n`);
+
+/*
+ * A read-only token, if there is one, for the single thing a public repository does not
+ * serve: the log text of a step.
+ *
+ * Everything else here works without one and keeps working without one, which is the point:
+ * a missing token costs the log and nothing else. Read from the login keychain rather than a
+ * file, so it is never plain text on disk and never in a shell's history, and from `GH_TOKEN`
+ * first for a runner or a one-off.
+ *
+ * It is never printed, never written anywhere, and never passed to a subprocess. The only
+ * thing it is used for is an Authorization header on api.github.com.
+ */
+function token() {
+  if (process.env.GH_TOKEN) return process.env.GH_TOKEN.trim();
+  // A file outside every repository, readable only by its owner. Tried before the keychain
+  // because it works without one and needs no `security` invocation.
+  try {
+    const t = readFileSync(join(process.env.HOME ?? '', '.config', 'sheaf', 'actions-token'), 'utf8').trim();
+    if (t) return t;
+  } catch {
+    // No file: fall through to the keychain, then to no token at all.
+  }
+  const r = spawnSync('security', ['find-generic-password', '-a', 'sheaf', '-s', 'sheaf-actions-token', '-w'], {
+    encoding: 'utf8',
+  });
+  return r.status === 0 && r.stdout.trim() ? r.stdout.trim() : null;
+}
+
+const TOKEN = token();
+
+/**
+ * The failing step's own output, which needs the token.
+ *
+ * A job's log is one plain-text stream with a line per step, so the step's name is what
+ * finds its section. Only the tail is printed: the useful part of a failed check is the last
+ * thing it said, and a whole job's log is tens of thousands of lines.
+ */
+async function logTail(jobId, stepName, lines = 40) {
+  if (!TOKEN) {
+    say('  The step list says which step. Its log text needs the Actions tab, or a token:');
+    say('  a fine-grained token, this repository only, Actions read-only, in the login keychain');
+    say('  under the service name sheaf-actions-token.');
+    return;
+  }
+  const r = await fetch(`${API}/actions/jobs/${jobId}/logs`, {
+    headers: { Accept: 'application/vnd.github+json', Authorization: `Bearer ${TOKEN}` },
+  });
+  if (!r.ok) {
+    say(`  The log could not be read: ${r.status} ${r.statusText}. The token may be wrong or expired.`);
+    return;
+  }
+  const text = await r.text();
+  const at = text.indexOf(stepName);
+  const body = at === -1 ? text : text.slice(at);
+  const tail = body.split('\n').slice(0, 4000).filter(Boolean).slice(-lines);
+  say(`\n  --- ${stepName}, last ${tail.length} lines ---`);
+  for (const line of tail) say(`  ${line.replace(/^\S+\s/, '')}`);
+}
 
 async function get(path) {
   const r = await fetch(`${API}${path}`, { headers: { Accept: 'application/vnd.github+json' } });
@@ -56,12 +120,9 @@ async function whereItStopped(run) {
     }
   }
   say(`\n  ${run.html_url}`);
-  /*
-   * The step list says which step, never why. The log text of a step is the one thing a
-   * public repository does not serve without a token, so it is named as the next place to
-   * look rather than left as a gap the reader has to notice.
-   */
-  say('  The step list says which step. Its log text needs the Actions tab, or a token.');
+  const failed = (jobs ?? []).find((j) => j.conclusion === 'failure');
+  const step = failed?.steps?.find((s) => s.conclusion === 'failure');
+  if (failed && step) await logTail(failed.id, step.name);
 }
 
 const { workflow_runs: runs } = await get('/actions/runs?per_page=5');

@@ -35,6 +35,17 @@ import { serveForCheck } from './serve-for-check.mjs';
 const REPO = dirname(dirname(fileURLToPath(import.meta.url)));
 const require = createRequire(join(REPO, 'package.json'));
 
+/*
+ * Edit Markdown's chord, as this platform spells it.
+ *
+ * `Mod-` in the editor's own keymap is Cmd on a Mac and Ctrl everywhere else, and this
+ * pressed `Meta+Alt+e` outright. On a Mac that is the binding and the check passed; on Linux
+ * it is a chord nothing listens for, so the cell never revealed and the check reported the
+ * product broken. It failed three release builds that way while every local run stayed green,
+ * which is the whole cost of a check that only works where its author ran it.
+ */
+const REVEAL = `${process.platform === 'darwin' ? 'Meta' : 'Control'}+Alt+e`;
+
 const VIEW = { width: 1200, height: 900 };
 
 const CHROME = [
@@ -180,10 +191,10 @@ try {
     }
 
     const rendered = await read();
-    await page.keyboard.press('Meta+Alt+e');
+    await page.keyboard.press(REVEAL);
     await page.waitForTimeout(400);
     const revealed = await read();
-    await page.keyboard.press('Meta+Alt+e');
+    await page.keyboard.press(REVEAL);
     await page.waitForTimeout(400);
     const again = await read();
 

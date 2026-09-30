@@ -74,16 +74,18 @@ jobs:
       # minutes of runner time. What no workflow can gate is the real-window suite,
       # because a runner has no screen, so nothing here says whether the commit being
       # published was ever driven through a window.
-      # The private-terms list lives outside the repository on purpose, because a term that is
-      # private in itself cannot be listed in a file that ships. A runner has no private
-      # checkout beside this one, so that step can never run here, and a step that cannot run
-      # fails the gates by default. This forgives that one step by name rather than forgiving
-      # every skip: the five browser-driven checks also skip on a runner, and those are a real
-      # gap that has to keep failing.
-      - name: Gates
-        env:
-          SHEAF_ALLOW_SKIPPED_GATES: Private terms
-        run: npm run gates
+      # No gates here. They run twice otherwise: `npm run release:check` runs exactly these,
+      # on a clone of this commit, before the tag is pushed, and `ci.yml` runs them again on
+      # every push to main, which is where the Linux coverage belongs.
+      #
+      # Running them here as well cost three release builds in one evening. Each failed at the
+      # gates for a different reason and each left a tag pushed with nothing published: a
+      # changelog guard that could not pass after a release stamped it, a skipped step that no
+      # runner could ever run, and a check pressing Cmd on a machine that has no Cmd. None of
+      # those was the extension being wrong, and all of them surfaced at the worst moment.
+      #
+      # What a tag needs from a runner is the thing only a runner can do: build the artefact,
+      # attest it, and publish it. A commit's correctness is settled before the tag exists.
 
       - name: Package extension
         run: npm run package
