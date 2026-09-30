@@ -150,6 +150,22 @@ function run(cmd, args) {
   });
 }
 
+/*
+ * Which skips are forgiven, and why the answer is a list rather than a flag.
+ *
+ * `SHEAF_ALLOW_SKIPPED_GATES=1` forgives every skip, which is the blunt instrument and is
+ * kept for a local run somebody is deliberately doing without a browser. A runner needs
+ * something narrower: the private-terms list lives outside the repository on purpose, so it
+ * can never exist there and that one step can never run, while the five browser checks
+ * skipping on a runner is a real gap and has to keep failing. Forgiving all of them to get
+ * past one would put back exactly the hole `A skipped gate is not a passed gate` closed.
+ *
+ * So the variable also takes the labels it forgives, comma-separated. A step not named
+ * stops the run as before.
+ */
+const ALLOWED = (process.env.SHEAF_ALLOW_SKIPPED_GATES ?? '').split(',').map((s) => s.trim()).filter(Boolean);
+const forgiven = (label) => ALLOWED.includes('1') || ALLOWED.includes(label);
+
 const skipped = [];
 
 for (const [label, cmd, args] of STEPS) {
@@ -194,13 +210,14 @@ for (const [label, cmd, args] of STEPS) {
    * `SHEAF_ALLOW_SKIPPED_GATES=1` still accepts the gap, and then the run continues and the
    * list at the end is what it always was.
    */
-  if (verdict.skipped.length && process.env.SHEAF_ALLOW_SKIPPED_GATES !== '1') {
+  if (verdict.skipped.length && !forgiven(label)) {
     process.stderr.write(`\n${label} did not run:\n`);
     for (const why of verdict.skipped) process.stderr.write(`  - ${why}\n`);
     process.stderr.write(
       '\nStopped here rather than running the rest, because a step that did not run has not\n' +
         'passed and nothing after it changes that. Fix what it is missing, or set\n' +
-        'SHEAF_ALLOW_SKIPPED_GATES=1 to accept the gap and say so wherever you report it.\n'
+        `SHEAF_ALLOW_SKIPPED_GATES=${JSON.stringify(label)} to accept this one, or =1 for all of them,\n` +
+        'and say so wherever you report the result.\n'
     );
     process.exit(1);
   }
@@ -219,7 +236,7 @@ if (skipped.length) {
       'stand in for. Fix what they are missing, or set SHEAF_ALLOW_SKIPPED_GATES=1 to\n' +
       'accept the gap for this run and say so wherever you report the result.\n'
   );
-  if (process.env.SHEAF_ALLOW_SKIPPED_GATES !== '1') process.exit(1);
+  if (!skipped.every((s) => forgiven(s.split(':')[0]))) process.exit(1);
   process.stdout.write('\nAll gates passed, with the skipped steps above allowed\n');
 } else {
   process.stdout.write('\nAll gates passed\n');

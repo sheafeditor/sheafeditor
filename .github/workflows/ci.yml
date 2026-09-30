@@ -34,7 +34,15 @@ jobs:
       # the touch layout, and they cost under two minutes altogether. Each step is
       # labelled in the log and the run stops at the first failure, so a type error
       # still fails as fast as it did when it had a step of its own.
+      # The private-terms list lives outside the repository on purpose, because a term that is
+      # private in itself cannot be listed in a file that ships. A runner has no private
+      # checkout beside this one, so that step can never run here, and a step that cannot run
+      # fails the gates by default. This forgives that one step by name rather than forgiving
+      # every skip: the five browser-driven checks also skip on a runner, and those are a real
+      # gap that has to keep failing.
       - name: Gates
+        env:
+          SHEAF_ALLOW_SKIPPED_GATES: Private terms
         run: npm run gates
 
       # Catches bundling errors and .vscodeignore regressions that the

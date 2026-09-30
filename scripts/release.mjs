@@ -33,7 +33,7 @@
  */
 
 import { spawnSync } from 'node:child_process';
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
@@ -41,6 +41,8 @@ const REPO = dirname(dirname(fileURLToPath(import.meta.url)));
 const CUT = process.argv.includes('--cut');
 /** The deploy key, and the ssh host alias `oss` pushes through. */
 const KEY = join(process.env.HOME ?? '', '.ssh', 'id_ed25519_sheaf_release');
+/** Where a green check is remembered, so a retry does not pay for it twice. Gitignored. */
+const STAMP = join(REPO, '.claude', 'scratch', 'release-checked');
 
 const say = (line) => process.stdout.write(`${line}\n`);
 const failures = [];
@@ -180,6 +182,21 @@ if (failures.length) {
  * this has to be to mean anything. `--local` hardlinks the objects, so it costs almost
  * nothing.
  */
+const head = run('git', ['rev-parse', 'HEAD']).out;
+let stamped = null;
+try {
+  stamped = JSON.parse(readFileSync(STAMP, 'utf8'));
+} catch {
+  // No stamp, or an unreadable one: run the long half.
+}
+const STILL_GOOD_MS = 2 * 60 * 60 * 1000;
+if (stamped && stamped.head === head && Date.now() - stamped.at < STILL_GOOD_MS) {
+  const mins = Math.round((Date.now() - stamped.at) / 60000);
+  say(`\n=== CI, already run on this commit ===`);
+  say(`  ok   the gates and the package passed on ${head.slice(0, 7)} ${mins} minute(s) ago, so they are not run again.`);
+  say('       Delete .claude/scratch/release-checked to force them.');
+} else {
+
 const build = join(REPO, '.claude', 'scratch', 'release');
 run('rm', ['-rf', build]);
 must('Cloning main', 'git', ['clone', '--quiet', '--local', '--no-hardlinks', '--branch', 'main', REPO, build]);
@@ -198,10 +215,29 @@ const own = (label, args) => {
 own('Installing from the lockfile', ['ci', '--no-audit', '--no-fund']);
 own('Running the gates', ['run', 'gates']);
 own('Building the package', ['run', 'package']);
+}
 
 unchecked.push('the build attestation, which needs the workflow’s OIDC token');
 unchecked.push('the GitHub Release, which needs a repository token');
 unchecked.push('the Marketplace and Open VSX publishes, which need the release environment’s credentials');
+
+/*
+ * A green check, remembered against the commit it passed on.
+ *
+ * So that a retry costs seconds rather than the whole run again. A mistyped passphrase used
+ * to mean redoing twenty minutes of gates to get back to the prompt, which is the kind of
+ * cost that makes somebody skip the check next time.
+ *
+ * The commit and the clock both have to agree before it is reused, and the cheap checks run
+ * again regardless: what is skipped is only the long half, and only for the exact commit it
+ * was run on.
+ */
+try {
+  mkdirSync(dirname(STAMP), { recursive: true });
+  writeFileSync(STAMP, JSON.stringify({ head: run('git', ['rev-parse', 'HEAD']).out, at: Date.now() }));
+} catch {
+  // A stamp that cannot be written costs a re-run and nothing else.
+}
 
 say('\n=== Green ===');
 say('Everything the workflow does before it publishes passes here, on a clone of the commit');
@@ -256,7 +292,17 @@ say('The passphrase for the release key is asked for once. Both pushes use it.\n
  * try here rather than in a second run.
  */
 const push = [
-  'ssh-add ' + JSON.stringify(KEY),
+  /*
+   * Three goes at the passphrase rather than one run thrown away.
+   *
+   * `ssh-add` re-prompts a few times on a wrong passphrase and then gives up, and giving up
+   * used to end the whole command: the branch unpushed, the tag unmoved, and the twenty
+   * minutes of checks that led up to the prompt spent for nothing. Three invocations is
+   * plenty of room for a typo, Ctrl-C still stops the lot, and nothing is pushed until the
+   * key is actually loaded.
+   */
+  `for i in 1 2 3; do ssh-add ${JSON.stringify(KEY)} && break; ` +
+    `[ $i = 3 ] && { echo "The key was not unlocked. Nothing has been pushed; run it again."; exit 1; }; done`,
   'git push oss release:main',
   `git tag -f ${tag} HEAD`,
   `{ git push -f oss ${tag} || { echo "Moving the tag was refused; replacing it instead."; ` +
