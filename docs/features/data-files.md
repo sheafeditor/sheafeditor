@@ -56,7 +56,7 @@ The change to the document is one undo step.
 
 ## Good to know
 
-- **An edit rewrites only the record you changed.** In a file opened as a grid, every other line keeps its bytes, and the file keeps its quoting, its line endings and its byte-order mark if it has one. A file with no newline at its end still has none after you edit it.
+- **An edit rewrites only the record you changed.** In a file opened as a grid, every other line keeps its bytes, and the file keeps its quoting and its byte-order mark if it has one. A file with no newline at its end still has none after you edit it. Line endings behave as they do in a document: see [Files and saving](files-and-saving.md#good-to-know).
 - **Large files open as text.** A file of more than 2,000 rows opens with a note saying how many rows it has, and no grid. Use **Reopen Editor With** to edit it as text.
 - **Nothing moves to a file unless you ask.** Sheaf never splits a document's data into another file on its own.
 - **Create never writes over a file.** If one appeared at that path in the meantime, it is left as it is and a note says so. The document itself does not change.

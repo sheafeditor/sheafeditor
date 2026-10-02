@@ -23,31 +23,62 @@
 
 Sheaf shows the rendered document and lets you type straight into it. Headings look like headings, tables are grids, and the file on disk stays ordinary Markdown: an edit changes only what you typed, so the diff shows your change and nothing else.
 
-## Hand your agent the exact lines
+## Select a range, like a spreadsheet
 
-Right-click any line. **Copy ref** and **Send to terminal** give your agent a quoted reference to exactly what you picked: the file, the lines and the text, and in a table the cells. When an agent writes the file back, the lines it changed are marked in the margin, and if a write takes back what you just typed, Sheaf says so and Cmd+Z brings it back.
+Click a cell and type, drag across a range, or paste one in from Excel, Numbers or Sheets. Spreadsheet keys move you around, Cmd-click picks cells that are not next to each other, columns size to what they hold, and a long table keeps its header row in view. On disk it stays a Markdown table, and one edited cell is one changed line.
 
-## Select a block, like a spreadsheet
+## Filter and sort from the header
 
-Click a cell and type, drag across a range, or paste one in from Excel, Numbers or Sheets. Spreadsheet keys move you around, columns size to what they hold, and a long table keeps its header row in view. On disk it stays a Markdown table, and one edited cell is one changed line.
+Name a CSV block and a `view` block elsewhere in the document shows it filtered, sorted and trimmed to the columns you want. Click a column header to sort or filter and Sheaf writes the line into the query for you. A view reads a named block in the document or a `.csv` file beside it, and a cell edited through the view changes that one field in the table behind it.
 
-Name a CSV block and a `view` block elsewhere in the document shows it filtered, sorted and trimmed to the columns you want, or shows a `.csv` file beside the document the same way. Show a view, or any table, as a board of cards and drag one to change its value.
+## The same rows as a board
+
+Add `layout: board` and `group: status` and the rows are cards in a column per value, with its count. Drag a card and its value changes in the table. The filtering and the sorting still apply, and a plain pipe table can be shown as a board from its own menu.
 
 ## Every block, rendered as you write
 
-Headings, callouts, task lists, maths and code look like the finished page while you type into them. A slash menu, a toolbar over selected text, a right-click menu and a drag grip cover the block moves. Press Cmd+Alt+E on any block to see and edit its Markdown, or **Open raw Markdown** to drop the whole file back to plain text.
+Headings, callouts, task lists, maths, footnotes and code look like the finished page while you type into them. A slash menu, a toolbar over selected text, a right-click menu and a drag grip cover the block moves, Cmd+/ lists every shortcut, and find and replace reaches into tables and link addresses. Press Cmd+Alt+E on any block to see and edit its Markdown, or **Open raw Markdown** to drop the whole file back to plain text.
 
-## See the shape of a long document
+## Diagrams drawn where you wrote them
 
-Turn on the table of contents and the headings sit beside the text. Click one to jump there. Find and replace reaches into tables, tinting the cells that match.
+A `mermaid` block is the diagram. It draws light or dark from the colours behind it, and the block still holds the Mermaid you typed.
 
-## It is still just a folder of Markdown
+## Hand your agent the exact lines
+
+Right-click any line. **Copy ref** and **Send to terminal** give your agent a quoted reference to exactly what you picked: the file, the lines and the text, and in a table the cells. Nothing runs until you press Enter.
+
+## See what your agent changed
+
+When anything outside the editor writes the open file, Sheaf marks the lines it wrote with a bar in the margin and a tint across them, and beside the row number in a table. You read the change in the document rather than in source control. Edit the line and its mark goes; nothing is written to the file. If a write takes back what you just typed, Sheaf says so and one Cmd+Z brings it back.
+
+## Build the brain your agents read
+
+Strategy, research, specs, roadmaps, decisions and the tables behind them, written as files in the repo. Every agent that opens the repo reads the lot, with no sync step, no retrieval layer and no account in the way. It travels with the code: clone the repo and you have it, branch and it branches with you.
+
+## Everything GitHub renders, and a little more
+
+Sheaf reads the Markdown you already have and writes the same Markdown back. Everything GitHub draws, it draws: headings, emphasis, links, images, quotes, lists, task checkboxes, rules, code blocks, pipe tables, the five alerts from `[!NOTE]` to `[!CAUTION]`, `mermaid` diagrams, `$x$` and `$$` maths, `[^1]` footnotes, emoji written by name like `:warning:`, and YAML front matter.
+
+On top of that it adds six things. Each is a fenced block, an HTML comment or a file of its own, so the document still renders everywhere and an agent still reads the whole of it in one pass:
+
+| | Sheaf draws | Elsewhere |
+| --- | --- | --- |
+| A highlight, `==like this==` | Marked up | The equals signs |
+| A `csv` or `tsv` block | A spreadsheet grid | A code block |
+| A `view` block | One table filtered, sorted and trimmed | A code block |
+| A view with `layout: board` | Cards you drag | A code block |
+| A `.csv` or `.tsv` file | A grid of its own | A table |
+| An HTML comment | A note you can collapse | Hidden |
+
+## It is still just a folder of Markdown (ish)
 
 - **No import step.** Your files, where they already are.
 - **Only your changes change.** `git diff` shows exactly what you did.
 - **Every commit, forever.** No plan tier expires your history.
 - **Nothing to sign up for.** No account, no database, no cloud.
-- **Never locked in.** One button drops back to plain text.
+- **The (ish).** A `csv` or `view` block shows as a code block anywhere else.
+- **Your `.txt` notes too.** Right-click one and open it in Sheaf, read exactly as a `.md`. Double-clicking still gives you plain text.
+- **Never locked in.** Uninstall Sheaf and your documents are exactly as you left them.
 
 ## Install
 

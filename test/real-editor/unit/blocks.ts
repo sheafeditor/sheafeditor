@@ -5,7 +5,6 @@
 // These go past test/prose/blocks.ts: nested items with children, front matter
 // next to the moved block, tight blocks with no blank line, ordered numbers, CRLF,
 // undo after each operation, and the only block in a document.
-import { EditorState } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
 import { undo } from '@codemirror/commands';
 import { mountProse } from '../../harness';
@@ -60,8 +59,6 @@ function after(doc: string, at: number, fn: (p: Prose) => void): string {
   p.destroy();
   return out;
 }
-
-const lineFrom = (doc: string, n: number): number => EditorState.create({ doc }).doc.line(n).from;
 
 function item(items: BlockMenuItem[], label: string): BlockMenuItem {
   const found = items.find((i) => i.label === label);

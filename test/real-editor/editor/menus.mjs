@@ -1533,4 +1533,376 @@ export const scenarios = [
       };
     },
   },
+  {
+    id: 'menus.find-replace.e09',
+    feature: 'menus.find-replace',
+    name: 'Replace all in a file with Windows line endings changes the matches and leaves every line ending as it was',
+    run: async (S) => {
+      // R6 says replace changes exactly the matched characters. A replace writes at several places
+      // at once, and a newline written as `\n` into a CRLF file changes bytes nobody searched for.
+      // e02 does the same work in an LF file, so this is the pair that asks about the endings.
+      const doc = 'one kiwi\r\n\r\n| fruit | qty |\r\n| --- | --- |\r\n| kiwi | 2 |\r\n\r\nlast kiwi\r\n';
+      await S.fresh('find-replace-crlf', doc);
+      const note = await openFind(S, 'one', true);
+      await S.click('.sheaf-find-input[name="search"]');
+      await S.type('kiwi');
+      await S.click('.sheaf-find-input[name="replace"]');
+      await S.type('pear');
+      await S.click('.sheaf-find button[name="replaceAll"]');
+      await S.sleep(1200);
+      const d = await S.disk();
+      const want = doc.replace(/kiwi/g, 'pear');
+      const lost = d.split('\n').slice(0, -1).filter((l) => !l.endsWith('\r'));
+      return {
+        ok: d === want,
+        detail: `${note}${show(d)}${lost.length ? `; ${lost.length} lines lost their CR: ${show(lost.join(' | '))}` : ''}`,
+      };
+    },
+  },
+  {
+    id: 'menus.find-replace.e10',
+    feature: 'menus.find-replace',
+    name: 'Replace all in a file holding both CRLF and LF endings leaves both kinds as they were',
+    /*
+     * Half fixed, and the remaining half is not in this repository's reach.
+     *
+     * `planEdit` now takes each ending from the span it is replacing, so it plans the right
+     * bytes for this fixture exactly: a mixed span gets LF for the first newline and CRLF for
+     * the rest, and the planned text is byte-identical to what the file should hold. The
+     * browser host writes that text itself and keeps it.
+     *
+     * In a window the replacement goes to `vscode.WorkspaceEdit.replace`, and a `TextDocument`
+     * holds one EOL for the whole file, so the text is normalised to it and a mixed file comes
+     * back uniform whatever was planned. Checked rather than assumed: the built bundles carry
+     * the fix, and the same fixture through `planEdit` alone comes out right.
+     */
+    known:
+      "in a window the replacement's endings are normalised to the document's single EOL, "
+      + 'so a file holding both comes back uniform; the planned bytes are right and a browser tab keeps them',
+    run: async (S) => {
+      /*
+       * R7, the half of the promise e09 cannot reach. e09's file is CRLF throughout, so one
+       * style is the right answer for every line in it and a replace that writes one style is
+       * correct by accident. This file holds both, which is a file two tools have written, and
+       * then there is no single right style available.
+       *
+       * The first line ends with LF and the rest with CRLF, which is the worse of the two mixed
+       * shapes: both hosts report one ending style for the whole document and read it from the
+       * first line ending, so here they report LF for a file that is CRLF everywhere else.
+       *
+       * `kiwi` is on the first line and the last so the replace spans the whole document. The
+       * span is what carries the conversion: a replace confined to one line cannot reach an
+       * ending it did not match, which is why a small edit looks fine and this does not.
+       */
+      const doc = 'one kiwi\n' + '\r\n| fruit | qty |\r\n| --- | --- |\r\n| kiwi | 2 |\r\n\r\nlast kiwi\r\n';
+      await S.fresh('find-replace-mixed', doc);
+      const note = await openFind(S, 'one', true);
+      await S.click('.sheaf-find-input[name="search"]');
+      await S.type('kiwi');
+      await S.click('.sheaf-find-input[name="replace"]');
+      await S.type('pear');
+      await S.click('.sheaf-find button[name="replaceAll"]');
+      await S.sleep(1200);
+      const d = await S.disk();
+      const want = doc.replace(/kiwi/g, 'pear');
+
+      /*
+       * Two ways this can fail and they mean opposite things, so the detail has to say which.
+       * A replace that did not happen at all fails here too, and the day this starts passing it
+       * flips to FIXED: if it were still failing then for the other reason, somebody would read
+       * that as the fix not working. So the endings and the matches are read apart.
+       */
+      const endings = (t) => [...t.matchAll(/\r\n|\r|\n/g)].map((m) => (m[0] === '\r\n' ? 'crlf' : m[0] === '\r' ? 'cr' : 'lf')).join(',');
+      const before = endings(doc);
+      const after = endings(d);
+      const matched = !d.includes('kiwi') && (d.match(/pear/g) ?? []).length === 3;
+      const sameEndings = before === after;
+      return {
+        ok: d === want,
+        detail:
+          `${note}${show(d)}; ` +
+          `${matched ? 'all 3 matches replaced' : 'THE MATCHES DID NOT ALL CHANGE, so this is not about the endings'}; ` +
+          `${sameEndings ? 'every ending as it was' : `endings moved: was ${before}, now ${after}`}`,
+      };
+    },
+  },
+  {
+    id: 'menus.context-prose.e19',
+    feature: 'menus.context-prose',
+    name: 'The keys of a shortcut in the right-click menu sit level with one another',
+    run: async (S) => {
+      /*
+       * R11, which had no scenario. `⌘`, `⌥` and `⇧` are missing from a lot of font stacks, so a
+       * browser falls back for those glyphs alone and sets them on the fallback's metrics: `⌘⌥C`
+       * then reads as three characters at three heights. The keys are laid out as boxes aligned
+       * along their bottoms so that a fallback lands level instead of floating.
+       *
+       * Bottoms agreeing is a weak reading on its own, because it is also what one identical
+       * glyph repeated would give. So this reads the key spans' heights and fonts too, and it
+       * ends by taking the rule away: with the boxes set on their baselines instead, the same
+       * measurement has to disagree. Without that step, four agreeing numbers say nothing.
+       */
+      await S.fresh('key-align', 'Say hello to the world today.\n');
+      await S.caret('world', 2);
+      await S.click({ text: 'world', offset: 2 }, { button: 'right' });
+      await S.sleep(400);
+      const read = () =>
+        S.eval(() => {
+          const hints = [...document.querySelectorAll('.sheaf-ctx-menu:not([hidden]) .sheaf-keys')];
+          const out = [];
+          for (const h of hints) {
+            const keys = [...h.querySelectorAll('.sheaf-key')];
+            if (keys.length < 2) continue;
+            out.push({
+              text: h.textContent,
+              keys: keys.map((k) => {
+                const r = k.getBoundingClientRect();
+                return {
+                  glyph: k.textContent,
+                  bottom: Math.round(r.bottom * 10) / 10,
+                  top: Math.round(r.top * 10) / 10,
+                  height: Math.round(r.height * 10) / 10,
+                  font: getComputedStyle(k).fontFamily.split(',')[0].replace(/"/g, ''),
+                };
+              }),
+            });
+          }
+          return out;
+        });
+      const spread = (hint) => {
+        const bottoms = hint.keys.map((k) => k.bottom);
+        return Math.round((Math.max(...bottoms) - Math.min(...bottoms)) * 10) / 10;
+      };
+      const hints = await read();
+      const off = hints.filter((h) => spread(h) > 1);
+      // The control: bottom alignment taken away, which is the state the rule exists to prevent.
+      await S.eval(() => {
+        const style = document.createElement('style');
+        style.id = 'sheaf-qa-control';
+        style.textContent = '.sheaf-keys { align-items: baseline !important; }';
+        document.head.appendChild(style);
+      });
+      await S.sleep(250);
+      const control = await read();
+      await S.eval(() => document.getElementById('sheaf-qa-control')?.remove());
+      const heights = hints.flatMap((h) => h.keys.map((k) => k.height));
+      const mixed = new Set(heights).size > 1;
+      return {
+        ok: hints.length > 0 && off.length === 0,
+        detail:
+          `${hints.length} shortcuts of two keys or more, the widest bottom-to-bottom spread ${Math.max(0, ...hints.map(spread))}px` +
+          `; heights ${[...new Set(heights)].join(', ')} (${mixed ? 'mixed, so a fallback is in play' : 'all equal, so no fallback happened on this machine and the boxes are doing the work in principle only'})` +
+          `; fonts ${[...new Set(hints.flatMap((h) => h.keys.map((k) => k.font)))].join(', ')}` +
+          `; on baselines instead the widest spread would be ${Math.max(0, ...control.map(spread))}px` +
+          (off.length ? `; out of line: ${off.map((h) => `${h.text} ${spread(h)}px`).join(', ')}` : ''),
+      };
+    },
+  },
+  {
+    /*
+     * A menu row's accessible name is its label alone, and its shortcut is announced through
+     * `aria-keyshortcuts` rather than through the text of the visible hint.
+     *
+     * Read from the **accessibility tree** rather than from the DOM, because the DOM is what made this
+     * wrong in the first place: a row is a `<button>` with no `aria-label`, so its name is computed
+     * from its contents, and the key hint's spans were plain text inside it. Nothing about the markup
+     * looks wrong, and the menu looks right on screen. `ariaSnapshot` is the only reading here that
+     * could have caught it.
+     *
+     * Three things it asks, and the third is the control. The names carry no key text. The rows that
+     * have a hint carry the binding in `aria-keyshortcuts` and the rows that do not carry none. And
+     * then the `aria-hidden` is taken off the hints in the page and the snapshot retaken: the names
+     * have to come back **with** the key text, or the first reading passed for some other reason and
+     * says nothing. That control needs no rebuild and its lever is the attribute under test rather
+     * than the fault, so it does not go quiet once this is fixed.
+     */
+    id: 'menus.context-table.e02',
+    feature: 'menus.context-table',
+    name: 'A menu row is announced as its label alone, with its shortcut on aria-keyshortcuts',
+    run: async (S) => {
+      await S.fresh('ctx-aria-name', 'Intro.\n\n| Fruit | Qty |\n| --- | --- |\n| kiwi | 3 |\n| plum | 5 |\n');
+      await S.sleep(600);
+      await S.rightClick({ sel: '.sheaf-table [data-r="0"][data-c="0"]' });
+      await S.sleep(400);
+      const f = await S.frame();
+      const menu = f.locator('.sheaf-ctx-menu:not([hidden])').first();
+      const named = async () =>
+        (await menu.ariaSnapshot())
+          .split('\n')
+          .map((l) => /- menuitem(?:checkbox|radio)? "([^"]*)"/.exec(l)?.[1])
+          .filter((x) => x !== undefined);
+      const before = await named();
+      // The rows as the DOM has them, so a hint's presence and the attribute can be paired per row.
+      const rows = await S.eval(() => {
+        const m = [...document.querySelectorAll('.sheaf-ctx-menu')].find((x) => !x.hidden);
+        if (!m) return [];
+        return [...m.querySelectorAll('.sheaf-ctx-item')].map((b) => {
+          const keys = b.querySelector('.sheaf-ctx-key');
+          return {
+            label: b.querySelector('.sheaf-ctx-label')?.textContent ?? '',
+            hint: keys ? keys.textContent : null,
+            hidden: keys ? keys.getAttribute('aria-hidden') : null,
+            shortcut: b.getAttribute('aria-keyshortcuts'),
+          };
+        });
+      });
+      // Any key glyph or modifier word appearing in a name is the defect.
+      const KEYS = /[⌘⌥⇧↑↓←→]|\bCtrl\b|\bAlt\b|\bShift\b|\+/;
+      const polluted = before.filter((n) => KEYS.test(n));
+      const withHint = rows.filter((r) => r.hint);
+      const withoutHint = rows.filter((r) => !r.hint);
+      const hintsHidden = withHint.every((r) => r.hidden === 'true');
+      const hintsVisible = withHint.every((r) => (r.hint ?? '').length > 0);
+      const shortcutsSet = withHint.every((r) => !!r.shortcut);
+      const noStraysSet = withoutHint.every((r) => r.shortcut === null);
+      // CONTROL: unhide the hints in the page and take the names again.
+      await S.eval(() => {
+        const m = [...document.querySelectorAll('.sheaf-ctx-menu')].find((x) => !x.hidden);
+        m?.querySelectorAll('.sheaf-ctx-key').forEach((k) => k.removeAttribute('aria-hidden'));
+      });
+      await S.sleep(200);
+      const after = await named();
+      const controlFired = after.filter((n) => KEYS.test(n)).length > 0;
+      const d = await S.disk();
+      return {
+        ok:
+          before.length > 0 &&
+          withHint.length > 0 &&
+          polluted.length === 0 &&
+          hintsHidden &&
+          hintsVisible &&
+          shortcutsSet &&
+          noStraysSet &&
+          controlFired,
+        detail:
+          `${before.length} rows named in the tree, ${withHint.length} of them with a hint; ` +
+          `${polluted.length === 0 ? 'no name carries key text' : `NAMES CARRYING KEY TEXT ${j(polluted)}`}; ` +
+          `hints ${hintsHidden ? 'all aria-hidden' : 'NOT ALL aria-hidden'} and ${hintsVisible ? 'all still drawn' : 'SOME NOW EMPTY for a sighted reader'}; ` +
+          `aria-keyshortcuts ${shortcutsSet ? 'on every row that has a hint' : 'MISSING on some row with a hint'} and ${noStraysSet ? 'on none that does not' : 'ON A ROW WITH NO HINT'}; ` +
+          `a sample: ${j(withHint.slice(0, 3).map((r) => `${r.label} | ${r.hint} | ${r.shortcut}`))}; ` +
+          `CONTROL, with the hints unhidden: ${controlFired ? `the names come back with key text, e.g. ${j(after.filter((n) => KEYS.test(n))[0])}` : 'THE NAMES DID NOT CHANGE, so the reading above says nothing'}; ` +
+          `${d.includes('| kiwi | 3 |') ? 'the file is untouched' : `THE FILE CHANGED: ${show(d)}`}`,
+      };
+    },
+  },
+  {
+    /*
+     * The table's own menu announces the axis keys the same way the right-click menu does, and draws
+     * them in the same place.
+     *
+     * The counterpart to `e02` above, for the other menu. That one covers the right-click menu, and its
+     * title used to say "the table menu", which is how this surface came to look covered while nothing
+     * drove it: the menu the table opens from its own bar computed a key hint and threw it away, so the
+     * one pair of keys a table promises was visible in one menu and not the other.
+     *
+     * **The geometry is the half no unit check can do**, and it is what "the same place" means. jsdom
+     * has no layout, so a hint that wrapped to a second line, sat behind the label or ran outside the
+     * menu would pass every scenario in the tables suite. So this measures the gap between the label
+     * and the hint in both menus and requires them to agree, which is a comparison rather than a
+     * number somebody chose.
+     *
+     * The precondition is the whole difficulty, as it is in the unit check: a hint appears only when the
+     * selection is whole rows or whole columns, so the row is picked by its number first, and the
+     * assertion requires a hint to be present rather than absent, so a precondition that failed to take
+     * reads as a failure rather than as the feature being off.
+     */
+    id: 'menus.context-table.e03',
+    feature: 'menus.context-table',
+    name: "The table's own menu draws the axis keys where the right-click menu draws them",
+    run: async (S) => {
+      await S.fresh('table-menu-keys', 'Intro.\n\n| Fruit | Qty |\n| --- | --- |\n| kiwi | 3 |\n| plum | 5 |\n');
+      await S.sleep(600);
+      // Pick a whole row by its number, which is what makes the axis keys apply.
+      await S.click({ sel: '.sheaf-table tbody .sheaf-table-gutter' });
+      await S.sleep(250);
+      const picked = await S.eval(() => document.querySelectorAll('.sheaf-table .is-sel-whole, .sheaf-table .is-sel').length);
+      // The table's own menu, from the bar it draws above itself.
+      await S.click({ sel: '.sheaf-table-ctrl[data-cmd="overflow"]' });
+      await S.sleep(350);
+      const f = await S.frame();
+      const menu = f.locator('.sheaf-table-menu').first();
+      const names = (await menu.ariaSnapshot())
+        .split('\n')
+        .map((l) => /- menuitem(?:checkbox|radio)? "([^"]*)"/.exec(l)?.[1])
+        .filter((x) => x !== undefined);
+      const rows = await S.eval(() => {
+        const m = document.querySelector('.sheaf-table-menu');
+        if (!m) return [];
+        return [...m.querySelectorAll('.sheaf-table-menu-item')].map((b) => {
+          const keys = b.querySelector('.sheaf-table-menu-key');
+          const label = b.querySelector('.sheaf-table-menu-label');
+          const lb = label?.getBoundingClientRect();
+          const kb = keys?.getBoundingClientRect();
+          const rb = b.getBoundingClientRect();
+          return {
+            cmd: b.dataset.cmd ?? '',
+            label: label?.textContent ?? '',
+            hint: keys ? keys.textContent : null,
+            hidden: keys ? keys.getAttribute('aria-hidden') : null,
+            shortcut: b.getAttribute('aria-keyshortcuts'),
+            // Rounded, because a fraction of a pixel is not a placement difference.
+            gap: lb && kb ? Math.round(kb.left - lb.right) : null,
+            // One line: a hint that wrapped would sit below the label's box rather than beside it.
+            sameLine: lb && kb ? Math.abs(Math.round(kb.top - lb.top)) <= 2 : null,
+            inside: kb ? Math.round(rb.right - kb.right) >= 0 : null,
+          };
+        });
+      });
+      const withHint = rows.filter((r) => r.hint);
+      const withoutHint = rows.filter((r) => !r.hint);
+      const KEYS = /[⌘⌥⇧↑↓←→]|\bCtrl\b|\bAlt\b|\bShift\b|\+/;
+      const polluted = names.filter((n) => KEYS.test(n));
+      // The same measurement in the right-click menu, which is what "the same place" is measured against.
+      await S.eval(() => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
+      await S.sleep(200);
+      await S.click({ sel: '.sheaf-table tbody .sheaf-table-gutter' });
+      await S.sleep(200);
+      await S.rightClick({ sel: '.sheaf-table [data-r="0"][data-c="0"]' });
+      await S.sleep(350);
+      const ctxGaps = await S.eval(() => {
+        const m = [...document.querySelectorAll('.sheaf-ctx-menu')].find((x) => !x.hidden);
+        if (!m) return [];
+        return [...m.querySelectorAll('.sheaf-ctx-item')]
+          .map((b) => {
+            const keys = b.querySelector('.sheaf-ctx-key');
+            const label = b.querySelector('.sheaf-ctx-label');
+            if (!keys || !label) return null;
+            const lb = label.getBoundingClientRect();
+            const kb = keys.getBoundingClientRect();
+            return Math.round(kb.left - lb.right);
+          })
+          .filter((x) => x !== null);
+      });
+      const theirGap = ctxGaps.length ? ctxGaps[0] : null;
+      const ourGap = withHint.length ? withHint[0].gap : null;
+      const d = await S.disk();
+      return {
+        ok:
+          picked > 0 &&
+          withHint.length > 0 &&
+          polluted.length === 0 &&
+          withHint.every((r) => r.hidden === 'true') &&
+          withHint.every((r) => (r.hint ?? '').length > 0) &&
+          withHint.every((r) => !!r.shortcut) &&
+          withoutHint.every((r) => r.shortcut === null) &&
+          withHint.every((r) => r.sameLine === true) &&
+          withHint.every((r) => r.inside === true) &&
+          theirGap !== null &&
+          ourGap === theirGap &&
+          d.includes('| kiwi | 3 |'),
+        detail:
+          `${picked} cell(s) picked, ${rows.length} rows in the table's menu, ${withHint.length} with a hint; ` +
+          `${polluted.length === 0 ? 'no accessible name carries key text' : `NAMES CARRYING KEY TEXT ${j(polluted)}`}; ` +
+          `hints ${withHint.every((r) => r.hidden === 'true') ? 'all aria-hidden' : 'NOT ALL aria-hidden'}, ` +
+          `aria-keyshortcuts ${withHint.every((r) => !!r.shortcut) ? 'on every row with a hint' : 'MISSING somewhere'} ` +
+          `and ${withoutHint.every((r) => r.shortcut === null) ? 'on none without' : 'ON A ROW WITH NO HINT'}; ` +
+          `placement: gap after the label ${ourGap}px here against ${theirGap}px in the right-click menu` +
+          `${ourGap === theirGap ? ', which agree' : ', WHICH DISAGREE'}; ` +
+          `${withHint.every((r) => r.sameLine === true) ? 'every hint sits on the label line' : 'A HINT WRAPPED BELOW ITS LABEL'}; ` +
+          `${withHint.every((r) => r.inside === true) ? 'and inside the menu' : 'AND ONE RUNS OUTSIDE THE MENU'}; ` +
+          `a sample: ${j(withHint.slice(0, 3).map((r) => `${r.cmd} | ${r.label} | ${r.hint} | ${r.shortcut}`))}; ` +
+          `${d.includes('| kiwi | 3 |') ? 'the file is untouched' : `THE FILE CHANGED: ${show(d)}`}`,
+      };
+    },
+  },
 ];

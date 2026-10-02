@@ -163,6 +163,9 @@ export const scenarios: Scenario[] = [
   {
     name: 'the caret on a line brings its footnote source back, and leaving puts it away again',
     run: () => {
+      // The caret on the line is what this reads, so it needs reveal-on-line rather than
+      // inheriting whatever ran before it. The runner resets the setting for each scenario.
+      setLivePreviewConfig({ revealSyntaxOnLine: true });
       const p = mountProse(BEACON);
       p.select(BEACON.length);
       const before = line(p, 0).includes('[^band]');

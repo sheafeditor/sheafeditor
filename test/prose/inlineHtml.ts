@@ -9,6 +9,7 @@
  * leaves the lines under test inactive.
  */
 
+import { setLivePreviewConfig } from '../../src/webview/livePreview';
 import { Scenario, mountProse } from '../harness';
 
 type P = ReturnType<typeof mountProse>;
@@ -96,6 +97,9 @@ export const scenarios: Scenario[] = [
   {
     name: 'the caret on the line shows the tags as written',
     run: () => {
+      // The caret on the line is what this reads, so it needs reveal-on-line rather than
+      // inheriting whatever ran before it. The runner resets the setting for each scenario.
+      setLivePreviewConfig({ revealSyntaxOnLine: true });
       const doc = P0 + 'Press <kbd>F5</kbd> to start.';
       const p = mountProse(doc);
       const rendered = line(p, 2) === 'Press F5 to start.';

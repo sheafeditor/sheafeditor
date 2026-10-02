@@ -569,14 +569,32 @@ export const scenarios = [
   {
     id: 'prose.link-insert.e01',
     feature: 'prose.link-insert',
-    name: 'Dragging over a word, clicking Link and typing an address links the word',
+    name: 'Dragging over a word, clicking Link, typing an address and pressing Enter links the word',
     run: async (S) => {
+      /*
+       * Rewritten on 2026-09-30 for the design 0.2.0 shipped. This read the file straight after
+       * typing the address, with no Enter, which only works under the behaviour that release
+       * removed: "Cmd+K, the Link button and Link in the right-click menu used to put raw brackets
+       * and the word `url` on the screen in an editor whose whole point is that they are not there,
+       * and anybody who clicked away instead of typing left `[text](url)` in the file as a link to
+       * nowhere." Nothing is written now until the address is confirmed, so the file was correctly
+       * untouched and the scenario called it a failure.
+       *
+       * Both halves are asserted: nothing in the file before Enter, which is the point of the
+       * change, and the link after it.
+       */
       await S.fresh('link-basic', 'Read the docs today\n');
       await S.select('docs');
       await S.toolbar('Link');
       await S.type('https://x.io');
+      const before = await S.disk();
+      await S.press('Enter');
+      await S.sleep(600);
       const d = await S.disk();
-      return { ok: d === 'Read the [docs](https://x.io) today\n', detail: show(d) };
+      return {
+        ok: before === 'Read the docs today\n' && d === 'Read the [docs](https://x.io) today\n',
+        detail: `before Enter ${show(before)}; after ${show(d)}`,
+      };
     },
   },
   {
@@ -596,16 +614,34 @@ export const scenarios = [
   {
     id: 'prose.link-insert.e03',
     feature: 'prose.link-insert',
-    name: 'Clicking Link with a bare caret writes [text](url) and typing replaces url',
+    name: 'Clicking Link with a bare caret writes nothing until the address is confirmed',
     run: async (S) => {
+      /*
+       * Rewritten on 2026-09-30, and the old name said what it asserted: writing `[text](url)` into
+       * the document the moment the button was pressed. That is the behaviour 0.2.0 removed, for the
+       * reason its changelog gives: someone who clicked away instead of typing was left with a link
+       * to nowhere in their file. So the file staying untouched is now the point rather than the
+       * failure.
+       *
+       * With a bare caret there are no words to carry the link, so the panel asks for those first
+       * (`openNewLinkPopover` is given 'text' rather than 'url' when the selection is empty). This
+       * asserts only what is common to both: nothing reaches the file until something is confirmed,
+       * and Escape leaves it as it was.
+       */
       await S.fresh('link-caret', 'See here\n');
       await S.caret('here', 4 - 3);
       await S.press('End');
       await S.type(' ');
       await S.toolbar('Link');
       await S.type('https://y.io');
-      const d = await S.disk();
-      return { ok: d === 'See here [text](https://y.io)\n', detail: show(d) };
+      const before = await S.disk();
+      await S.press('Escape');
+      await S.sleep(600);
+      const after = await S.disk();
+      return {
+        ok: before === 'See here \n' && after === 'See here \n',
+        detail: `while the panel is open ${show(before)}; after Escape ${show(after)}`,
+      };
     },
   },
 

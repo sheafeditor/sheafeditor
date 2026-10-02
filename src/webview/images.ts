@@ -838,7 +838,27 @@ async function ingest(view: EditorView, files: File[], at: number): Promise<void
     // would open a blank line the person never typed.
     const suffix = prefix && view.state.doc.sliceString(cursor, cursor + 1) === '\n' ? '' : '\n';
     const alt = baseName(relPath.split('/').pop() ?? relPath);
-    const md = `${prefix}![${alt}](${relPath})${suffix}`;
+    /*
+     * Through `mdDestination`, which is the rule for writing an address, rather than inserting the
+     * path raw.
+     *
+     * A space ends a destination in CommonMark, so a pasted file called `Screen Shot 2026-09-30 at
+     * 7.59.12 PM.png` wrote `![...](assets/Screen Shot ... .png)`, which is a broken link in the
+     * file: no picture drawn here, and wrong on GitHub and under pandoc too. Renaming the image
+     * afterwards does not repair the document.
+     *
+     * **It needed both halves to go wrong, which is why it survived.** Two hosts save a pasted image
+     * and they sanitise the filename differently: one replaces every character outside
+     * `[a-zA-Z0-9._-]` with a dash, so a space can never reach here, and the other only replaces
+     * path separators and leading dots, so it can. A raw insertion is harmless behind the strict
+     * sanitiser and a loose sanitiser is harmless behind a correct insertion.
+     *
+     * So the fix is here rather than in either sanitiser. There were two writers of an image
+     * destination, `serializeImage` applying the rule and this one not, and a sanitiser is a filter
+     * while the serializer is the rule: filters get loosened, and when this one was, nothing between
+     * it and the file knew how to quote a space.
+     */
+    const md = `${prefix}![${alt}](${mdDestination(relPath)})${suffix}`;
     view.dispatch({
       changes: { from: cursor, to: cursor, insert: md },
       selection: { anchor: cursor + md.length },

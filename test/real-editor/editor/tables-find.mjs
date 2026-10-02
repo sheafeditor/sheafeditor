@@ -142,9 +142,29 @@ export const scenarios = [
       await S.page.keyboard.press('Escape');
       await S.sleep(400);
       const afterEscape = await look(S);
+      /*
+       * All three readings, which is the point of taking three.
+       *
+       * This asserted only the first and reported the other two, so the grid could have stopped
+       * being drawn on Enter or on Escape and the scenario still passed. Its feature is
+       * `tables.stays-grid` and its claim is that the grid stays drawn, so the two moments after
+       * the one being checked are exactly where that would fail: Enter moves the selection onto the
+       * match, which puts it inside a table, and a selection inside a table is the condition that
+       * makes a grid show its source instead.
+       *
+       * Found by enumeration rather than by reading: a sweep for scenarios that call one probe three
+       * or more times and leave a result out of the verdict. Three others turned up with it.
+       */
       return {
-        ok: typing.grids === 1 && typing.searchMarksInsideGrid > 0,
-        detail: `while typing, grid still drawn ${typing.grids === 1}: ${j(typing)}; after Enter ${j(selected)}; after Escape ${j(afterEscape)}`,
+        ok:
+          typing.grids === 1 &&
+          typing.searchMarksInsideGrid > 0 &&
+          selected.grids === 1 &&
+          afterEscape.grids === 1,
+        detail:
+          `while typing, grid still drawn ${typing.grids === 1}: ${j(typing)}; ` +
+          `after Enter grid drawn ${selected.grids === 1}: ${j(selected)}; ` +
+          `after Escape grid drawn ${afterEscape.grids === 1}: ${j(afterEscape)}`,
       };
     },
   },

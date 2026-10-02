@@ -97,7 +97,7 @@ function mount(doc: string, anchor = 0): H {
     parent,
   });
   const copied: string[] = [];
-  mountContextMenu(view.dom, { getView: () => view, getFileName: () => 'doc.md', copyToClipboard: (t) => copied.push(t), readClipboard: async () => '' });
+  mountContextMenu(view.dom, { getView: () => view, getFileName: () => 'doc.md', copyToClipboard: (t) => void copied.push(t) });
   const wraps = (): HTMLElement[] => Array.from(view.dom.querySelectorAll<HTMLElement>('.sheaf-table'));
   const need = <T,>(el: T | null | undefined, what: string): T => {
     if (!el) throw new Error(`no ${what}`);

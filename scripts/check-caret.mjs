@@ -159,6 +159,53 @@ const CASES = [
     wants: '## dSecond section',
     why: 'vertical motion reaches the bad position from both sides, as Left and Right did',
   },
+  /*
+   * The other end of a line, where the hidden marker is a hard break.
+   *
+   * A heading's marker is in front of the words and a hard break's is behind them, so End
+   * is to a break what Home is to a heading: the key that lands on the far side of
+   * something drawn as nothing. Both spellings of a break are hidden, so the end of the
+   * line and the end of the words are one place on the screen, and only one of them is
+   * safe to type in.
+   *
+   * This is the half of the document the first nine cases never reached, and it is worth
+   * measuring here rather than only in jsdom for the reason the file's header gives: what
+   * makes the two positions indistinguishable is that the marker is drawn as nothing, and
+   * a check with no layout cannot see that it is.
+   */
+  {
+    what: 'End on a line ending in a backslash break keeps the break',
+    doc: 'A line ending in a break\\\nand the line after it.\n',
+    words: 'A line ending in a break',
+    keys: ['End'],
+    wants: 'A line ending in a breakd\\',
+    why: 'the backslash is the form Shift+Enter writes, so typing past it undoes Sheaf\'s own work',
+  },
+  {
+    what: 'End on a line ending in a two-space break keeps the break',
+    doc: 'A line ending in a break  \nand the line after it.\n',
+    words: 'A line ending in a break',
+    keys: ['End'],
+    // Written as a join so the two trailing spaces cannot be lost to a tidying editor.
+    wants: 'A line ending in a breakd' + '  ',
+    why: 'the spaces stop being trailing the moment a character lands after them',
+  },
+  {
+    what: 'CONTROL: End on a plain line writes at the end of its words',
+    doc: 'A line ending in a word\nand the line after it.\n',
+    words: 'A line ending in a word',
+    keys: ['End'],
+    wants: 'A line ending in a wordd',
+    why: 'a fix that moved every End back a character would fail here',
+  },
+  {
+    what: 'CONTROL: End on a line with one trailing space, which is no break, writes past it',
+    doc: 'A line ending in a space \nand the line after it.\n',
+    words: 'A line ending in a space',
+    keys: ['End'],
+    wants: 'A line ending in a space d',
+    why: 'one space is not a break, so nothing is hidden and the character belongs at the end',
+  },
 ];
 
 /**

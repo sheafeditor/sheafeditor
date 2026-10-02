@@ -24,7 +24,7 @@ Markdown files get changed by things other than you: `git pull`, a formatter, a 
 - Something deleted elsewhere in the file does not come back because you kept typing.
 - If a change arrives before your own typing has been saved, you get VS Code's own save conflict, and neither version disappears quietly.
 - A write made from a copy of the file read just before your own save keeps what you had typed. Something that reads a file, changes one line and writes it back has not seen the letter you added in between, so that letter is not treated as a line it meant to remove: you get both changes. A write that arrives well after your save is taken at its word, since by then it is as likely to mean the removal, and that case tells you what it took.
-- A change that came from outside is never written back to the file as though Sheaf had made it, and the file's line endings survive it.
+- A change that came from outside is never written back to the file as though Sheaf had made it. Its line endings are kept, except that a file mixing CRLF and LF is made uniform when a change arriving from outside has to be merged with typing of yours that is not saved yet, as it is for any edit in a VS Code window: see Good to know below.
 
 ## See what changed
 
@@ -35,7 +35,7 @@ Look for the marks in the margin. Sheaf marks the lines an outside write put in,
 - Each change is marked on its own lines. An agent that edits two paragraphs far apart marks those two and nothing in between.
 - If another write arrives, its lines are added to the ones already marked.
 
-In a table the marks go row by row. A row whose line the write inserted or rewrote gets the bar beside its row number and the tint across its cells, and a removed row leaves a tick on the row that followed it.
+In a table the marks go row by row. A row whose line the write inserted or rewrote gets the bar beside it in the selector column and the tint across its cells, and a removed row leaves a tick on the row that followed it.
 
 To clear a mark, edit the line. The rest stay until you edit them or close the document. Marks are never saved and never touch the file. Your own edits, and your own Undo and Redo, mark nothing, whether you use the keys or VS Code's Edit menu.
 
@@ -65,7 +65,7 @@ Type in either pane and both show the change. Two Sheaf editors on the same file
 
 ## Good to know
 
-- Line endings are preserved. A CRLF file stays a CRLF file, including on lines your edit adds.
+- A CRLF file stays a CRLF file, including on lines your edit adds. A file that mixes CRLF and LF endings is made uniform the first time you edit it in a VS Code window. VS Code does this to any file it holds, so the same file loses its odd endings in VS Code's own text editor too. Open the folder in a browser tab and the mix is kept.
 - Text of every kind survives the round trip: emoji, CJK, an empty file, a file that ends without a newline.
 - When and how the file is saved is set by [auto-save](../settings.md#auto-save).
 - Closing a tab within a moment of typing can still ask whether to save, because the close comes before the save that was on its way. Whichever button you press, your text is kept.

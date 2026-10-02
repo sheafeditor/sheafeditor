@@ -14,7 +14,19 @@
 import * as vscode from 'vscode';
 import { buildLine, buildStamp, differsFromRunning } from './buildStamp';
 
-export const EXTENSION_ID = 'sheafeditor.sheafeditor';
+/**
+ * What this extension is called in the host's registry, which is how it finds itself there.
+ *
+ * The published build is `sheafeditor.sheafeditor` and that is the default, because a host
+ * that hands over no context at all is the test stand-in. A build installed under another
+ * name is not hypothetical: a development build carries its own id so that it and the
+ * published one are two rows in the Extensions pane rather than a version race, and under a
+ * hardcoded name the "a newer build is installed, reload" notice below would look itself up,
+ * find nothing, and go quiet. Quietly, which is the part that matters: that notice is the
+ * only thing standing between asking for a change and not knowing whether you are looking
+ * at it, and it fails by saying nothing.
+ */
+export let EXTENSION_ID = 'sheafeditor.sheafeditor';
 
 /** Where this is running, for the About line. */
 function hostLabel(): string {
@@ -80,6 +92,8 @@ function watchForNewerBuild(): vscode.Disposable {
 }
 
 export function registerAbout(context: vscode.ExtensionContext): void {
+  // The host knows what it loaded, so take the id from it rather than from the constant above.
+  if (typeof context.extension?.id === 'string' && context.extension.id) EXTENSION_ID = context.extension.id;
   context.subscriptions.push(vscode.commands.registerCommand('sheaf.about', showAbout));
   context.subscriptions.push(watchForNewerBuild());
 }

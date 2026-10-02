@@ -3,7 +3,8 @@
  * check, the generated files, the type check, all the test suites, then the
  * production build.
  *
- *   npm run gates
+ *   npm run gates            stops at the first failure, for a person at a terminal
+ *   npm run gates -- --all   runs every gate and reports all of them, which is what CI does
  *
  * One command rather than several chained together, because a chain of shell
  * commands is harder for both people and tooling to approve, and because the
@@ -11,8 +12,10 @@
  * this checkout, and running them at once makes the test run print no counts and
  * the build end in a stack trace with nothing actually wrong.
  *
- * Everything it runs is in this repository. Stops at the first failure and exits
- * with that step's code.
+ * Everything it runs is in this repository. By default it stops at the first failure
+ * and exits with that step's code; every run ends by saying how many of the gates it
+ * reached, because "all gates passed" is the same sentence whether that was nine or
+ * twenty-three.
  *
  * A step that *skips* is not a step that passed. Five of these are browser-driven,
  * and each one skips and exits 0 when it cannot find Chrome or `playwright-core`.
@@ -29,7 +32,7 @@
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { complaintFor, readVerdict } from './lib/gateOutput.mjs';
+import { runGates } from './lib/gateRun.mjs';
 
 const REPO = dirname(dirname(fileURLToPath(import.meta.url)));
 const bin = (name) => join(REPO, 'node_modules', '.bin', name);
@@ -58,11 +61,39 @@ const STEPS = [
   // silently, so a reader of the stylesheet believed a number the product ignored.
   ['Line padding', process.execPath, [join(REPO, 'scripts', 'check-css-line-padding.mjs')]],
   ['Type check', bin('tsc'), ['--noEmit']],
+  /*
+   * The suites' own TypeScript, which until 2026-10-02 nothing compiled: `tsconfig.json` includes
+   * `src` alone, and esbuild strips types without checking them, so a type error in any of the 74
+   * `.ts` files under `test/` was invisible unless it also broke at runtime. Two configs rather than
+   * one include, because the build's `rootDir` is `src` and its `outDir` is `dist`, and this must
+   * not change a byte of what ships.
+   */
+  ['Type check (tests)', bin('tsc'), ['-p', join(REPO, 'tsconfig.test.json')]],
   ['Tests', process.execPath, [join(REPO, 'scripts', 'run-tests.mjs')]],
   // The jsdom half of the real-editor scenarios: every area, about half a minute.
   // It fails on any failing scenario, so the count it reports is the whole of it.
   ['Editor scenarios (jsdom)', process.execPath, [join(REPO, 'test', 'real-editor', 'run-unit.mjs')]],
   ['Build', process.execPath, [join(REPO, 'esbuild.mjs'), '--production']],
+  /*
+   * What a consumer downloads to start editing, against the size committed beside it. A gate rather
+   * than part of `npm test`, for one reason: it measures the built files, and `npm test` runs before
+   * the build. Reading an older build would be worse than not reading one, because the number would
+   * be real and about the wrong tree.
+   *
+   * It ratchets rather than gates: being over budget is reported on every run and only growth fails,
+   * so a kilobyte added without a word in the diff stops the landing and a deliberate increase is a
+   * line somebody reads.
+   */
+  ['Bundle size', process.execPath, [join(REPO, 'scripts', 'check-bundle-size.mjs')]],
+  /*
+   * The site demo's host against the wire it implements. It is the third host and the only one no
+   * type reaches: hand-written JavaScript in a repository that does not depend on this one, so a
+   * message added here is a compile error in two hosts and silence in the third.
+   *
+   * It skips, loudly, when the site checkout is not beside this one, so a clone of this repository
+   * passes its gates on its own.
+   */
+  ['Demo host', process.execPath, [join(REPO, 'scripts', 'check-demo-host.mjs')]],
   // The corpus read through the editor's own live preview: a construct that quietly falls
   // back to showing its Markdown is a regression a person sees and no unit check does. It
   // costs about a second. It was not here before, and that is exactly why its own
@@ -166,78 +197,40 @@ function run(cmd, args) {
 const ALLOWED = (process.env.SHEAF_ALLOW_SKIPPED_GATES ?? '').split(',').map((s) => s.trim()).filter(Boolean);
 const forgiven = (label) => ALLOWED.includes('1') || ALLOWED.includes(label);
 
-const skipped = [];
+/*
+ * Two modes, differing only in what happens after a gate fails.
+ *
+ * The default stops there, which is right for a person at a terminal: the first failure is
+ * usually the thing they just did, and twenty more minutes of gates does not help them fix it.
+ *
+ * `--all` runs every gate and reports all of them, which is right for CI, where nobody is waiting
+ * at a prompt and the run is the only record. A run that stops at the first failure hides
+ * everything behind it for as long as that failure lives, and nothing reported the number that
+ * went dark. From 2026-09-23 to 2026-09-30 every run on `main` died at gate 9 of 23, so fourteen
+ * gates did not run on a Linux runner for a week. One of them pressed a macOS-only chord and
+ * reported the product broken; that defect failed three release cuts, and it is tempting to say
+ * CI should have caught it. CI could not: the gate was nineteen positions behind a failure that
+ * had nothing to do with it.
+ *
+ * **Under `--all` a failure cascades, and that is accepted rather than worked around.** Eleven of
+ * these gates serve the built files, so a failing `Build` fails them too. The alternative is a
+ * dependency graph between gates, which would be a second description of the order they are
+ * already written in, and it would go stale. A reader of a CI log sees `Build` first in the list,
+ * which is the one to fix.
+ *
+ * The loop itself is in `lib/gateRun.mjs` so that it can have a control: what it decides is which
+ * gates get reached, and asking that of the real gates would mean ten minutes and no way to make
+ * one fail at position 21 on demand. The harness suite drives it with steps that fail where it
+ * wants them to.
+ */
+const ALL = process.argv.includes('--all') || process.env.SHEAF_GATES_ALL === '1';
 
-for (const [label, cmd, args] of STEPS) {
-  process.stdout.write(`\n=== ${label} ===\n`);
-  const r = await run(cmd, args);
-  if (r.status !== 0) {
-    /*
-     * Name the signal when there is one. A step killed for memory exits without
-     * printing, and a bare "failed" then reads as a regression in whatever was being
-     * worked on: an hour of reading a diff with nothing wrong in it. `SIGKILL` or
-     * `SIGABRT` here is recognisable in seconds.
-     */
-    const how = r.signal ? ` (killed by ${r.signal})` : r.status === 134 ? ' (aborted: out of heap, most likely)' : '';
-    process.stderr.write(`\n${label} failed${how}\n`);
-    if (r.signal || r.status === 134) {
-      process.stderr.write(
-        'A step that was killed has not reported anything about your change. Run it on its\n' +
-          'own before reading the diff, and use the repository\'s own command rather than a\n' +
-          'hand-assembled node invocation, which is how a stale heap flag gets carried in.\n'
-      );
-    }
-    process.exit(r.status ?? 1);
-  }
-  /*
-   * A step can be green and have measured nothing, and the exit status cannot tell you.
-   * `readVerdict` names the three shapes that takes: a skip, which is collected and reported
-   * at the end with the others, and a silent step or a count of zero, which fail here. A step
-   * that printed nothing or counted to zero has reported nothing about the change being landed.
-   */
-  const verdict = readVerdict(r.seen);
-  for (const why of verdict.skipped) skipped.push(`${label}: ${why}`);
-  /*
-   * A skip stops the run where it happens, the way a failure does.
-   *
-   * It used to be collected and reported at the end, so a step that skipped in the first ten
-   * seconds was announced twenty minutes later, after every other step had run for nothing.
-   * A release was cut that way: the command ran the whole of the gates and then refused, and
-   * the person waiting was never asked for the passphrase it was building up to.
-   *
-   * Nothing is lost by stopping. A skip is not a result to be weighed against the others; it
-   * is the run saying it cannot answer, and the answer does not improve by carrying on.
-   * `SHEAF_ALLOW_SKIPPED_GATES=1` still accepts the gap, and then the run continues and the
-   * list at the end is what it always was.
-   */
-  if (verdict.skipped.length && !forgiven(label)) {
-    process.stderr.write(`\n${label} did not run:\n`);
-    for (const why of verdict.skipped) process.stderr.write(`  - ${why}\n`);
-    process.stderr.write(
-      '\nStopped here rather than running the rest, because a step that did not run has not\n' +
-        'passed and nothing after it changes that. Fix what it is missing, or set\n' +
-        `SHEAF_ALLOW_SKIPPED_GATES=${JSON.stringify(label)} to accept this one, or =1 for all of them,\n` +
-        'and say so wherever you report the result.\n'
-    );
-    process.exit(1);
-  }
-  const complaint = complaintFor(label, verdict);
-  if (complaint) {
-    process.stderr.write(`\n${complaint}\n`);
-    process.exit(1);
-  }
-}
-
-if (skipped.length) {
-  process.stderr.write(`\n${skipped.length} step${skipped.length > 1 ? 's' : ''} did not run:\n`);
-  for (const s of skipped) process.stderr.write(`  - ${s}\n`);
-  process.stderr.write(
-    '\nA step that did not run has not passed, and these are the checks jsdom cannot\n' +
-      'stand in for. Fix what they are missing, or set SHEAF_ALLOW_SKIPPED_GATES=1 to\n' +
-      'accept the gap for this run and say so wherever you report the result.\n'
-  );
-  if (!skipped.every((s) => forgiven(s.split(':')[0]))) process.exit(1);
-  process.stdout.write('\nAll gates passed, with the skipped steps above allowed\n');
-} else {
-  process.stdout.write('\nAll gates passed\n');
-}
+const { status } = await runGates({
+  steps: STEPS,
+  run,
+  all: ALL,
+  forgiven,
+  out: (s) => process.stdout.write(s),
+  err: (s) => process.stderr.write(s),
+});
+process.exit(status);

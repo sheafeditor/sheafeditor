@@ -33,7 +33,7 @@
  * It needs Chromium and playwright-core, which a contributor may not have. When either is
  * missing this says so and exits 0, because a missing browser is not a broken document.
  */
-import { existsSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -117,6 +117,61 @@ writeFileSync(
   join(root, 'quoted.md'),
   'Intro.\n\n> | St | Role |\n> | --- | --- |\n> | ok | Writer |\n'
 );
+/*
+ * The same content as a table of prose and as a data block, which are laid out by different
+ * rules on purpose and are the pair that pins the difference.
+ *
+ * A pipe table may wrap its cells to stay in the writing column, because a column of sentences
+ * wrapping is what a table of prose looks like. A `tsv` block may not: the value of a row is
+ * reading across it, and six columns of short values squeezed into the writing column wrap every
+ * row to two lines for the sake of a margin they never had. That happened, to a 300-row block in
+ * the corpus, and doubled its height.
+ *
+ * Six columns matching `sample/stress/data-blocks.md`, so this is the shape that regressed.
+ */
+const DATA_COLS = ['sku', 'description', 'warehouse', 'on_hand', 'reserved', 'reorder_at'];
+const DATA_ROWS = Array.from({ length: 40 }, (_, i) => `SKU-${2000 + i}\tephemeral ledger\tOffshore\t${4000 + i}\t214\t25`);
+writeFileSync(
+  join(root, 'datablock.md'),
+  `Intro paragraph.\n\n\`\`\`tsv\n${DATA_COLS.join('\t')}\n${DATA_ROWS.join('\n')}\n\`\`\`\n`
+);
+/* Twelve columns, which cannot fit the writing column at their floors, so this is a table that is
+   laid out to the pane and re-laid whenever the pane moves. Used for the both-directions check. */
+const MANY = Array.from({ length: 12 }, (_, i) => `Heading ${i + 1}`);
+writeFileSync(
+  join(root, 'manycols.md'),
+  `Intro paragraph.\n\n| ${MANY.join(' | ')} |\n| ${MANY.map(() => '---').join(' | ')} |\n` +
+    `| ${MANY.map((_, i) => `A value in column ${i + 1}`).join(' | ')} |\n| ${MANY.map((_, i) => `Another value ${i + 1}`).join(' | ')} |\n`
+);
+/*
+ * A board wide enough to scroll, for the block handle's placement beside one.
+ *
+ * Eight groups, so the board is far wider than the writing column and really has somewhere to
+ * scroll to: the fault only shows once its cards have slid into the grip's margin. A view over a
+ * named block rather than a pipe table shown as a board, because a view is a fenced block and its
+ * range is `code`, which is the half of the fault that the selectors alone do not reach.
+ */
+const BOARD_GROUPS = ['Open', 'Doing', 'Blocked', 'Review', 'Done', 'Parked', 'Dropped', 'Waiting'];
+writeFileSync(
+  join(root, 'board-wide.md'),
+  'Intro paragraph.\n\n```csv id=intake\nrequest,status,team,estimate\n' +
+    BOARD_GROUPS.flatMap((s, i) => [`R${i}a,${s},Team ${i},${10 + i}`, `R${i}b,${s},Team ${i},${20 + i}`]).join('\n') +
+    '\n```\n\n```view\nfrom: #intake\nlayout: board\ngroup: status\n```\n\nAfter line\n'
+);
+/* And a pipe table whose cells are sentences, which must go the other way. */
+writeFileSync(
+  join(root, 'prosetable.md'),
+  'Intro paragraph.\n\n| Claim | Evidence | Consequence |\n| --- | --- | --- |\n' +
+    '| The editor holds the writing column for prose | Every paragraph ends at the same right edge, which is what makes a page read as a page | A table that ignores it is the one element that breaks the measure |\n'
+);
+/* A quoted table with the same three columns as `DOC`, so the same grip selector reaches it and
+   a drag on it can be compared against the unquoted case. A quoted table cannot use the pane,
+   which is the whole point of it here. Its own file rather than widening `quoted.md`, whose
+   column count another check's geometry is read against. */
+writeFileSync(
+  join(root, 'quoted-drag.md'),
+  `Intro.\n\n${DOC.split('\n\n')[1].split('\n').map((l) => `> ${l}`).join('\n')}\n`
+);
 /* And the same table attached to a list item, which is the ordinary way to hang a small
    table off one point in a list. Its lines carry the item's indent in the file. */
 writeFileSync(
@@ -141,6 +196,27 @@ const failures = [];
 
 try {
   const page = await browser.newPage({ viewport: VIEW });
+  /*
+   * Every document here opens as one nobody has arranged, which is what this file's checks mean
+   * by "a table nobody has dragged".
+   *
+   * The browser host keeps a document's column widths in `localStorage`, as the extension host
+   * keeps them in VS Code's own store, so without this the width one check drags is still set
+   * when a later check opens the same document and four measurements disagree: a table reads
+   * 235px short of its content box, and the control for automatic layout finds identical widths
+   * at two pane sizes because the widths are pinned rather than computed. All four were correct
+   * readings of a document somebody had arranged.
+   *
+   * An init script rather than a `localStorage.clear()` after navigating, because the editor
+   * reads the kept widths while the page boots and anything after `goto` is already too late.
+   */
+  await page.addInitScript(() => {
+    try {
+      localStorage.clear();
+    } catch {
+      // A browser that keeps nothing is already the state this wants.
+    }
+  });
   await page.goto(`${base}/edit/t.md`);
   await page.waitForSelector('.sheaf-table-grid', { timeout: 15_000 });
   await page.waitForTimeout(2500);
@@ -262,10 +338,43 @@ try {
         `The gutter beside it is the empty space this was meant to give to the table.`
     );
   }
-  if (!near(wide.firstCell?.left, wide.para?.left)) {
+  /*
+   * A wide table begins at its frame's left edge, which **replaces** the assertion that it begins
+   * where the prose does.
+   *
+   * That one was right for as long as a table that took the pane rested an inset in from its frame,
+   * and the inset was the dead space: frame `0..1200` with the first cell at `246`, so 246px of empty
+   * scroller padding before a table too wide to fit, and the table running off the right. Retired
+   * rather than loosened, because the behaviour it described is the behaviour that was changed.
+   *
+   * A table that *fits* still lines up with the prose and is still centred, and `narrow.md` below is
+   * where that is measured. The two together are what say this is about wide tables only.
+   */
+  if (!near(wide.firstCell?.left, wide.frame?.left)) {
     failures.push(
-      `a wide table's first column starts at ${wide.firstCell?.left} and the paragraph above it at ${wide.para?.left}. ` +
-        `At rest they line up; the room the frame gained is padding inside the scroller, not a shift of the content.`
+      `a wide table's first column starts at ${wide.firstCell?.left} and its frame at ${wide.frame?.left}. ` +
+        `A table too wide to fit fills the pane from its frame's edge: the inset before it was dead space, ` +
+        `and the gap that marks the end is the one after the last column.`
+    );
+  }
+  /*
+   * **And the prose does not start there, which is the reading that makes the one above discriminate.**
+   *
+   * Two numbers agreeing is not enough on its own: a build where the frame and the first column were
+   * both wrong together would pass, and so would one that happened to centre the table. The third
+   * number is the paragraph above the table, which stays in the writing column, so the assertion is
+   * that the table agrees with the pane *and* parts company with the prose. That is a state the old
+   * build cannot produce, because there the two agreed with each other and not with the pane.
+   *
+   * It is also the sentence `render.table-widths` R12 is written around, and the thing somebody
+   * restoring the old inset would break first.
+   */
+  if (near(wide.firstCell?.left, wide.para?.left)) {
+    failures.push(
+      `a wide table's first column and the paragraph above it both start at ${wide.para?.left}, so the table is ` +
+        `still held to the writing column.\n` +
+        `    Agreeing with the frame is only half of it: this is the reading that tells the landed build from one ` +
+        `where the frame and the first column are wrong together.`
     );
   }
   if (wide.overhang === '' || wide.overhang === '0px') {
@@ -399,12 +508,18 @@ try {
     const cells = [...grid.querySelectorAll('th')];
     const last = cells[cells.length - 1]?.getBoundingClientRect();
     const f = frame.getBoundingClientRect();
-    const inset = parseFloat(getComputedStyle(grid).paddingLeft) || 0;
+    const gs = getComputedStyle(grid);
+    const inset = parseFloat(gs.paddingLeft) || 0;
     return {
       atEnd: Math.round(grid.scrollLeft),
       gap: last ? Math.round(f.right - last.right) : null,
       lastVisible: !!last && last.right <= f.right + 1 && last.left >= f.left - 1,
       inset: Math.round(inset),
+      // The room the allocator is handed, from the same two quantities it reads: the padding box,
+      // less the gutter left after the last column, less the pixel `border-collapse: collapse`
+      // puts outside the table's box.
+      frame: grid.clientWidth,
+      gutter: Math.round(parseFloat(gs.getPropertyValue('--md-gutter')) || 0),
     };
   });
   await page.waitForTimeout(300);
@@ -421,11 +536,38 @@ try {
   // Thirteen, because the row-number gutter is a column of the table too and is the 17px one.
   const wideTotal = wideCols.reduce((a, b) => a + b, 0);
   console.log(`  its columns: ${JSON.stringify(wideCols)}, totalling ${wideTotal}px`);
-  if (wideCols.length !== 13) failures.push(`the wide table laid out ${wideCols.length} columns rather than 13, so its widths were not measured`);
-  else if (Math.abs(wideTotal - 1404) > 24) {
+  /*
+   * Two checks, because two different things can go wrong here.
+   *
+   * The gutter has to resolve to a length. An unregistered custom property computes to its token
+   * stream, so `columnLayout.ts`'s `parseFloat` of `--md-gutter` returned `NaN` and it fell back
+   * to the writing column's inset, which in the pane-wide state is zero: the allocator was handed
+   * the entire frame and left no gap after the last column. `webview.css` registers the property
+   * with `@property` so it computes to pixels. Remove that block and this line fails, which is how
+   * it was measured.
+   *
+   * Then the total, as a baseline rather than a formula. This table does not fit, so rule 4 in
+   * `columnWidths.ts` sets its columns by interpolating from their minimums toward their content
+   * widths as the room falls short, and there is no short expression for where that lands. The
+   * number is here to be compared against by eye when this geometry next changes.
+   *
+   * It moved from 1404 to 1286 when the gutter became readable: the room fell by the 96px gutter
+   * and the border pixel, and rule 4 handed the columns 118px less between them. 1404 held only
+   * while the gutter read as zero.
+   */
+  const room = end ? end.frame - end.gutter - 1 : null;
+  if (room !== null) console.log(`  the room it was handed: frame ${end.frame} less a ${end.gutter}px gutter less the border pixel = ${room}px`);
+  if (!end || !(end.gutter > 0)) {
     failures.push(
-      `the wide table's columns total ${wideTotal}px against the 1404px measured with and without the right inset.\n` +
-        `    Padding is outside the width the allocator is handed; if that has changed, the allocator is seeing a different pane.`
+      `the gutter after the last column measured ${end?.gutter}px.\n` +
+        `    Zero means \`--md-gutter\` did not resolve to a length, so \`columnLayout.ts\` is using its inset fallback and the table is laid out in the whole frame.`
+    );
+  }
+  if (wideCols.length !== 13) failures.push(`the wide table laid out ${wideCols.length} columns rather than 13, so its widths were not measured`);
+  else if (Math.abs(wideTotal - 1286) > 24) {
+    failures.push(
+      `the wide table's columns total ${wideTotal}px against the 1286px this geometry was last measured at (frame ${end?.frame}, gutter ${end?.gutter}, room ${room}).\n` +
+        `    Padding is outside \`clientWidth\`, so the frame does not move when padding does; a change this size means the allocator is seeing a different pane.`
     );
   }
   if (!end || end.gap === null) failures.push('the wide table had no header cells to measure at its far end');
@@ -458,11 +600,30 @@ try {
     return { gripTop: Math.round(r.top), headerTop: Math.round(t.top), headerBottom: Math.round(t.bottom) };
   });
   console.log(`  scrolled back to rest: grip top ${rested?.gripTop}, header row ${rested?.headerTop}..${rested?.headerBottom}`);
-  if (!rested) failures.push('the grip went away when the table was scrolled back to rest, and at rest it belongs beside the header row');
-  else if (rested.gripTop < rested.headerTop - 2) {
+  /*
+   * **A table that takes the pane keeps its grip above it, at rest as well as scrolled**, and that is
+   * the decided trade rather than a regression.
+   *
+   * `blocks.handle` R1 is written for it: in the margin beside the block's first line, and clear above
+   * the block where the block leaves no margin to sit in. A table whose first column begins at the
+   * frame's edge leaves none, so there is nowhere beside it that is not the document, and R4 — never
+   * cover a character — is the harder of the two.
+   *
+   * This is deliberately a **separate** case from the board's lift, which is transient: a board drops
+   * its grip back beside the column heads when it is scrolled home. A check that could not tell them
+   * apart would pass when this permanent one regressed to the transient behaviour, which is exactly
+   * the shape of a check that cannot fail.
+   *
+   * The reading that says it is lifted rather than lost: the grip is still drawn, and it is above the
+   * header row rather than level with it.
+   */
+  if (!rested) failures.push('the grip went away when the table was scrolled back to rest, and a lifted grip is still a drawn grip');
+  else if (rested.gripTop >= rested.headerTop - 2) {
     failures.push(
-      `back at rest the grip is at ${rested.gripTop} with the header row at ${rested.headerTop}, so it stayed lifted.\n` +
-        `    At rest the first column is on the text's left edge and the margin is the grip's again.`
+      `back at rest the grip is at ${rested.gripTop} with the header row at ${rested.headerTop}, so it is beside the ` +
+        `header rather than above it.\n` +
+        `    A table that takes the pane begins at its frame's edge, so the margin the grip used to rest in is ` +
+        `document now. Level with the header means it is over a cell, which is what R4 forbids.`
     );
   }
 
@@ -564,9 +725,31 @@ try {
      * remaining room has nowhere to go. The editor's own horizontal scrollbar appearing would
      * be the wrong answer and is asked about separately.
      */
-    await page.mouse.move(gripAt.x + 120, gripAt.y);
+    /*
+     * The grip is found again rather than assumed to be where the last drag left it.
+     *
+     * It used to press at `gripAt.x + 120`, which was where the first drag had pushed it. That holds
+     * only while the table's left edge never moves, and it does now: a table dragged past its writing
+     * column takes the pane, and a pane-wide table begins at its frame's edge, so on release the whole
+     * table shifts left by one inset and the grip with it. Pressing the remembered coordinate then
+     * lands on a cell, nothing is dragged, and the check reported "the drag did not take the table past
+     * the pane" — a true statement about a drag that never happened.
+     *
+     * Re-reading it is also what a person does: they look for the grip. The shift on release is the
+     * accepted cost of removing the dead space, and holding it still *during* the gesture is what
+     * `is-resizing` is for.
+     */
+    const grip2 = await page.evaluate((col) => {
+      const g = document.querySelector(`.sheaf-table th:nth-child(${col + 1}) .sheaf-table-resize`);
+      if (!g) return null;
+      const r = g.getBoundingClientRect();
+      return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+    }, 2);
+    if (!grip2) failures.push('the resize grip could not be found for the second drag, so the overflow case asked nothing');
+    const from = grip2 ?? { x: gripAt.x + 120, y: gripAt.y };
+    await page.mouse.move(from.x, from.y);
     await page.mouse.down();
-    await page.mouse.move(gripAt.x + 900, gripAt.y);
+    await page.mouse.move(from.x + 780, from.y, { steps: 8 });
     await page.waitForTimeout(200);
     await page.mouse.up();
     await page.waitForTimeout(700);
@@ -592,6 +775,298 @@ try {
       if (!past.scrollX) failures.push(`a table wider than its pane is not marked is-scroll-x, which is what its header row is held by`);
       if (past.docScrolls) failures.push(`the document scrolls sideways: the table has to scroll inside its own frame, never widen the editor`);
     }
+
+    /*
+     * The table holds still under the pointer while a column is being dragged.
+     *
+     * This is the one thing nothing measured, and it is what three build-and-revert cycles on the
+     * flush-left change came down to. A table dragged past its writing column takes the pane, and a
+     * pane-wide table begins at its frame's edge, so applying that mid-gesture moved the content from
+     * 246 to 0 — with the grip on it. The pointer was then on a cell, and the rest of the drag reached
+     * nothing: measured as a further 400px of movement changing the width not at all.
+     *
+     * A gesture that stops answering is a different category from a thing that moves, because the
+     * obvious next move is to drag again and that does nothing either. `:not(.is-resizing)` holds the
+     * old padding across the gesture so the new edge is found on release.
+     *
+     * Read while the button is still down, which is the only moment the fault exists. A reading taken
+     * after the release sees the new edge and cannot tell the two builds apart.
+     */
+    /*
+     * **A fresh document, because the fault only exists on the crossing.** Written without this the
+     * check passed with the mitigation removed: by the time it ran the table was already pane-wide and
+     * already at the frame's edge, so a further drag crossed no threshold and moved nothing. The
+     * reading was `sat at 0 and was at 0` either way, which is a check that cannot fail.
+     *
+     * So it starts from a table that fits its writing column, at an inset, not pane-wide, and drags it
+     * across. The assertion below is then about the one moment the table changes which room it is in.
+     */
+    await openDoc('t.md');
+    const wasFitting = await page.evaluate(() => {
+      const w = document.querySelector('.sheaf-table');
+      const t = document.querySelector('.sheaf-table table');
+      return w && t ? { paneWide: w.classList.contains('is-pane-wide'), left: Math.round(t.getBoundingClientRect().left) } : null;
+    });
+    if (wasFitting?.paneWide !== false) {
+      failures.push(
+        `the drag-stillness case needs a table that is not yet pane-wide and got ${j(wasFitting)}, so it would ` +
+          `cross no threshold and could not fail.`
+      );
+    }
+    const before = wasFitting?.left ?? null;
+    const grip3 = await page.evaluate((col) => {
+      const g = document.querySelector(`.sheaf-table th:nth-child(${col + 1}) .sheaf-table-resize`);
+      if (!g) return null;
+      const r = g.getBoundingClientRect();
+      return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+    }, 2);
+    if (grip3 && before !== null) {
+      await page.mouse.move(grip3.x, grip3.y);
+      await page.mouse.down();
+      await page.mouse.move(grip3.x + 160, grip3.y, { steps: 6 });
+      const whilePressed = await page.evaluate(() => {
+        const t = document.querySelector('.sheaf-table table');
+        return t ? Math.round(t.getBoundingClientRect().left) : null;
+      });
+      await page.mouse.up();
+      await page.waitForTimeout(500);
+      console.log(`  the table sat at ${before} and was at ${whilePressed} while a column was being dragged`);
+      if (whilePressed !== null && Math.abs(whilePressed - before) > 2) {
+        failures.push(
+          `the table moved from ${before} to ${whilePressed} while a column was being dragged, so the grip ` +
+            `went out from under the pointer and the rest of the gesture reaches nothing.\n` +
+            `    A pane-wide table starts at its frame's edge; applying that mid-drag is what moves it, and ` +
+            `\`is-resizing\` is meant to hold the old padding until the drag ends.`
+        );
+      }
+    }
+  }
+
+  /*
+   * Scrolled fully right, there is a gap after the last column, for a table that can use the
+   * pane and for one that cannot.
+   *
+   * Both, because the two get it from different rules and only one of them was ever checked.
+   * A table reaching the pane takes its right padding from the inset; a quoted or list-indented
+   * table has no inset, so it took none, and a column dragged past its frame left the last
+   * column flush against the edge. The frame did scroll, correctly, and nothing said the table
+   * had ended: the only signal was that it stopped moving, which is what the gap exists to
+   * replace.
+   *
+   * The unquoted reading is the control. A change that gave every frame the same padding
+   * unconditionally would satisfy the quoted line and take a fitting table's last column out of
+   * view, because padding comes out of the content box while the layout divides `clientWidth`.
+   */
+  const endGap = async (name, gripCol) => {
+    await page.goto(`${base}/edit/${name}`);
+    await page.waitForSelector('.sheaf-table-grid', { timeout: 15_000 });
+    await page.waitForTimeout(2000);
+    const sel = `.sheaf-table-grid thead th[data-c="${gripCol}"] > .sheaf-table-resize`;
+    const at = await page.locator(sel).first().boundingBox();
+    if (!at) return { name, error: 'no resize grip' };
+    /*
+     * At rest, where the table's right edge sits against the frame's.
+     *
+     * Not `scrollWidth - clientWidth`, which was the first version of this and could not fail:
+     * a table that fits is `overflow-x: visible`, so it is not a scroll container and its
+     * scrollWidth is its clientWidth whatever the table is doing inside it.
+     *
+     * Nor the distance to the frame's own right edge, which was the second version and failed
+     * the table that can use the pane. That one legitimately ends an inset short of its frame,
+     * because the inset is padding on both sides and the table is laid out to the writing column
+     * inside it. Measured at 245px short, correctly.
+     *
+     * What holds for both is that the right padding never takes room away from the columns. So
+     * the reading is the table's right edge against the *content box's*, and the table may sit
+     * at it or past it, never short of it. A pane table sits on it; a quoted table overruns it,
+     * because the layout divides `clientWidth` and the padding is simply overrun while nothing
+     * is clipping.
+     */
+    const rest = await page.evaluate(() => {
+      const wrap = document.querySelector('.sheaf-table');
+      const grid = document.querySelector('.sheaf-table-grid');
+      const table = grid?.querySelector('table');
+      const padRight = parseFloat(getComputedStyle(grid).paddingRight) || 0;
+      const contentRight = grid.getBoundingClientRect().right - padRight;
+      return {
+        scrollX: !!wrap?.classList.contains('is-scroll-x'),
+        pad: getComputedStyle(grid).paddingRight,
+        pastContentBox: Math.round(table.getBoundingClientRect().right - contentRight),
+      };
+    });
+    /*
+     * Dragged three times rather than once, reading the end gap after each.
+     *
+     * The reported requirement was that resizing "always keeps the right padding (or you can't move it more
+     * right)", and both halves of that are claims about repetition: a margin that survives one
+     * drag can still be eaten by the third, once the total has grown past whatever the frame was
+     * sized for. A single drag cannot tell the two apart. The grip is re-measured each round
+     * because it has moved with the column it belongs to.
+     */
+    const rounds = [];
+    for (let i = 0; i < 3; i++) {
+      const grip = await page.locator(sel).first().boundingBox();
+      if (!grip) return { name, error: `the resize grip was gone after ${i} drag(s)` };
+      await page.mouse.move(grip.x + grip.width / 2, grip.y + grip.height / 2);
+      await page.mouse.down();
+      await page.mouse.move(grip.x + grip.width / 2 + 300, grip.y + grip.height / 2, { steps: 8 });
+      await page.mouse.up();
+      await page.waitForTimeout(600);
+      rounds.push(
+        await page.evaluate(() => {
+          const grid = document.querySelector('.sheaf-table-grid');
+          const table = grid?.querySelector('table');
+          grid.scrollLeft = grid.scrollWidth;
+          const cols = [...table.querySelectorAll('colgroup col')].map((c) => Math.round(parseFloat(c.style.width) || 0));
+          return {
+            cols,
+            total: cols.reduce((a, b) => a + b, 0),
+            gap: Math.round(grid.getBoundingClientRect().right - table.getBoundingClientRect().right),
+          };
+        })
+      );
+    }
+    return {
+      name,
+      rest,
+      rounds,
+      ...(await page.evaluate(() => {
+        const wrap = document.querySelector('.sheaf-table');
+        const grid = document.querySelector('.sheaf-table-grid');
+        const table = grid?.querySelector('table');
+        grid.scrollLeft = grid.scrollWidth;
+        return {
+          canUsePane: !!wrap?.classList.contains('can-use-pane'),
+          scrollX: !!wrap?.classList.contains('is-scroll-x'),
+          padRight: Math.round(parseFloat(getComputedStyle(grid).paddingRight) || 0),
+          gap: Math.round(grid.getBoundingClientRect().right - table.getBoundingClientRect().right),
+        };
+      })),
+    };
+  };
+
+  /*
+   * A table of prose holds the writing column and wraps; a data block takes the room its columns
+   * want and draws one line a row.
+   *
+   * Both, because either alone passes on a version that treats every grid the same. Asking the
+   * tightest width for everything keeps the prose table in the column and squeezes the data block
+   * in beside it; asking the natural width for everything lets the data block have its room and
+   * throws the prose table out to the pane, which is the bug that started this. Only the pair
+   * fails both ways.
+   */
+  for (const [name, expect] of [['prosetable.md', 'column'], ['datablock.md', 'room']]) {
+    await page.goto(`${base}/edit/${name}`);
+    await page.waitForSelector('.sheaf-table-grid', { timeout: 15_000 });
+    await page.waitForTimeout(2200);
+    const m = await page.evaluate(() => {
+      const lines = [...document.querySelectorAll('.cm-line')];
+      const para = lines.find((l) => (l.textContent ?? '').startsWith('Intro paragraph')) ?? lines[0];
+      const wrap = document.querySelector('.sheaf-table');
+      const grid = document.querySelector('.sheaf-table-grid');
+      const table = grid?.querySelector('table');
+      const first = table?.querySelector('tbody tr');
+      if (!para || !wrap || !table) return null;
+      return {
+        isCsv: wrap.classList.contains('is-csv'),
+        textRight: Math.round(para.getBoundingClientRect().right),
+        // The writing column's own width, which is what a table's width is judged against.
+        textWidth: Math.round(para.getBoundingClientRect().width),
+        tableRight: Math.round(table.getBoundingClientRect().right),
+        total: [...table.querySelectorAll('colgroup col')].reduce((a, c) => a + Math.round(parseFloat(c.style.width) || 0), 0),
+        // One line a row is the whole point for data. 24px of line plus 13px of padding and rule.
+        rowHeight: first ? Math.round(first.getBoundingClientRect().height) : null,
+      };
+    });
+    if (!m) {
+      failures.push(`${name}: no table drawn, so the layout rule was not measured`);
+      continue;
+    }
+    /*
+     * Measured as the table's **width** against the writing column's, not as where its right edge
+     * lands.
+     *
+     * It was `tableRight <= textRight + 2`, a position test standing in for a width test, and it broke
+     * the moment a wide table stopped starting at the writing column's left edge: the data block kept
+     * its 953px and simply moved left, so its right edge came back inside the text's and the check
+     * reported it squeezed. The table had not changed at all. A width compared against a width cannot
+     * be fooled by the table moving.
+     */
+    const inColumn = (m.total ?? 0) <= (m.textWidth ?? m.textRight) + 2;
+    console.log(
+      `  ${name}: is-csv ${m.isCsv}, total ${m.total}, writing column ${m.textWidth}, table ends ${m.tableRight}, ` +
+        `fits the writing column ${inColumn}, first row ${m.rowHeight}px`
+    );
+    if (expect === 'column' && !inColumn) {
+      failures.push(`${name}: a table of prose ends at ${m.tableRight} against text ending at ${m.textRight}, so it left the writing column and the page has two right edges`);
+    }
+    if (expect === 'room') {
+      if (inColumn) failures.push(`${name}: a data block was squeezed into the writing column, so its rows wrap for a margin they never had`);
+      // A row of short values on one line is 37px here. Two lines is 61px, which is the regression.
+      if ((m.rowHeight ?? 0) > 45) failures.push(`${name}: a data block's first row is ${m.rowHeight}px, which is more than one line of values`);
+    }
+  }
+
+  for (const [name, gripCol] of [['t.md', 2], ['quoted-drag.md', 2]]) {
+    const r = await endGap(name, gripCol);
+    if (r.error) {
+      failures.push(`${name}: ${r.error}, so the end gap was not measured`);
+      continue;
+    }
+    console.log(
+      `  ${name}: at rest is-scroll-x ${r.rest.scrollX} padRight ${r.rest.pad} table ends ${r.rest.pastContentBox}px past its content box; ` +
+        `dragged 900px wider, can-use-pane ${r.canUsePane}, is-scroll-x ${r.scrollX}, padRight ${r.padRight}px, gap after the last column ${r.gap}px`
+    );
+    if (r.rounds) {
+      console.log(`    across three drags: ${r.rounds.map((x) => `total ${x.total} gap ${x.gap}`).join(', ')}`);
+      const grew = r.rounds.every((x, i) => i === 0 || x.total > r.rounds[i - 1].total);
+      const kept = r.rounds.every((x) => x.gap >= 8);
+      if (!grew) {
+        // The other half the requirement allows: the drag may simply stop. Then the total holds
+        // still, which is a pass, and the gap still has to be there.
+        const held = r.rounds.every((x, i) => i === 0 || x.total === r.rounds[i - 1].total);
+        if (!held) failures.push(`${name}: three drags moved the total ${JSON.stringify(r.rounds.map((x) => x.total))}, neither growing each time nor stopping`);
+      }
+      if (!kept) failures.push(`${name}: the gap after the last column went ${JSON.stringify(r.rounds.map((x) => x.gap))} across three drags, so a repeated resize eats the right margin`);
+      /*
+       * And every other column held still, which is the independence claim measured on a table
+       * that scrolls. It had only ever been measured on one that does not, and a scrolling table
+       * is the only place independence meets the margin: widening a column moves the total, which
+       * moves where the end is, which is where the margin lives. The grip is on column 2, and
+       * `cols[0]` is the row-number gutter, so the column the grip belongs to is `gripCol + 1`.
+       * Written as `gripCol` first, which reported the dragged column itself as having moved: the
+       * 300px it gained each round, correctly, read as a neighbour being disturbed.
+       *
+       * **This one has not been seen to fail and is a claim rather than a check.** Breaking the
+       * freeze, so only the dragged column is pinned and the rest share the room as they did
+       * before independent widths, fails the single-drag check on `narrow.md` with
+       * "moved 2 other column(s) by [-50,-70]" and leaves this block passing: by the time a table
+       * is at the pane and overflowing, growth is not bounded by the room, so the neighbours have
+       * nothing to give up. So independence has a working control on a table that fits, and on one
+       * that scrolls it has an assertion that would catch a regression nobody has yet produced.
+       */
+      const moved = [];
+      for (let i = 1; i < r.rounds.length; i++) {
+        const before = r.rounds[i - 1].cols;
+        const after = r.rounds[i].cols;
+        for (let c = 0; c < after.length; c++) {
+          if (c === gripCol + 1 && after.length === before.length) continue;
+          if (Math.abs((after[c] ?? 0) - (before[c] ?? 0)) > 1) moved.push(`round ${i + 1} column ${c}: ${before[c]} -> ${after[c]}`);
+        }
+      }
+      if (moved.length) {
+        failures.push(
+          `${name}: dragging column ${gripCol} moved other columns on a scrolling table: ${JSON.stringify(moved)}.\n` +
+            `    Widths are meant to be independent, so the dragged column takes the room and its neighbours keep what they had.`
+        );
+      }
+    }
+    if (!r.scrollX) failures.push(`${name}: a column dragged 900px wider did not make the frame scroll, so the gap after the last column proves nothing`);
+    else if (r.gap < 8) failures.push(`${name}: scrolled fully right leaves ${r.gap}px after the last column, so nothing says the table has ended`);
+    if (r.rest.scrollX) failures.push(`${name}: the table was already scrolling before the drag, so this measured the wrong thing`);
+    // Short of the content box means the right padding was taken out of the room the columns
+    // divide, which is how a fix for a table that does not fit would break one that does.
+    if (r.rest.pastContentBox < -2) failures.push(`${name}: at rest the table ends ${-r.rest.pastContentBox}px short of its content box, so the right padding is being taken out of the columns' room`);
   }
 
   /*
@@ -818,6 +1293,409 @@ try {
   if (small.docOverflow > 0) {
     failures.push(`on a narrow pane the editor scrolls sideways by ${small.docOverflow}px.`);
   }
+  /*
+   * The same question of a board, which the reading above cannot answer.
+   *
+   * The table case is asked of `th` and `td`, and a board has neither: it is a flex row of
+   * `.sheaf-board-col` divs holding `.sheaf-board-card`s. So every part of the table's fix read
+   * undefined for a board, the lift never engaged, and the grip drew on top of the first card.
+   * Measured before the fix: the grip's rectangle at 199..240 over a card at 220..448.
+   *
+   * A view's board rather than a pipe table's, because a view is a fenced block and so its range
+   * is `code` rather than `table`, which put it outside the guard as well as outside the
+   * selectors. Fixing the selectors alone would have left this one exactly as it was.
+   *
+   * At rest and scrolled, because the two are different states and only the second was ever
+   * wrong: at rest the content starts at the text's left edge and the grip has the margin to
+   * itself, which is the reading that says this is a scrolling fault and not a placement one.
+   */
+  const boardHandle = async (scrollFully) => {
+    await page.goto(`${base}/edit/board-wide.md`);
+    await page.waitForSelector('.sheaf-board', { timeout: 15_000 });
+    await page.waitForTimeout(2200);
+    /* The board is below the first screen, so bring it onto it before reading any rectangle. */
+    await page.evaluate(() => document.querySelector('.sheaf-board')?.scrollIntoView({ block: 'center' }));
+    await page.waitForTimeout(600);
+    if (scrollFully) {
+      await page.evaluate(() => {
+        const host = document.querySelector('.sheaf-view-grid');
+        if (host) host.scrollLeft = host.scrollWidth;
+      });
+      await page.waitForTimeout(300);
+    }
+    /*
+     * Moved to a point inside the frame rather than hovered by selector: `hover()` scrolls the
+     * element into view and undoes the scroll this is about. That cost two readings before it was
+     * noticed, both of them showing no overlap because the board had been scrolled back to 0.
+     */
+    const at = await page.evaluate(() => {
+      const g = document.querySelector('.sheaf-view-grid')?.getBoundingClientRect();
+      return g ? { x: Math.round(g.left + 300), y: Math.round(g.top + Math.min(g.height / 2, 120)) } : null;
+    });
+    if (!at) return { error: 'no board frame on screen' };
+    await page.mouse.move(at.x - 220, at.y);
+    await page.waitForTimeout(120);
+    await page.mouse.move(at.x, at.y);
+    await page.waitForTimeout(700);
+    return page.evaluate(() => {
+      const handle = document.querySelector('.sheaf-block-handle:not([hidden])');
+      const host = document.querySelector('.sheaf-view-grid');
+      if (!handle) return { handle: null, scrollLeft: Math.round(host?.scrollLeft ?? 0) };
+      const r = handle.getBoundingClientRect();
+      const over = [...document.querySelectorAll('.sheaf-board-card, .sheaf-board-col-head')]
+        .map((c) => ({ c, b: c.getBoundingClientRect() }))
+        .filter(({ b }) => b.width > 0 && b.right > r.left + 1 && b.left < r.right - 1 && b.bottom > r.top + 1 && b.top < r.bottom - 1)
+        .map(({ c, b }) => `${(c.textContent ?? '').trim().slice(0, 14) || '(empty)'} at ${Math.round(b.left)}`);
+      const head = document.querySelector('.sheaf-board-col-head')?.getBoundingClientRect();
+      return {
+        handle: { left: Math.round(r.left), right: Math.round(r.right), top: Math.round(r.top) },
+        over,
+        headTop: head ? Math.round(head.top) : null,
+        contentFrom: Math.round(document.querySelector('.sheaf-board-card')?.getBoundingClientRect().left ?? 0),
+        scrollLeft: Math.round(host?.scrollLeft ?? 0),
+      };
+    });
+  };
+
+  /*
+   * And the grip follows when the board scrolls under it with the pointer held still.
+   *
+   * `show` does nothing when called again for the range it already holds, which is what keeps a
+   * mousemove from measuring on every pixel, and the cost is that a block scrolling under a grip
+   * that is already up never moved it. A listener on the scroller is what makes the placement
+   * follow, and it used to be attached to `.sheaf-table-grid` alone, so a board's scroller had
+   * none. Scrolled here without touching the pointer, which is the only way to tell the listener
+   * from the re-placement a mousemove would have done anyway.
+   */
+  {
+    await page.goto(`${base}/edit/board-wide.md`);
+    await page.waitForSelector('.sheaf-board', { timeout: 15_000 });
+    await page.waitForTimeout(2200);
+    await page.evaluate(() => document.querySelector('.sheaf-board')?.scrollIntoView({ block: 'center' }));
+    await page.waitForTimeout(600);
+    const at = await page.evaluate(() => {
+      const g = document.querySelector('.sheaf-view-grid')?.getBoundingClientRect();
+      return g ? { x: Math.round(g.left + 300), y: Math.round(g.top + Math.min(g.height / 2, 120)) } : null;
+    });
+    if (!at) failures.push('the board frame was not on screen, so the scroll listener was not measured');
+    else {
+      await page.mouse.move(at.x - 220, at.y);
+      await page.waitForTimeout(120);
+      await page.mouse.move(at.x, at.y);
+      await page.waitForTimeout(700);
+      const before = await page.evaluate(() => {
+        const h = document.querySelector('.sheaf-block-handle:not([hidden])');
+        return h ? Math.round(h.getBoundingClientRect().top) : null;
+      });
+      // The pointer is not touched from here on.
+      await page.evaluate(() => {
+        const host = document.querySelector('.sheaf-view-grid');
+        if (host) host.scrollLeft = host.scrollWidth;
+      });
+      await page.waitForTimeout(700);
+      const after = await page.evaluate(() => {
+        const h = document.querySelector('.sheaf-block-handle:not([hidden])');
+        const host = document.querySelector('.sheaf-view-grid');
+        if (!h) return { top: null, scrollLeft: Math.round(host?.scrollLeft ?? 0), over: [] };
+        const r = h.getBoundingClientRect();
+        const over = [...document.querySelectorAll('.sheaf-board-card, .sheaf-board-col-head')]
+          .map((c) => c.getBoundingClientRect())
+          .filter((b) => b.width > 0 && b.right > r.left + 1 && b.left < r.right - 1 && b.bottom > r.top + 1 && b.top < r.bottom - 1);
+        return { top: Math.round(r.top), scrollLeft: Math.round(host?.scrollLeft ?? 0), over: over.map((b) => Math.round(b.left)) };
+      });
+      console.log(`  the grip when a board scrolls under a still pointer: top ${before} -> ${after.top}, scrollLeft ${after.scrollLeft}, over ${after.over.length ? JSON.stringify(after.over) : 'nothing'}`);
+      if (before === null) failures.push('no grip was up before the board was scrolled, so the scroll listener was not measured');
+      else if (after.scrollLeft === 0) failures.push('the board did not scroll, so the scroll listener was not measured');
+      else if (after.over.length) {
+        failures.push(
+          `a board scrolled under a still pointer left the grip over ${after.over.length} card(s) at ${JSON.stringify(after.over)}.\n` +
+            `    Placement alone is not enough: the grip is only re-placed by a listener on the board's own scroller.`
+        );
+      } else if (after.top === before) {
+        failures.push(
+          `the grip stayed at top ${before} while the board scrolled to ${after.scrollLeft}, so nothing re-placed it.\n` +
+            `    It happens to clear the cards at this scroll position, which is why this asserts the move and not only the overlap.`
+        );
+      }
+    }
+  }
+
+  for (const [label, scrollFully] of [['at rest', false], ['scrolled fully right', true]]) {
+    const b = await boardHandle(scrollFully);
+    if (b.error) {
+      failures.push(`the board handle ${label}: ${b.error}, so it was not measured`);
+      continue;
+    }
+    console.log(
+      `  the block handle beside a board, ${label}: ${JSON.stringify(b.handle)}, scrollLeft ${b.scrollLeft}, ` +
+        `cards from ${b.contentFrom}, column heads at ${b.headTop}, drawn over ${b.over?.length ? JSON.stringify(b.over) : 'no card'}`
+    );
+    if (!b.handle) {
+      failures.push(`no block handle appeared beside a board ${label}, so whether it covers a card was not measured at all`);
+    } else if (b.over?.length) {
+      failures.push(
+        `the block handle is drawn over ${b.over.length} thing(s) on a board ${label}: ${JSON.stringify(b.over)}.\n` +
+          `    Its rectangle is ${b.handle.left}..${b.handle.right} and the cards start at ${b.contentFrom}. A press still reaches the\n` +
+          `    grip, which is why asking what a press hits reported this as working while it was visible on screen.`
+      );
+    }
+    if (scrollFully && b.scrollLeft === 0) {
+      failures.push(`the board did not scroll, so "scrolled fully right" measured the same state as at rest and proves nothing`);
+    }
+  }
+
+  /*
+   * The same pane width lays a table out the same way whichever direction it is reached from.
+   *
+   * The frame's inset is padding on both sides, so its content box is the writing column and holds
+   * at exactly that for every pane wide enough for the inset to be at its ceiling: 708px at a pane
+   * of 1400 and 708px at 3000. A `ResizeObserver` watches the content box by default, so the one
+   * on the grid never fired on a widening and a table kept the widths it was given in a narrower
+   * pane. Measured before the fix: a pane of 925 laid out at 1491 when reached from 1400 and at
+   * 1516 when reached from 700, both stable, because the last layout had run at a frame of 1000
+   * and never run again.
+   *
+   * **Both directions, because one direction cannot see it.** A sweep that only narrows reads a
+   * monotone series and passes; the fault is entirely in what a widening fails to do. That also
+   * explains the symptom as reported, a jump "by more than the pane moved": it is the accumulated
+   * difference catching up on the first narrowing that does force a re-layout, not a step.
+   *
+   * Twelve columns, because a table that fits the writing column is laid out to the column at
+   * every pane and cannot show this.
+   */
+  {
+    const target = 925;
+    const at = async (from) => {
+      await page.setViewportSize({ width: from, height: 900 });
+      await page.waitForTimeout(700);
+      await page.setViewportSize({ width: target, height: 900 });
+      await page.waitForTimeout(900);
+      return page.evaluate(() => {
+        const t = document.querySelector('.sheaf-table table');
+        const cols = [...t.querySelectorAll('colgroup col')].map((c) => Math.round(parseFloat(c.style.width) || 0));
+        return { total: cols.reduce((a, b) => a + b, 0), cols };
+      });
+    };
+    await page.goto(`${base}/edit/manycols.md`);
+    await page.waitForSelector('.sheaf-table table', { timeout: 15_000 });
+    await page.waitForTimeout(2200);
+    const fromWide = await at(1500);
+    const fromNarrow = await at(700);
+    console.log(
+      `  a table of twelve columns at a pane of ${target}: reached from 1500 total ${fromWide.total}, from 700 total ${fromNarrow.total}`
+    );
+    if (!fromWide.total || !fromNarrow.total) {
+      failures.push('the twelve-column table was not laid out, so the two approaches were not compared');
+    } else if (Math.abs(fromWide.total - fromNarrow.total) > 2) {
+      failures.push(
+        `the same pane of ${target}px lays the table out at ${fromWide.total} coming from a wider pane and ` +
+          `${fromNarrow.total} coming from a narrower one, so its widths depend on the pane's history.\n` +
+          `    Widening leaves the frame's content box unchanged, so whatever watches it has to watch the border box.\n` +
+          `    From 1500: ${JSON.stringify(fromWide.cols)}\n    From  700: ${JSON.stringify(fromNarrow.cols)}`
+      );
+    }
+    await page.setViewportSize(VIEW);
+  }
+
+  /*
+   * Does `is-scroll-x` agree with whether the frame actually scrolls, at every pane width?
+   *
+   * The class is not cosmetic. `media/webview.css` gives a fitting table `overflow-x: visible`
+   * only while it is *not* marked, and that is what keeps its frame from being a scroll container,
+   * which is what lets its header row stick to the editor rather than to the frame. So a table
+   * wrongly marked loses its sticky header, and the table is the one case where the header is the
+   * whole point of scrolling down.
+   *
+   * It is swept across widths rather than read at one because the disagreement is specific to a
+   * narrow pane and invisible at the 1200 every other check here uses. The reason is a near
+   * equality: a table that fits is laid out to the writing column, which is exactly the room the
+   * allocator was handed, so whether it reports scrolling comes down to whether the rounded sum of
+   * its columns lands a pixel over the number it was given. At a wide pane the column is far from
+   * the frame's edge and the question never arises.
+   *
+   * The reading is `scrollWidth - clientWidth` on the frame, which is what scrolling means, taken
+   * against the class rather than against the allocator's own arithmetic. Asking the code what it
+   * decided would agree with itself whatever it decided.
+   */
+  {
+    /*
+     * Coarse widths and then a fine run around the narrow end, because the coarse list on its own
+     * reports this fault at one width and that reading is wrong.
+     *
+     * Swept at 1200, 900, 760, 640 and 560 it showed only at 640, and the obvious conclusion is
+     * that 640 is special. Swept at five-pixel steps it is live at 645, 640 and 620 and clear at
+     * 650, 635, 630 and 600: particular widths rather than one, with a pixel of overflow at each.
+     * The coarse list simply steps over two of them. A fix bounded to the width the coarse sweep
+     * found would have shipped two live widths, which is the argument for fixing the threshold
+     * rather than the case.
+     *
+     * Third time this has cost something here: a 100px sweep of table widths reported steady growth
+     * where a 1px sweep found 154px between adjacent samples, and the same thing again on a timing
+     * threshold. An interval is part of a measurement, and a sweep that finds one instance of a
+     * rounding fault has almost certainly found the one it happened to sample.
+     */
+    const PANES = [1200, 900, 760, 650, 645, 640, 635, 630, 620, 600, 560];
+    const frames = () =>
+      page.evaluate(() => {
+        const out = [];
+        for (const wrap of document.querySelectorAll('.sheaf-table, .sheaf-view')) {
+          const grid = wrap.querySelector('.sheaf-table-grid, .sheaf-view-grid');
+          const table = wrap.querySelector('table');
+          if (!grid) continue;
+          const style = getComputedStyle(grid);
+          out.push({
+            name: (table?.querySelector('thead tr')?.textContent ?? '?').replace(/\s+/g, ' ').trim().slice(0, 28),
+            marked: wrap.classList.contains('is-scroll-x'),
+            pane: wrap.classList.contains('can-use-pane'),
+            widths: wrap.classList.contains('has-widths'),
+            table: table ? Math.round(table.getBoundingClientRect().width) : null,
+            client: grid.clientWidth,
+            over: grid.scrollWidth - grid.clientWidth,
+            padL: Math.round(parseFloat(style.paddingLeft) || 0),
+            padR: Math.round(parseFloat(style.paddingRight) || 0),
+            overflowX: style.overflowX,
+          });
+        }
+        return out;
+      });
+
+    for (const doc of ['tall.md', 'prosetable.md', 'manycols.md', 'datablock.md']) {
+      for (const width of PANES) {
+        await page.setViewportSize({ width, height: VIEW.height });
+        await openDoc(doc);
+        const read = await frames();
+        for (const f of read) {
+          /*
+           * A pixel, not `EPS`. The question the class answers is whether a scrollbar is drawn,
+           * and the browser does not draw one for half a pixel of overflow: a table laid out to
+           * exactly its room routinely lands a fraction over it, because `border-collapse` puts
+           * half a border outside the table's box and the column widths are whole numbers that
+           * have to sum to a width that is not. The same distinction, on the same near equality,
+           * was already needed for the height estimate.
+           */
+          const scrolls = f.over > 1;
+          console.log(
+            `  ${doc} at ${width}: ${f.name} table ${f.table} in ${f.client} (pad ${f.padL}/${f.padR}, ${f.overflowX}), ` +
+              `overflow ${f.over}, is-scroll-x ${f.marked}, really scrolls ${scrolls}`
+          );
+          if (f.marked !== scrolls) {
+            failures.push(
+              `at a ${width}px pane, ${doc}'s "${f.name}" table is marked is-scroll-x ${f.marked} while its frame ` +
+                `overflows by ${f.over}px, so it really scrolls ${scrolls}.\n` +
+                `    The table is ${f.table}px inside a ${f.client}px frame.\n` +
+                `    A table wrongly marked loses \`overflow-x: visible\`, becomes a scroll container on both axes, ` +
+                `and its header row then sticks to its own frame instead of to the editor.`
+            );
+          }
+        }
+      }
+    }
+
+    /*
+     * The same question against the corpus rather than against fixtures written for it.
+     *
+     * `sample/edge/markdown-torture.md` is where this was found, and it holds eight tables of
+     * shapes nobody designed for a check: one column, two, three, an empty first header cell, every
+     * alignment marker, and two of prose. Seven of the eight were wrongly marked at 640.
+     *
+     * It has to be stepped rather than read once. CodeMirror draws the viewport and a margin, not
+     * the document, so a single reading at either end of a long file finds almost no tables at all
+     * and reports a clean pass over work it never did. Each table is collected the first time it is
+     * drawn, keyed by its header text.
+     *
+     * **The control, run rather than reasoned about.** With `Allocation.scrolls` comparing against
+     * `EPS` instead of a pixel, this reports `8 tables drawn, 7 marked, 7 disagreements` at 640 and
+     * `0 marked, 0 disagreements` at 1200, and the header reading below goes from 36 to 38 with the
+     * frame's `overflow-x` from `visible` to `auto`. With the pixel it is 0 and 0 at both widths.
+     * So the check discriminates, and on the corpus rather than on a fixture built to fail.
+     */
+    const torture = join(root, 'torture.md');
+    writeFileSync(torture, readFileSync(join(REPO, 'sample', 'edge', 'markdown-torture.md'), 'utf8'));
+    for (const width of [1200, 640]) {
+      await page.setViewportSize({ width, height: VIEW.height });
+      /*
+       * Not `openDoc`, which waits for a grid to be visible. The torture document opens on prose
+       * and its first table is below the fold, so that wait never resolves and the check dies on a
+       * timeout rather than on anything about widths. The same fact that makes the stepping
+       * necessary is what makes the wait wrong.
+       */
+      await page.goto(`${base}/edit/torture.md`);
+      await page.waitForSelector('.cm-content', { timeout: 15_000 });
+      await page.waitForTimeout(2000);
+      const seen = new Map();
+      for (let step = 0; step < 40; step++) {
+        for (const f of await frames()) if (!seen.has(f.name)) seen.set(f.name, f);
+        const more = await page.evaluate((h) => {
+          const s = document.querySelector('.cm-scroller');
+          if (!s) return false;
+          const was = s.scrollTop;
+          s.scrollTop = was + h * 0.8;
+          return s.scrollTop > was;
+        }, VIEW.height);
+        await page.waitForTimeout(250);
+        if (!more) break;
+      }
+      for (const f of await frames()) if (!seen.has(f.name)) seen.set(f.name, f);
+      const wrong = [...seen.values()].filter((f) => f.marked !== f.over > 1);
+      console.log(
+        `  the torture sample at ${width}: ${seen.size} tables drawn, ${[...seen.values()].filter((f) => f.marked).length} marked, ${wrong.length} disagreements`
+      );
+      // Zero tables would be the stepping having failed, which reads exactly like a pass.
+      if (seen.size < 6) {
+        failures.push(
+          `only ${seen.size} tables of the torture sample were ever drawn at a ${width}px pane, so this check ` +
+            `compared almost nothing. CodeMirror keeps the viewport and a margin; the document has to be stepped.`
+        );
+      }
+      for (const f of wrong) {
+        failures.push(
+          `at a ${width}px pane, the torture sample's "${f.name}" table is marked is-scroll-x ${f.marked} while ` +
+            `its frame overflows by ${f.over}px. The table is ${f.table}px inside a ${f.client}px frame.`
+        );
+      }
+    }
+
+    /*
+     * And the header itself, at the narrow pane, because the paragraph above is an argument about
+     * what the class costs and this is the cost. A fitting table forty rows long, scrolled past:
+     * the header row holds at the top of the editor or it does not.
+     *
+     * Read before and after the fix, and it held both times: 38 against a pane top of 37 while the
+     * table was wrongly marked, 36 against 37 once it was not. So the wrong class is a real defect
+     * in its own right and **not** the explanation for either sticky-header issue. That is worth
+     * stating rather than leaving implied, because the wrong class looks like exactly the cause a
+     * person would stop at.
+     */
+    await page.setViewportSize({ width: 640, height: VIEW.height });
+    await openDoc('tall.md');
+    await page.evaluate(() => document.querySelector('.cm-scroller')?.scrollTo({ top: 600 }));
+    await page.waitForTimeout(500);
+    const narrowHead = await page.evaluate(() => {
+      const row = document.querySelector('.sheaf-table thead tr');
+      const scroller = document.querySelector('.cm-scroller');
+      const wrap = document.querySelector('.sheaf-table');
+      const grid = document.querySelector('.sheaf-table-grid');
+      if (!row || !scroller || !grid) return null;
+      return {
+        rowTop: Math.round(row.getBoundingClientRect().top),
+        paneTop: Math.round(scroller.getBoundingClientRect().top),
+        marked: wrap?.classList.contains('is-scroll-x') ?? null,
+        overflowX: getComputedStyle(grid).overflowX,
+      };
+    });
+    console.log(
+      `  a fitting table at a 640px pane, scrolled past: header row at ${narrowHead?.rowTop}, pane top ` +
+        `${narrowHead?.paneTop}, is-scroll-x ${narrowHead?.marked}, frame overflow-x ${narrowHead?.overflowX}`
+    );
+    if (narrowHead && Math.abs(narrowHead.rowTop - narrowHead.paneTop) > 2) {
+      failures.push(
+        `at a 640px pane, a fitting table's header row is at ${narrowHead.rowTop} with the pane top at ` +
+          `${narrowHead.paneTop}, so it did not hold. Forty rows in, that table has no column names.`
+      );
+    }
+    await page.setViewportSize(VIEW);
+  }
+
   await page.setViewportSize(VIEW);
 } finally {
   await browser.close();

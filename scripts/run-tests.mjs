@@ -11,6 +11,7 @@
  */
 
 import { build } from 'esbuild';
+import { embeddedHtmlPlugin } from './esbuild-plugins.mjs';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -28,6 +29,12 @@ const SUITES = {
   // The browser host: the page's own module, driven under jsdom. Bundled for a browser,
   // because that is what it is built for and what it reaches its globals through.
   'browser-host': { entry: 'test/browserHost.entry.ts', out: 'test/browserHost.bundle.cjs', platform: 'browser', run: 'test/browserHost.test.mjs' },
+  /*
+   * The Markdown dialect on its own: text in, construct boundaries out. Bundled for Node
+   * because nothing here reaches the DOM, even though the parser and its extensions live
+   * under `src/webview/`: the widget classes are defined and never instantiated.
+   */
+  dialect: { entry: 'test/dialect.entry.ts', out: 'test/dialect.bundle.cjs', platform: 'node', run: 'test/dialect.test.mjs' },
   // The harness rather than the product: plain Node modules under test/, so no bundle.
   harness: { run: 'test/harness.test.mjs' },
 };
@@ -51,7 +58,25 @@ const chosen = names.length ? names : Object.keys(SUITES);
 function run(file) {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, ['--max-old-space-size=4096', join(REPO, file)], { cwd: REPO, stdio: 'inherit' });
-    child.on('exit', (code) => resolve(code ?? 1));
+    /*
+     * The signal is named, because without it a suite the kernel killed and a suite that failed a check
+     * leave exactly the same two facts behind: a non-zero code and no summary line.
+     *
+     * `code` is null when a child dies on a signal, and the signal arrives as the second argument.
+     * Collapsing that to `code ?? 1` turned every kill into an ordinary failure, and the step above saw
+     * an ordinary failure too: `gateRun.mjs` already writes "(killed by SIGKILL)" for a step it spawned
+     * itself, so the information was lost here and only here. A red run then said "Tests failed" with a
+     * suite's output stopping partway and nothing to say whether it was pushed or fell.
+     */
+    child.on('exit', (code, signal) => {
+      if (signal) {
+        process.stderr.write(
+          `\n${file} was killed by ${signal} partway through, so it failed no check: ` +
+            'whatever it printed above stops where the kill landed.\n'
+        );
+      }
+      resolve(code ?? 1);
+    });
   });
 }
 
@@ -68,6 +93,7 @@ for (const name of chosen) {
     external: suite.external ?? [],
     logLevel: 'warning',
     absWorkingDir: REPO,
+    plugins: [embeddedHtmlPlugin],
     /*
      * The same stamp the real build injects, so a suite drives a bundle that knows
      * which build it is. A fixed one rather than this checkout's: the checks read

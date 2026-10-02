@@ -19,6 +19,7 @@
 import { Scenario, mountProse } from '../harness';
 import { EditorSelection } from '@codemirror/state';
 import { undoDepth } from '@codemirror/commands';
+import { ensureSyntaxTree } from '@codemirror/language';
 import { createTableOfContents, documentHeadings, TableOfContents } from '../../src/webview/tableOfContents';
 import { mountToolbar } from '../../src/webview/toolbar';
 import { mountContextMenu } from '../../src/webview/contextmenu';
@@ -98,14 +99,43 @@ const LONG = ['# Handbook', '', 'An opening paragraph.', '', '## Stores', '']
   .concat(['', '### Drones', '', 'One line about drones.', ''])
   .join('\n');
 
+/**
+ * Finish parsing this document before asking for its headings, and say whether it finished.
+ *
+ * `documentHeadings` completes the tail within a 100ms budget and, when that runs out, lists what has
+ * been parsed and leaves the rest to the next rebuild. That degradation is the product's design and is
+ * documented where it happens. It is also a **machine speed** dependence, and these two checks had it in
+ * their premise rather than in their subject: 8,000 lines parse inside 100ms here and not on a CI runner,
+ * so both failed there and neither failed here. They are about the two-trees fault, that a heading read
+ * from one tree against the other keeps markers nothing accounts for, and reaching a heading past the
+ * parsed region is only how they get there.
+ *
+ * So the parse is completed first, with a budget nothing realistic exceeds, and the completion is
+ * asserted. Without that assertion a slow machine would make these pass by having nothing to find.
+ */
+function parsedWhole(view: { state: Parameters<typeof documentHeadings>[0] }): boolean {
+  /*
+   * The tree this returns, not `syntaxTree(state)`. That one is the editor's own, parsed only as far as
+   * the editor has needed, which is the distinction this file's own comment is about and which I walked
+   * into while writing this: asked that way the check said the document was unparsed and failed both
+   * scenarios on a machine where they had just passed.
+   */
+  const tree = ensureSyntaxTree(view.state, view.state.doc.length, 30_000);
+  return !!tree && tree.length >= view.state.doc.length;
+}
+
 export const scenarios: Scenario[] = [
   {
     name: 'a heading past the end of the parsed region is listed without its hashes',
     run: () => {
       const p = mountProse(LONG);
+      const whole = parsedWhole(p.view);
       const listed = documentHeadings(p.view.state);
       p.destroy();
       return (
+        // The precondition: the document really was parsed to its end, so "all four are listed" is a
+        // reading of the extraction rather than of how fast this machine is.
+        whole &&
         listed.length === 4 &&
         listed.map((h) => h.text).join('|') === 'Handbook|Stores|Maintenance|Drones' &&
         !listed.some((h) => h.text.startsWith('#'))
@@ -116,8 +146,9 @@ export const scenarios: Scenario[] = [
     name: 'the caret for a heading past the parsed region still lands on its text, not its hashes',
     run: () => {
       const p = mountProse(LONG);
+      const whole = parsedWhole(p.view);
       const last = documentHeadings(p.view.state)[3];
-      const ok = p.doc().slice(last.textFrom, last.textFrom + 6) === 'Drones';
+      const ok = !!whole && !!last && p.doc().slice(last.textFrom, last.textFrom + 6) === 'Drones';
       p.destroy();
       return ok;
     },

@@ -14,6 +14,31 @@
  */
 @import url('katex.css');
 
+/*
+ * `--md-gutter` is registered so that script can read it.
+ *
+ * An unregistered custom property computes to the token stream it was written with, so
+ * `getComputedStyle(el).getPropertyValue('--md-gutter')` hands back the literal
+ * `clamp(24px, 8vw, 96px)` and `parseFloat` of that is `NaN`. `columnLayout.ts` reads the
+ * gutter that way to work out how much room a table that takes the pane is given, and with
+ * `NaN` it fell through to its fallback and used the scroller's own left padding instead. That
+ * padding is not the gutter and is not one number: in a window where the frame still held the
+ * writing column's inset it was 191px against an 87px gutter, so a table was laid out a hundred
+ * pixels narrower than the room it had; in the pane-wide state the stylesheet sets it to zero, so
+ * the table was handed the whole frame and left no gap after its last column at all. Both are
+ * visible, and they are opposite, which is why neither looked like one fault.
+ *
+ * With a `<length>` syntax the engine resolves the `clamp` and the `vw` at computed-value
+ * time, so the same read returns something like `87.04px` and the arithmetic in that file
+ * works as it was written. The `initial-value` is the clamp's own floor, so a context that
+ * somehow has no declaration behaves like the narrowest pane rather than like no gutter.
+ */
+@property --md-gutter {
+  syntax: '<length>';
+  inherits: true;
+  initial-value: 24px;
+}
+
 :root {
   /* Notion's live text column is ~708px; react-notion-x uses 720px. */
   --md-content-width: 708px;
@@ -546,6 +571,18 @@ body {
  * height map cannot see, since it measures with `offsetHeight`, and clicks below the widget
  * land on the wrong line. `scripts/check-indent.mjs` sweeps for that on every run.
  */
+/*
+ * **Three things depend on this inset and only two of them are obvious.** The first column lining up
+ * with the paragraph above, the gap after the last column that says the table has ended, and — the
+ * one nobody had written down — the margin the block drag handle rests in. The handle's placement in
+ * `blockHandle.ts` compares the first cell's left edge against the writing column's, so a table whose
+ * content starts before that line has content under the handle and the handle lifts clear above the
+ * block instead of sitting beside its header row.
+ *
+ * That is why taking the inset away from a wide table surfaced in a file nobody expected. Written
+ * here because this is where somebody changing the inset will be looking, and the handle is in
+ * neither this rule's comment nor the click-through.
+ */
 .sheaf-table.can-use-pane {
   --md-table-inset: calc(var(--md-gutter) + var(--md-pane-overhang, 0px));
   margin-left: calc(-1 * var(--md-table-inset));
@@ -570,6 +607,81 @@ body {
 .sheaf-table.can-use-pane > .sheaf-table-grid {
   padding-left: var(--md-table-inset);
   padding-right: var(--md-table-inset);
+}
+/*
+ * A table that took the pane begins at its frame's left edge, and keeps one gutter after its last
+ * column.
+ *
+ * The inset above lines a table's first column up with the paragraph over it, which is worth having
+ * for a table that fits its column: both insets stay there, the table fills the room between them,
+ * and it is centred by them. For a table that took the pane that left inset was dead space. Measured
+ * on the twelve-column fixture at a 1200px pane: frame `0..1200` with the first cell at `246`.
+ *
+ * **The two edges do different jobs once a table is that wide, so this is asymmetric on purpose.** At
+ * rest the left edge is where you begin reading and there is nothing to signal, so a gap is waste.
+ * The right edge is where you need to know whether there is more, so a gap there is information: it
+ * says the table has ended rather than that the scroll has stuck. That is the click-through's own step
+ * 11. Symmetry is right where neither edge carries a signal and the eye wants the thing centred,
+ * which is the table that fits.
+ *
+ * `--md-gutter` rather than the full inset, because the signal needs some space rather than 246px of
+ * it, and the gutter already separates a fitting table's content from its frame. So a wide table and
+ * a narrow one come out with the same visual margin.
+ *
+ * **It costs the block handle its resting place, and that was decided rather than discovered.** The
+ * handle lives in the margin to a block's left, and a table starting at the frame's edge leaves none,
+ * so the handle sits clear above the block instead. `blocks.handle` R1 is written for that: in the
+ * margin beside the first line, and above where the block leaves no margin to sit in. See
+ * `--md-table-inset` below, whose third consumer this is.
+ *
+ * Keyed on `is-pane-wide`, which the layout sets from the room it chose, **not** on `is-scroll-x` and
+ * not on a measured width. Either would be a cycle: the class would set the padding, the padding
+ * would change the room, and the room would change the class.
+ *
+ * **And held off while a column is being dragged, which `:not(.is-resizing)` does.** Without it a
+ * drag that takes a table past its writing column made it pane-wide mid-gesture, so the content
+ * jumped from 246 to 0 — and the grip went with it, leaving the pointer on nothing and the drag dead.
+ * Measured: `is-pane-wide false, left 246, width 709` at rest, then `true, left 0, width 829` after a
+ * 120px drag, and a further 400px drag changed nothing at all because the grip was no longer under
+ * the pointer. A gesture that stops answering is a different category from a thing that moves: the
+ * obvious next move is to drag again, which also does nothing, and that is how somebody concludes the
+ * feature is broken.
+ *
+ * So the table holds still under the pointer and finds its new edge when the drag ends. A resize of
+ * the window across the same threshold still moves it, and that is accepted rather than overlooked:
+ * during a window resize everything is already moving, so a table finding a new left edge reads as
+ * reflow, while during a drag nothing else is moving and the table is the only event.
+ */
+.sheaf-table.can-use-pane.is-pane-wide:not(.is-resizing) > .sheaf-table-grid {
+  padding-left: 0;
+  padding-right: var(--md-gutter);
+}
+/*
+ * The same gap after the last column for a table that cannot use the pane: one in a quote, one
+ * under a list item, one in a frame that never grew.
+ *
+ * Those have no inset, so the rule above gave them no right padding at all, and a column dragged
+ * wider than the frame left the last column running flush into the edge with nothing after it.
+ * The end of the table was unreadable: `is-scroll-x` flips correctly and the frame really does
+ * scroll, and the only signal that you had reached the end was that it stopped moving. That is
+ * exactly what the padding above exists to replace for tables that can use the pane.
+ *
+ * **Unconditional, and it needs no condition.** It looks as though it should be held back until
+ * the frame scrolls, because `box-sizing: border-box` is global, so this comes out of the
+ * content box while `clientWidth` stays the same and the layout divides `clientWidth`. Measured,
+ * it changes nothing at rest: a table that fits is `overflow-x: visible`, which clips nothing
+ * and scrolls nothing, so the narrower content box has no effect and the table draws to the same
+ * pixel with this rule and without it. It starts to matter at the moment `overflow-x` becomes
+ * `auto`, which is the moment there is an end to mark. A version of this gated on `is-scroll-x`
+ * was written first and measured identical at rest and identical scrolled, so the condition was
+ * carrying nothing but the appearance of care.
+ *
+ * `--md-gutter` rather than a new number: it is the base the pane's own inset is built from,
+ * before the overhang that only a table reaching the pane has. It scales with the window the
+ * same way, so a narrow pane gets a proportionate gap instead of a fixed one.
+ */
+.sheaf-table:not(.can-use-pane) > .sheaf-table-grid {
+  padding-right: var(--md-gutter);
 }
 .sheaf-table-grid {
   overflow-x: auto;
@@ -820,6 +932,42 @@ body {
   cursor: grab;
 }
 /*
+ * The row's divider, for fitting the row to its content.
+ *
+ * A pseudo-element and not a child. `tables.entry.ts` asserts that a row-number cell has zero element
+ * children, because a chevron that once lived there took presses meant for the row, and a divider
+ * drawn as a child breaks that rule whatever it does with the events. `tables.ts` reads the pointer's
+ * distance from the cell's bottom edge instead, which is how a resize edge works in a spreadsheet, and
+ * it sets `is-at-divider` so the cursor can say which of the two gestures a press would start.
+ *
+ * Drawn only on a row holding a cell taller than the clamp, which `tables.ts` marks as
+ * `has-tall-cell`. Three gestures share this strip and the other two are load-bearing: a click selects
+ * the row, a drag moves it. Making the divider conditional is what keeps them apart, because on an
+ * ordinary row there is nothing here to aim at and nothing drawn to aim at it with.
+ */
+.sheaf-table td.sheaf-table-gutter {
+  position: relative;
+}
+.sheaf-table tbody tr.has-tall-cell:hover > .sheaf-table-gutter::after {
+  content: '';
+  position: absolute;
+  left: 1px;
+  right: 1px;
+  bottom: 2px;
+  height: 2px;
+  border-radius: 1px;
+  background: color-mix(in srgb, var(--md-text) 45%, transparent);
+}
+/*
+ * No cursor rule here, deliberately.
+ *
+ * This zone used `cursor: row-resize`, which tells a reader to drag. A row is never given a fixed
+ * height, so dragging cannot be made to work, and it did nothing. `pointer` would be a different false
+ * promise, since a single press is swallowed on purpose so that aiming at the divider cannot pick the
+ * row up. `tables.ts` puts the gesture in the cell's `title` while the pointer is in the zone, which
+ * states it exactly, and the line drawn above is what brings the eye here.
+ */
+/*
  * The digits appear only when the document's own line numbers do, which the root
  * carries as `.line-numbers`. A table's row numbers and a document's are the same
  * answer to the same question, so a reader who does not want one does not want the
@@ -1022,6 +1170,30 @@ body {
 .sheaf-table-controls::before {
   content: '';
   margin-left: auto;
+}
+/*
+ * The bar ends where the table ends, not where the pane does.
+ *
+ * `columnLayout.ts` publishes `--md-table-edge`, the table's right edge inside the frame. Without it the
+ * bar spanned the wrap's box, which `.can-use-pane`'s negative margins stretch to both pane edges, so the
+ * buttons sat against the window: 190px past a table that fitted its writing column, and up to 443px on a
+ * wide screen. The fallback is `100%`, which gives `right: 0` and the old behaviour, so a board or a frame
+ * that has not been laid out yet is unaffected rather than mispositioned.
+ */
+.sheaf-table.can-use-pane > .sheaf-table-controls {
+  /*
+   * Clamped at zero, because a table can be wider than the frame it sits in.
+   *
+   * Fit columns to content on a three-column table of prose drew it 908px wide inside a 1090px frame
+   * whose text column is 708, so the edge came out at 1099 and `right` went to -9px. The bar is
+   * absolutely positioned, which still contributes to its container's scrollable overflow, so nine
+   * pixels of bar hanging past the frame made the whole document scroll sideways. A real-window check
+   * caught it on the assertion about the *page* scrolling rather than on anything about the bar.
+   *
+   * Zero is also the right answer there rather than merely a safe one: a table wider than its frame
+   * scrolls inside it, and the bar belongs at the frame's edge, which is where the end of the table is.
+   */
+  right: max(0px, calc(100% - var(--md-table-edge, 100%)));
 }
 .sheaf-table:hover .sheaf-table-controls,
 .sheaf-table:focus-within .sheaf-table-controls {
@@ -1883,6 +2055,23 @@ body {
   padding: 4px 0;
   outline: none;
 }
+/*
+ * A board lines up with the prose, the way the grid beside it does.
+ *
+ * `.can-use-pane` puts negative margins of `--md-table-inset` on the wrap so its box reaches both pane
+ * edges, and the grid takes that inset back as its own padding. The board host is a sibling of the grid
+ * and had `padding: 4px 0`, so it kept none of it and sat hard against the pane's left edge: measured at
+ * x=0 with the heading above it at 366, a two-lane board occupying 490px of a 1440px window with all the
+ * unused space to its right.
+ *
+ * The flush left edge is justified for a table that *took* the pane, where the first column is where you
+ * begin reading. A board using a third of the width has taken nothing, so the justification does not
+ * reach it, and the inset is what puts it under its own heading.
+ */
+.sheaf-table.can-use-pane > .sheaf-table-board {
+  padding-left: var(--md-table-inset);
+  padding-right: var(--md-table-inset);
+}
 /* Why a table that was a board is a grid again. */
 .sheaf-table-board-note {
   margin: 4px 0;
@@ -1961,7 +2150,13 @@ body {
 .sheaf-ctx-item:not(:has(> .sheaf-table-icon)) > .sheaf-ctx-label {
   margin-left: 24px;
 }
-.sheaf-ctx-key {
+/*
+ * A shortcut hint in a menu row. One rule for both menus that draw one, because the table's menu is
+ * asked to put it in the same place and the same style as the right-click menu's, and two copies of
+ * five declarations is the arrangement that drifts.
+ */
+.sheaf-ctx-key,
+.sheaf-table-menu-key {
   flex: 0 0 auto;
   margin-left: 24px;
   font-family: var(--sheaf-ui-font);

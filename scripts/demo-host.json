@@ -1,0 +1,22 @@
+{
+  "answers": [
+    "clipboardWrite",
+    "commentFoldsRead",
+    "commentFoldsWrite",
+    "dataFileEdit",
+    "docTitleRead",
+    "edit",
+    "openAsText",
+    "openLink",
+    "outlineStateRead",
+    "outlineStateWrite",
+    "ready",
+    "saveImage",
+    "setLineNumbers",
+    "setTableOfContents",
+    "tableBoardsRead",
+    "tableBoardsWrite",
+    "tableWidthsRead",
+    "tableWidthsWrite"
+  ]
+}

@@ -13,8 +13,7 @@
 import { ChangeSet, EditorSelection, EditorState, StateEffect, StateField, Text, TransactionSpec } from '@codemirror/state';
 import { Decoration, EditorView } from '@codemirror/view';
 import { ensureSyntaxTree, language, syntaxTree } from '@codemirror/language';
-import { markdown } from '@codemirror/lang-markdown';
-import { sheafMarkdownLanguage } from './markdownDialect';
+import { sheafMarkdown, sheafMarkdownLanguage } from './markdownDialect';
 import { frontMatterEnd } from './frontMatter';
 import { alertMarkerOnText } from './alerts';
 import { isolateHistory } from '@codemirror/commands';
@@ -799,7 +798,7 @@ function stripToText(text: string, kind: BlockKind | null): string {
  */
 function runOnText(text: string, caret: number, steps: ((v: EditorView) => void)[]): { text: string; caret: number } {
   const view = new EditorView({
-    state: EditorState.create({ doc: text, selection: { anchor: Math.min(caret, text.length) }, extensions: [markdown({ base: sheafMarkdownLanguage })] }),
+    state: EditorState.create({ doc: text, selection: { anchor: Math.min(caret, text.length) }, extensions: [sheafMarkdown({ base: sheafMarkdownLanguage })] }),
   });
   try {
     for (const step of steps) step(view);

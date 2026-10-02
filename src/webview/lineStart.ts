@@ -39,7 +39,7 @@
 import { EditorSelection, EditorState, Extension, SelectionRange } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
 import { blockRangeAt } from './blockModel';
-import { revealField, sourceModeOn } from './livePreview';
+import { activeLines, sourceModeOn } from './livePreview';
 
 /** Blocks whose lines are not prose, so nothing in them opens with a marker. */
 const NOT_PROSE = new Set(['code', 'table', 'frontmatter']);
@@ -72,12 +72,29 @@ export function markerLength(text: string): number {
  * or closing and reopening a run around a line break, is the editor overruling
  * somebody who is looking straight at the markup.
  */
+/*
+ * Three ways a line comes to show its Markdown, and this used to answer two.
+ *
+ * It read `revealField` directly, which covers source mode and an explicit reveal, and missed
+ * reveal-on-line: `revealSyntaxOnLine` opening whatever the selection touches, widened to the
+ * whole block. So with that setting on, eleven guards across three files behaved as though the
+ * delimiters were hidden while they were on the screen, each against its own comment. A space
+ * typed at the inner edge of a visible `**bold**` was moved outside it; a character typed beside
+ * a visible `---` got a new line rather than landing where it was put.
+ *
+ * `activeLines` is the set `livePreview.ts` builds its own `lineActive` from, and every decoration
+ * there asks it before hiding a marker. Asking the same pair makes this answer the question its
+ * name claims and unable to disagree with what is drawn. Both halves are needed: `activeLines`
+ * returns an empty set under source mode, which `lineActive` folds in separately.
+ *
+ * Measured rather than argued. `test/prose/revealOnLine.ts` reads the screen with the caret on each
+ * construct's line and reports all eight revealed: emphasis, inline code, a link, a heading marker,
+ * a hard break, a rule, a callout's marker line and a fence. A comment in `test/prose/alerts.ts`
+ * said reveal-on-line does not open a callout's marker line, and that reading disproves it.
+ */
 export function showingSource(state: EditorState, pos: number): boolean {
   if (sourceModeOn(state)) return true;
-  const reveal = state.field(revealField, false);
-  if (!reveal) return false;
-  const line = state.doc.lineAt(pos);
-  return reveal.from <= line.to && reveal.to >= line.from;
+  return activeLines(state).has(state.doc.lineAt(pos).number);
 }
 
 /** Where the text on the line at `pos` begins, past any marker. */

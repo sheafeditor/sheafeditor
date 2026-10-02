@@ -155,6 +155,34 @@ Two directories follow from that, and which one a thing belongs in is decided by
 
 A check in the host suite enforces the split by bundling the editor and reading what esbuild actually pulled in, so a module reached through three others is caught the same as a direct import.
 
+### What the guarantee does not cover
+
+**The same bytes is a promise about the bundle, and it is narrower than what a reader takes from it.** It says the editor cannot drift between hosts. It says nothing about the code *around* the editor, and the hosts have a lot of that: `src/markdownEditorProvider.ts` on one side, `src/server/` on the other. Two hosts can answer one gesture differently with an identical bundle, and the split check has no opinion about it, because neither half is in the bundle.
+
+That is not hypothetical. Two faults of exactly this shape were found in one evening, and both reach the user's file:
+
+- A write from outside that is merely behind on the line being typed is merged in VS Code and taken whole in a browser tab, so the same gesture keeps the person's saved text in one host and removes it from the file in the other.
+- Pasting an image writes the destination raw in both hosts, and the two sanitise the filename differently, so a name with a space produces valid Markdown in one host and a broken link in the other.
+
+Both were invisible to every check: the window suite only drives the window, a browser probe taken alone only drives the tab, and the bundle check is satisfied in both. What finds them is **asking the same question of both hosts and comparing the answers**, which is a kind of check the repository had none of.
+
+So when a behaviour lives outside the bundle, the surface ledger has two rows and not one. A fact declared on both sides of a host boundary with nothing comparing the two is the same defect shape as a fact declared on both sides of any other boundary, and `IMAGE_FOLDER` being written out twice, with two different sanitisers beside it, is what that looks like.
+
+**A row per host is necessary and not sufficient, and the image paste is the proof.** Both hosts were thought about there and both were written deliberately, so a ledger asking "was the browser host reached" would have two ticks and no finding. What was missing is that nothing compared the two answers. So the second row is not "the browser host does this too" but "the browser host does this, **and here is what it produces**", with the outputs beside each other. Recording that a surface was reached is a different claim from recording that it was reached the same way, and only the second one catches a host pair that disagrees.
+
+One trap in writing such a check, which cost a day's finding on its own. **The browser host holds a document only once something subscribes to `/api/events`.** `GET /edit/<path>` renders the page and opens nothing. A check that drives the tab by fetching pages therefore compares a window holding a live document against a tab holding none, and *every* gesture differs for that reason, which reads exactly like finding a dozen bugs. Assert that the subscription returned 200 and that pushes arrived, rather than that a page was fetched.
+
+### Giving one host a behaviour the other already has
+
+**Read the working implementation before mirroring it, and read the comments around it, not only the code.** Four attempts in one evening failed at this, and each failure was a guard the working side already had, explained in a sentence next to it:
+
+- Applying a three-way merge whenever its result differed from what arrived. The window refuses a merge that resolves to one side, `if (together === mine || together === theirs) return arriving`, because `mergeOutsideChange` returns the person's text *whole* when it refuses. Without that line, every conflict throws the other program's work away.
+- Writing the merged text back without holding a flag across it. `writeMergedIntoDocument` says why: "so the change this causes is not read as news arriving from outside, which would work the merge a second time against itself." Without it the write re-enters the change handler and the file ends up with a line in it twice, which is the one outcome `multipliesALine` exists to refuse.
+- Pushing to the page as well as applying the edit, when the edit path already posts the result of a merge for that exact reason.
+- Deriving a table's room from the padding that the same change moves, which is a cycle.
+
+The shape is always the same: the two implementations differ because one of them learned something, and what it learned is written down beside it rather than in the part that looks like the behaviour. So the order is read the counterpart, read its comments, list its guards, then write. Starting from the behaviour and adding guards as checks catch them works, in the sense that the checks do catch them, and it costs several attempts and risks landing the one nothing happens to check.
+
 ### Capabilities, and why there should be few
 
 A host that cannot do something says so in `init`, and the editor leaves that thing out. The first is the terminal: there is none behind a browser tab, so the right-click menu drops **Send to terminal** rather than offering an item that does nothing when pressed. Never silently degrade applies here as it does in Strict mode.
@@ -226,17 +254,23 @@ Sheaf is a VS Code extension, so there is no dev server, port or database to run
 
   The **control log** says, for every check protecting the feature, what was broken to make it fail, what it said when it failed, and that it was put back. A check nobody has seen fail is a claim, not a check. The failure this catches most often is a check that cannot discriminate: a guard that can only pass or be inconclusive, a probe that reads a rule rather than the drawing, a control whose edit never applied.
 
+  **A control answers "can this fail". It cannot answer "is this looking at the situation at all", and the two get confused in the direction that loses information.** A guard in the browser host was recorded as doing nothing, on the measurement that deleting it produced identical bytes. It is load-bearing: deleting it destroys an outside change, and the reason the first reading said otherwise is that the server holds the copy the guard compares against only once something has subscribed to `/api/events`, which fetching a page does not do. With no copy held the guard cannot fire, so breaking it changes nothing, and **"I broke it and nothing happened" reads identically whether the check is useless or the state it needs is absent.** The conclusion drawn was the opposite of the truth.
+
+  So a control log entry needs the precondition as well as the breakage: not only what was broken and what it said, but what had to be true for it to have anything to say. Where that is cheap to assert, assert it in the check rather than writing it down, which is what a scenario does when it reads back that a cell was open before trusting that nothing moved.
+
+  Three sessions' worth of instances say the same thing from the other side: a prediction about a *shape* is wrong more often than a quotation of the bytes. An offset instead of "one character inserted and nothing else", one `<img>` instead of "is this picture on screen", a count of grids instead of asking the renderer. Where a check can print the two things and their difference rather than a verdict, it should.
+
 - **One feature lands at a time, and one waits for review at a time. Building is not limited.** The first is mechanical: a second branch landing while the first is in review means the branch that was reviewed is not the branch that lands, so the bar binds to nothing. The second is about the reviewers rather than the integrator, because five branches arriving together turn a high bar into a rushed one, and a bar that gets skipped under load is worse than none, since it still gets claimed afterwards.
 
   Nothing here limits work in progress. Parallel building is what produced most of a day's landings against two real costs, and one of those two was an assignment failure rather than a concurrency one: two sessions fixed the same bug unaware of each other, which would have been just as wasteful in series and only slower to find. **Claim the issue before starting.** It costs nothing and it is the thing that actually prevents the duplication.
 
 - **Neither review pass is run by the session that wrote the feature.** Every one of those six defects was found by a session other than its author, and self-review found none of them.
 
-- **The real-window suite is not optional for a change a person can see, and it is the affected areas rather than all of them.** The whole suite is 950 scenarios across 43 areas, about two hours, so requiring it per landing would mean it never runs. The distribution is what makes the rule affordable: eight areas hold 617 scenarios and the other 35 hold 333 between them, 24 of those under eight scenarios each and under a minute.
+- **The real-window suite is not optional for a change a person can see, and it is the affected areas rather than all of them.** The whole suite is 1039 scenarios across 53 areas, about two hours, so requiring it per landing would mean it never runs. The distribution is what makes the rule affordable: eight areas hold 641 scenarios and the other 45 hold 398 between them, 27 of those under eight scenarios each and under a minute. Those counts are printed by `npm run check-scenarios`, which derives them on every landing, so take them from a run rather than from this paragraph: they have drifted twice from being typed here and read later.
 
-  Only four areas are genuinely expensive, `render`, `host`, `prose` and `blocks`, and a change reaching all of them runs them in that order inside its budget and names the rest as waiting for the nightly. Everything else is one to three areas and usually under two minutes, which is cheap enough that not having time is not an argument.
+  The expensive areas are the largest, which are now `table-ops` at 132, `host` at 111, `render` at 81 and `prose` at 72, and a change reaching all of them runs them in that order inside its budget and names the rest as waiting for the nightly. That ordering is by scenario count rather than by measured runtime; `run.json` records a `tookMs` per area, so a claim about which areas are slow should be read off those rather than inferred from these counts. Everything else is one to three areas and usually under two minutes, which is cheap enough that not having time is not an argument.
 
-- **Count an area's scenarios by importing it, never by grepping `id:`.** A tenth of them are built rather than written as a literal property, and whole areas import or re-export their scenarios from elsewhere. Grepping gives 824 against 950 real: `table-ops` reads 64 against 124, `tables-select` 7 against 32, `pointer` 4 against 22, and `reveal-source` 0 against 9, because it re-exports from `render.mjs`. An area that appears to hold no scenarios at all is the tell. `scripts/check-scenarios.mjs` imports each area for this reason and says so.
+- **Count an area's scenarios by importing it, never by grepping `id:`.** A tenth of them are built rather than written as a literal property, and whole areas import or re-export their scenarios from elsewhere. Grepping gives 909 against 1039 real: `table-ops` reads 71 against 132, `tables-select` 7 against 32, `pointer` 4 against 22, and `reveal-source` 0 against 9, because it re-exports from `render.mjs`. An area that appears to hold no scenarios at all is the tell. `scripts/check-scenarios.mjs` imports each area for this reason and says so.
 - **A commit that resolves an issue names it, in the body, on its own line.** The subject stays a sentence about what changed. A commit that resolves no issue names none, and that is a real answer rather than an omission.
 
   Without it the queue cannot be swept. Sweeping means grepping the history for issue identifiers and comparing against what is still open, and work that landed without naming its issue is invisible to that in both directions: the issue sits in the queue until somebody remembers it, and a second session sometimes redoes it. Two commits landed in one hour naming nothing, one of them fixing half of an open High, and both were mine.

@@ -15,7 +15,7 @@ import { syntaxTree } from '@codemirror/language';
 import { undo, redo, undoDepth, redoDepth, insertNewlineAndIndent } from '@codemirror/commands';
 import { insertNewlineContinueMarkup } from '@codemirror/lang-markdown';
 import { formatStateAt, FormatState } from './formatState';
-import { drawKeyHint, hint } from './shortcuts';
+import { drawKeyHint, hint, keyShortcuts } from './shortcuts';
 import { insertPipeTable, insertCsvTable } from './tables';
 import { inlineOnlyEditor } from './cellEditor';
 import { alertMarkerOnText } from './alerts';
@@ -904,6 +904,18 @@ export function insertHardBreak(view: EditorView): boolean {
        * and a revealed block keep the backslash, where the marker is the content.
        */
       if (textStart > line.from && range.from <= textStart) return { range };
+      /*
+       * A line that already ends in a hard break gets no second marker, because a line has one
+       * ending and a second marker cannot add a second break.
+       *
+       * It made things worse rather than merely redundant. Sheaf writes the backslash spelling, so
+       * its own documents collect lines ending in one, and a second backslash is an *escape* rather
+       * than a break: `line\\` parses as `Escape` where `line\` parses as `HardBreak`. So the key
+       * destroyed the break that was there, joined the two lines, and left a literal backslash in the
+       * text. Two spaces then a backslash stays a break and was only redundant, and both are refused
+       * here for the same reason.
+       */
+      if (range.empty && range.from === line.to && /\\$| {2,}$/.test(line.text)) return { range };
       const noTextBefore = range.from === line.from && textStart === line.from;
       const insert = noTextBefore ? '\n' : '\\\n' + cont;
       return { changes: { from: range.from, to: range.to, insert }, range: EditorSelection.cursor(range.from + insert.length) };
@@ -1273,8 +1285,26 @@ const ITEMS: Item[] = [
   { kind: 'button', command: 'strike', icon: 'strike', label: 'Strikethrough', hintKey: 'Mod-Shift-x', run: (v) => toggleWrap(v, '~~'), active: (fs) => fs.strike, enabled: (v) => marksApply(v, '~~') },
   { kind: 'button', command: 'highlight', icon: 'highlight', label: 'Highlight', hintKey: 'Mod-Shift-h', run: (v) => toggleWrap(v, '=='), active: (fs) => fs.highlight, enabled: (v) => marksApply(v, '==') },
   { kind: 'button', command: 'code', icon: 'code', label: 'Inline code', hintKey: 'Mod-e', run: (v) => toggleWrap(v, '`'), active: (fs) => fs.code, enabled: (v) => marksApply(v, '`') },
-  { kind: 'button', command: 'link', icon: 'link', label: 'Link', hintKey: 'Mod-k', run: insertLink, active: (fs) => fs.link },
-  { kind: 'button', command: 'clearFormatting', icon: 'clearFormatting', label: 'Clear formatting', run: clearFormatting },
+  /*
+   * These two were the only buttons with nothing to say about when they apply, and they were the only
+   * two left offered while a table's grid held focus and the other twelve were drawn unavailable.
+   * Pressing Link there wrote a link at the outer caret, which is the first character of a freshly
+   * opened document.
+   *
+   * The correlation is measured and the mechanism is not: I could not establish from reading which
+   * pass disables the other twelve in that state, since the toolbar was being handed a perfectly
+   * ordinary outer view at `{from: 0, to: 0}` and the predicates those twelve carry should all have
+   * said yes. What is certain is that `enabled` is what gives a button a reflector, a button with no
+   * reflector is never brought back up to date, and these two now follow whatever pass the rest do.
+   *
+   * `() => true` is the honest predicate rather than a placeholder. Both commands can act wherever
+   * there is an editor to act on; what they cannot do is act when the toolbar has been handed none,
+   * and `refreshToolbar(undefined)` is what answers that. Saying it here is what puts them on the same
+   * pass as the other twelve, in both directions: unavailable when there is nothing to act on, and
+   * available again the moment there is.
+   */
+  { kind: 'button', command: 'link', icon: 'link', label: 'Link', hintKey: 'Mod-k', run: insertLink, active: (fs) => fs.link, enabled: () => true },
+  { kind: 'button', command: 'clearFormatting', icon: 'clearFormatting', label: 'Clear formatting', run: clearFormatting, enabled: () => true },
   { kind: 'sep' },
   { kind: 'button', command: 'bullet', icon: 'list', label: 'Bullet list', hintKey: 'Mod-Shift-8', run: toggleBullet, active: (fs) => fs.list === 'bullet', enabled: blocksApply },
   { kind: 'button', command: 'ordered', icon: 'listOrdered', label: 'Numbered list', hintKey: 'Mod-Shift-7', run: toggleOrdered, active: (fs) => fs.list === 'ordered', enabled: blocksApply },
@@ -1458,7 +1488,12 @@ function makeDropdown(item: Extract<Item, { kind: 'dropdown' }>, getView: () => 
     label.textContent = opt.label;
     const keys = document.createElement('span');
     keys.className = 'sheaf-tb-menu-key';
-    if (opt.hintKey) drawKeyHint(keys, opt.hintKey);
+    // Drawn for the eye, announced through `aria-keyshortcuts`. See the note in `contextmenu.ts`.
+    keys.setAttribute('aria-hidden', 'true');
+    if (opt.hintKey) {
+      drawKeyHint(keys, opt.hintKey);
+      mi.setAttribute('aria-keyshortcuts', keyShortcuts(opt.hintKey));
+    }
     mi.append(label, keys);
     mi.addEventListener('mousedown', (e) => e.preventDefault());
     mi.addEventListener('click', () => {

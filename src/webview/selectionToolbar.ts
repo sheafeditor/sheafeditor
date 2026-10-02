@@ -24,7 +24,7 @@ import {
   blockKindOf,
   BlockKind,
 } from './toolbar';
-import { COPY_REF_KEY, drawKeyHint, hint, registerShortcutGroup } from './shortcuts';
+import { COPY_REF_KEY, drawKeyHint, hint, keyShortcuts, registerShortcutGroup } from './shortcuts';
 import { floatingIcon, FloatingIcon } from './floatingIcons';
 import { blockRangeAt } from './blockModel';
 import { revealRange, toggleWholeReveal } from './revealBlock';
@@ -277,7 +277,14 @@ function createSelectionToolbar(view: EditorView): TooltipView {
     label.textContent = block.label;
     const keys = doc.createElement('span');
     keys.className = 'sheaf-tb-menu-key';
-    if (block.key) drawKeyHint(keys, block.key);
+    // Drawn for the eye, announced through `aria-keyshortcuts`: inside a button with no
+    // `aria-label` the hint's text joins the accessible name, so the row announced as its label
+    // with the key text run onto the end of it. See the note in `contextmenu.ts`.
+    keys.setAttribute('aria-hidden', 'true');
+    if (block.key) {
+      drawKeyHint(keys, block.key);
+      item.setAttribute('aria-keyshortcuts', keyShortcuts(block.key));
+    }
     item.append(label, keys);
     item.addEventListener('click', () => {
       closeMenu(false);

@@ -336,7 +336,9 @@ export const scenarios: Scenario[] = [
       const opened = m.shown();
       const scroller = document.createElement('div');
       document.body.appendChild(scroller);
-      const scroll = (): void => scroller.dispatchEvent(new G.Event('scroll', { bubbles: false }));
+      const scroll = (): void => {
+        scroller.dispatchEvent(new G.Event('scroll', { bubbles: false }));
+      };
       scroll();
       const survivedItsOwn = m.shown();
       // Past the grace, a scroll is the person moving the page out from under it.

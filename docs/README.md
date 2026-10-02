@@ -24,6 +24,8 @@ Find what you want to do below, and the page that shows you how. If you are new,
 - [Tables](features/tables.md): read and edit a Markdown table as a grid.
 - [Table rows and columns](features/table-commands.md): add, delete, move, sort, align and resize rows and columns.
 - [Selecting and pasting cells](features/table-selection.md): select cells, then copy and paste them, to and from a spreadsheet.
+- [Moving around a table](features/table-navigation.md): move the caret between cells, into a table and out of it, and the keys for every move.
+- [The Markdown under a table](features/table-markdown.md): format text inside a cell, and see the Markdown a cell or a whole table is written in.
 
 ## Work with data in a document
 

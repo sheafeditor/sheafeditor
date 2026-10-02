@@ -777,16 +777,46 @@ const allScenarios = [
   {
     id: 'render.links.e02',
     feature: 'render.links',
-    name: 'A plain click on a link opens nothing and types into its text; a titled link shows no stray space',
+    name: 'A plain click on a titled link opens it, changes nothing, and the title leaves no stray space',
     run: async (S) => {
       await fresh(S, 'link-plain', 'See [the site](https://example.com "Title") today.\n\nNext.\n');
+      /*
+       * Rewritten on 2026-09-30 for the design 0.2.0 shipped, in the changelog's own words: "A
+       * plain click used to put the caret in a link's words and nothing else, so following one
+       * meant knowing to hold Cmd ... Now a click opens it, everywhere a link is drawn". So
+       * `o.length === 0` was asking for the old rule, and this failed against a build doing the
+       * right thing. `docs/features/links.md` says the same twice: "Click the link. Cmd-click does
+       * the same", and its keys table reads "Cmd-click: Follows the link, as a plain click does".
+       *
+       * An earlier changelog entry says prose keeps the modifier. The entry above supersedes it,
+       * and `releaseOnLinkIn` in `linkGesture.ts` is what settles which is current: a plain press
+       * returns a hold and the release opens the address.
+       *
+       * The stray-space half of the old scenario is kept, because it is about something else and
+       * still holds: a link carrying a `"Title"` must not draw a space where the title was.
+       *
+       * **What is asserted is the click's own effect on the file, not the effect of typing after
+       * it.** The old version typed a letter to show the caret had landed in the link's words,
+       * which was asserting the premise of the design that was replaced. Whether a click that
+       * opens a link should also leave the caret ready to type into that link's words is not a
+       * question a scenario should decide, and the page leans the other way: "What you cannot do
+       * with the mouse is pick out a link's words and nothing else." What is not in question is
+       * that opening a link must not change the document.
+       *
+       * The before-state is read from disk rather than written out a second time, so the two
+       * cannot drift apart: a fixture repeated in an assertion is a second copy of the same fact.
+       */
+      const before = await S.disk();
       const r = await line(S, 1);
       await captureOpens(S);
-      await S.caret('site', 2);
-      await S.type('Z');
+      await S.click({ text: 'site', offset: 2 });
+      await S.sleep(400);
       const d = await S.disk();
       const o = await opened(S);
-      return { ok: o.length === 0 && d.includes('[the siZte](https://example.com "Title")') && r === 'See the site today.', detail: `rendered ${show(r)} opened ${show(o)} disk ${show(d)}` };
+      return {
+        ok: o[0] === 'https://example.com' && r === 'See the site today.' && d === before,
+        detail: `rendered ${show(r)} opened ${show(o)} disk ${show(d)}${d === before ? '' : '; the file changed'}`,
+      };
     },
   },
   {
@@ -1347,7 +1377,17 @@ const allScenarios = [
         const off = await line(S, 1);
         await S.caret('after', 2);
         const moved = await line(S, 1);
-        return { ok: on === 'A **bold** one here.' && off === 'A bold one here.', detail: `on ${show(on)} after setting off ${show(off)} after a click elsewhere ${show(moved)}` };
+        /*
+         * `moved` is compared too. It was read and only reported, so the line could have gone back
+         * to showing its markers the moment the caret left it and this still passed. That is the
+         * one of the three readings where a stale decoration would show: `off` is measured with the
+         * caret still on the line, so it cannot distinguish "the setting took effect" from "the
+         * markers are hidden because the caret is here", and moving away is what separates them.
+         */
+        return {
+          ok: on === 'A **bold** one here.' && off === 'A bold one here.' && moved === 'A bold one here.',
+          detail: `on ${show(on)} after setting off ${show(off)} after a click elsewhere ${show(moved)}`,
+        };
       } finally {
         await setSettings(S, { 'sheaf.revealSyntaxOnLine': false });
       }

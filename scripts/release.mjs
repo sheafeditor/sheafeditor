@@ -36,6 +36,7 @@ import { spawnSync } from 'node:child_process';
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { token, repoFromRemote, ciVerdict } from './lib/github.mjs';
 
 const REPO = dirname(dirname(fileURLToPath(import.meta.url)));
 const CUT = process.argv.includes('--cut');
@@ -162,6 +163,54 @@ const onOss = run('git', ['ls-remote', '--tags', 'oss', tag]).out;
 const tagElsewhere = onOss !== '' ? onOss.split(/\s+/)[0] : null;
 say(`  note   ${tag} on oss: ${tagElsewhere ? `${tagElsewhere.slice(0, 7)}, which this will move` : 'not there yet'}`);
 
+// ---- What CI already said about this commit --------------------------------
+
+/*
+ * The gates run below on a clone of this commit, and CI ran them on the same commit when it
+ * was pushed. Asking what CI concluded costs one request and answers a question the local run
+ * cannot: whether these bytes pass on a machine that is not this one.
+ *
+ * It exists because of the day that went into cutting a release that already existed. A
+ * commit was already built, already green and already sitting in the public repository, and
+ * `main` had moved a day past it onto commits whose CI was red. Nothing said so. Each cut
+ * failed on a different runner-only defect, one of them a keyboard chord that only exists on
+ * macOS, and every one of them had been sitting in a red CI run for days where anybody could
+ * have read it.
+ *
+ * Green is required rather than noted, because the whole point of the check half is that a
+ * release is not a thing that gets tried. The three ways of not being green are told apart,
+ * since a red run wants reading, a running one wants a minute, and a commit CI never saw
+ * wants pushing.
+ *
+ * With no token at all this is unchecked rather than failed. Anybody can run `release:check`,
+ * and a contributor who cannot read the private repository's runs is not the person cutting a
+ * release.
+ *
+ * A token that fails to read is the opposite, and the two are deliberately not the same
+ * outcome. On the machine that cuts releases this is the only thing standing between a red
+ * commit and a published one, and the ways it stops working are all quiet: a token expires,
+ * loses a scope, or the workflow is renamed under it. Treated as "unchecked" it would turn
+ * itself off and print a note, which is this morning's failure repeated one level up, so it
+ * fails instead and says what could not be read.
+ */
+say('\n=== CI, on this commit, on a machine that is not this one ===');
+const ci = await ciVerdict(repoFromRemote('origin', REPO), local, token());
+if (ci.state === 'green') check('CI passed on this commit', true, ci.detail);
+else if (ci.state === 'untokened') {
+  say(`  note   CI on this commit is unchecked: ${ci.detail}`);
+  unchecked.push(`whether CI passed on ${local.slice(0, 7)}, which needs a read-only token`);
+} else {
+  const what = {
+    red: 'CI failed on this commit. Read the run before cutting: a runner-only defect fails the release and nothing else.',
+    running: 'CI is still running on this commit. Wait for it rather than cutting alongside it.',
+    none: 'CI never ran on this commit, so nothing has built these bytes but this machine.',
+    unreadable:
+      'There is a token, and it could not read the runs, so this check is not checking anything. ' +
+      'Fix it rather than cutting past it: an expired or unscoped token turns this gate off silently.',
+  }[ci.state];
+  check('CI passed on this commit', false, `${ci.detail}\n         ${what}`);
+}
+
 if (failures.length) {
   process.stderr.write(`\n${failures.length} check(s) failed. Nothing has been pushed.\n`);
   process.exit(1);
@@ -204,9 +253,39 @@ must('Cloning main', 'git', ['clone', '--quiet', '--local', '--no-hardlinks', '-
  * `env:` replaces the environment rather than adding to it, so these three run the way they
  * would in any terminal. See `OWN_ENV`.
  */
+/*
+ * The one variable the clone gets back, read out of the workflow rather than written twice.
+ *
+ * Two gates cannot run in a tree with no sibling checkouts beside it: the private-terms list and the
+ * website's demo page both live outside this repository. A runner is in exactly that position and
+ * `ci.yml` forgives those steps by name; this clone sits in `.claude/scratch/` and is in the same
+ * position, so a check meant to prove what CI will do has to run them the same way. Stripping it
+ * instead made `release:check` fail on a commit whose CI was green, which is the opposite of what
+ * this file is for.
+ *
+ * Taken from the workflow so there is one list. Written out here as well, the two would drift and
+ * the first anybody would know is a release check disagreeing with a release.
+ */
+const forgivenSkips = (() => {
+  const yml = readFileSync(join(REPO, '.github', 'workflows', 'ci.yml'), 'utf8');
+  const m = /^\s*SHEAF_ALLOW_SKIPPED_GATES:\s*(.+?)\s*$/m.exec(yml);
+  if (!m) {
+    process.stderr.write(
+      '\n.github/workflows/ci.yml no longer sets SHEAF_ALLOW_SKIPPED_GATES, so this check cannot run the gates the way CI does.\n' +
+        'Read what the workflow does now and update this script.\n'
+    );
+    process.exit(1);
+  }
+  return m[1].replace(/^['"]|['"]$/g, '');
+})();
+
 const own = (label, args) => {
   say(`\n=== ${label} ===`);
-  const r = spawnSync('npm', args, { cwd: build, stdio: 'inherit', env: OWN_ENV });
+  const r = spawnSync('npm', args, {
+    cwd: build,
+    stdio: 'inherit',
+    env: { ...OWN_ENV, SHEAF_ALLOW_SKIPPED_GATES: forgivenSkips },
+  });
   if (r.status !== 0) {
     process.stderr.write(`\n${label} failed. Nothing has been pushed.\n`);
     process.exit(r.status ?? 1);
@@ -336,8 +415,17 @@ say(`${tag} is pushed. The workflow builds, attests, creates the Release and pub
  * repository serves its runs and their step lists without a token, so the end of the cut can
  * be the run going green rather than the push going out. Nothing after this changes
  * anything, so a rate limit or no network is reported and not treated as a failed release.
+ *
+ * Named by workflow and commit, because the run this cares about is the Release run on the
+ * tree just pushed. Left to take the newest run it took CI on `main`, which the branch push a
+ * few lines above starts at the same moment, and then reported CI's verdict as the release's.
  */
-const watched = spawnSync('node', [join('scripts', 'release-status.mjs'), '--watch'], { cwd: REPO, stdio: 'inherit' });
+const releaseSha = run('git', ['rev-parse', 'HEAD'], releaseTree).out;
+const watched = spawnSync(
+  'node',
+  [join('scripts', 'release-status.mjs'), '--watch', '--for=release.yml', `--sha=${releaseSha}`],
+  { cwd: REPO, stdio: 'inherit' }
+);
 if (watched.status === 0) {
   say('\nPublished. The Marketplace takes a while to index after the workflow goes green.');
 } else {

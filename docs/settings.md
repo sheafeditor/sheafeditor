@@ -6,7 +6,7 @@ order: 20
 
 # Settings
 
-Sheaf has eight settings, and this page has an entry for each, headed by the name you see in the Settings UI. Reach them in the Settings UI under Extensions, Sheaf, or edit `settings.json` directly. Every one applies to editors that are already open, so you can watch a change take effect.
+Sheaf has nine settings, and this page has an entry for each, headed by the name you see in the Settings UI. Reach them in the Settings UI under Extensions, Sheaf, or edit `settings.json` directly. Every one applies to editors that are already open, so you can watch a change take effect.
 
 Keys on this page use Cmd. On Windows and Linux, use Ctrl in its place.
 
@@ -46,6 +46,18 @@ Sets the width of the centered text column. Any CSS length works:
 **Closing a tab within a moment of typing asks whether to save.** The short moment is about three quarters of a second, and closing the tab inside it means VS Code asks about the file before Sheaf has written it. Answer **Save**, or **Cancel** and close again: your typing is in the document either way, and only **Don't Save** throws it away. Pause for a moment before closing and the question never comes.
 
 This is the one place Sheaf's own saving cannot reach. VS Code decides to ask at the instant you press the close button, and an extension hears about that press at the same instant rather than before it, so the file is written a few milliseconds after the question is already on screen. Setting VS Code's own `files.autoSave` avoids it completely, because then the saving happens inside the editor rather than through an extension.
+
+## Line numbers
+
+`sheaf.lineNumbers`, default `false`.
+
+**On:** numbers run down the left of the document, and every table's selector column, the strip down the left of its grid, carries each row's number.
+
+**Off:** neither is drawn. A table's selector column stays as a narrow blank strip, because it is what you click to select a row and drag to move rows, and the corner beside it selects the whole table.
+
+The button at the right of the formatting toolbar turns them on and off, and the choice is remembered for every document you open, the way VS Code remembers its own.
+
+A table's row numbers follow this one setting rather than having one of their own, because wanting numbers down a document and wanting them beside a table's rows are the same preference. They are not the same numbers: a table counts its rows from the first one under its header, so row 4 is the fourth row of data wherever the table sits in the file. That is what a copied reference names whether or not the grid is drawing the digits. See [Tables](features/tables.md) and [Sharing a reference](features/sharing.md).
 
 ## Reveal syntax on the current line
 

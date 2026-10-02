@@ -130,4 +130,47 @@ export const scenarios = [
       };
     },
   },
+  {
+    /*
+     * R4, under the id the quality record has always cited and the suite never held.
+     *
+     * Two halves, and the first is why the fixture is padded the way it is. "Writes only the lines
+     * whose order changed" is checked by sorting both files and comparing: a move that reordered the
+     * lines leaves the same multiset of lines, and a move that rewrote the table does not. Two rows
+     * here are padded by nobody, so a rewrite has somewhere to show. A uniformly padded table cannot
+     * tell a permutation from a repad, which is why reading the row order alone is not enough.
+     *
+     * The second half is the undo depth, which needs the real history: one press of the person's own
+     * Undo key, from outside the grid where they reach it, has to give the file back whole.
+     */
+    id: 'tables.drag-move.undo-takes-back-the-whole-move',
+    feature: 'tables.drag-move',
+    name: 'A move only reorders lines, and one Undo takes the whole move back byte for byte',
+    run: async (S) => {
+      const ragged = '| Fruit | Qty |\n| ----- | --- |\n| apple | 3   |\n|kiwi|12|\n| lime  | 7   |\n|plum|4|';
+      const doc = `Intro paragraph here.\n\n${ragged}\n\nAfter line\n`;
+      await S.fresh('drag-undo-whole-move', doc);
+      await S.sleep(500);
+      await S.click(gutter(0));
+      await S.sleep(200);
+      await S.drag(gutter(0), gutter(3));
+      const moved = await S.disk();
+      const sorted = (t) => t.split('\n').slice().sort().join('\n');
+      const onlyReordered = sorted(moved) === sorted(doc);
+      const order = rowsOnDisk(moved);
+      const want = ['kiwi', 'lime', 'plum', 'apple'];
+      // The person's own Undo, from outside the grid, which is where they press it.
+      await S.caret('After', 2);
+      await S.press('Meta+z');
+      await S.sleep(900);
+      const back = await S.disk();
+      return {
+        ok: onlyReordered && j(order) === j(want) && back === doc,
+        detail:
+          `rows now ${j(order)}, want ${j(want)}; ` +
+          `${onlyReordered ? 'the same lines in a new order' : 'LINES WERE REWRITTEN, not just reordered'}; ` +
+          `one Undo ${back === doc ? 'gave the file back whole' : `left ${show(back)}`}`,
+      };
+    },
+  },
 ];

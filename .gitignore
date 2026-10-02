@@ -1,4 +1,8 @@
-node_modules/
+# No trailing slash: a worktree that shares the main checkout's install does it with a symlink
+# named `node_modules`, and `node_modules/` matches a directory only. So every such worktree had
+# the link show up as untracked, and the host check that every top-level path is decided failed
+# there and nowhere else, naming a path nobody had added on purpose.
+node_modules
 dist/
 media/webview.js
 media/webview.js.map
@@ -27,6 +31,7 @@ test/host.bundle.cjs
 test/prose.bundle.cjs
 test/server.bundle.cjs
 test/browserHost.bundle.cjs
+test/dialect.bundle.cjs
 
 # Real-world corpus, downloaded on demand by scripts/fetch-wild-corpus.mjs.
 sample/wild/files/

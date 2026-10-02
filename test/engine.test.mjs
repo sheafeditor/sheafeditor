@@ -36,15 +36,17 @@ const cases = [
   ['hr',         P + '---',                          (r) => r.counts.hr === 1],
   ['image',      P + '![alt](https://x.com/i.png)',  (r) => r.counts.img === 1],
   ['codeBlock',  P + '```js\nconst x = 1;\n```',     (r) => r.counts.codeBlock >= 1],
-  // Reveal: cursor at pos 2 sits inside the heading, so its `#` marker shows.
-  ['reveal',     '# Title',                          (r) => r.revealedMarksOnActiveLine === 1],
+  // Reveal: cursor at pos 2 sits inside the heading, so its `#` marker shows. The only case
+  // here that turns `revealSyntaxOnLine` on, and it says so rather than inheriting it: the
+  // setting is a module-level variable and this used to read whatever was left there.
+  ['reveal',     '# Title',                          (r) => r.revealedMarksOnActiveLine === 1, { reveal: true }],
 ];
 
 let pass = 0;
-for (const [name, text, check] of cases) {
+for (const [name, text, check, opts] of cases) {
   let ok = false, detail = '';
   try {
-    const r = run(text);
+    const r = run(text, opts);
     ok = check(r);
     detail = JSON.stringify(name === 'reveal' ? { revealed: r.revealedMarksOnActiveLine } : r.counts);
   } catch (e) {

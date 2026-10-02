@@ -11,6 +11,8 @@
  * one space.
  */
 
+import { EditorView } from '@codemirror/view';
+
 import { Scenario, mountProse } from '../harness';
 import { setLivePreviewConfig, setReveal } from '../../src/webview/livePreview';
 
@@ -30,6 +32,36 @@ const texts = (p: P, cls: string): string[] =>
   Array.from(p.view.contentDOM.querySelectorAll(cls)).map((el) => el.textContent ?? '');
 
 const same = (a: string[], b: string[]): boolean => a.length === b.length && a.every((x, i) => x === b[i]);
+
+/** The end of document line `n`, 1-based, which is where End puts the caret. */
+const atEndOfLine = (p: P, n: number): number => p.view.state.doc.line(n).to;
+
+/**
+ * Type `text` at `pos`, one character at a time, through the editor's own input
+ * handlers, which is the path a key press and an input method both take. Falling
+ * through to a plain insert is what CodeMirror itself does when no handler claims
+ * the character, so a rule that is missing shows up as the character landing
+ * exactly where it was typed.
+ */
+function type(p: P, pos: number, text: string): void {
+  p.select(pos);
+  for (const ch of text) {
+    const { state } = p.view;
+    const { from, to } = state.selection.main;
+    let handled = false;
+    for (const handler of state.facet(EditorView.inputHandler)) {
+      if (handler(p.view, from, to, ch, () => state.update({ changes: { from, to, insert: ch } }))) {
+        handled = true;
+        break;
+      }
+    }
+    if (!handled) {
+      p.view.dispatch(
+        state.update({ changes: { from, to, insert: ch }, selection: { anchor: from + ch.length }, userEvent: 'input.type' })
+      );
+    }
+  }
+}
 
 /** Run `fn` with "Reveal Syntax On Line" set to `on`, restoring the test default (on) afterwards. */
 const withRevealOnLine = (on: boolean, fn: () => boolean): boolean => {
@@ -151,6 +183,9 @@ export const scenarios: Scenario[] = [
   {
     name: 'the caret on a line with a break shows the marker it is written with',
     run: () => {
+      // The caret on the line is what this reads, so it needs reveal-on-line rather than
+      // inheriting whatever ran before it. The runner resets the setting for each scenario.
+      setLivePreviewConfig({ revealSyntaxOnLine: true });
       const doc = P0 + 'First line\\\nSecond line\n\nFirst line  \nSecond line';
       const p = mountProse(doc);
       p.select(P0.length + 3);
@@ -248,5 +283,101 @@ export const scenarios: Scenario[] = [
       p.destroy();
       return ok;
     },
+  },
+
+  /*
+   * Typing at the end of a line that already has a break.
+   *
+   * Both markers are drawn as nothing, so the end of the line and the end of the
+   * words are the same place on the screen and End lands past the marker. A
+   * character typed there is on the wrong side of it: the two spaces stop being
+   * trailing, or the backslash turns up in the middle of the sentence, and either
+   * way the break is gone. Worse than it looks, because Sheaf draws source lines
+   * as rows and so still shows two lines; it is everywhere the document is
+   * published that the paragraph silently joins up.
+   *
+   * With reveal-on-line on, the marker is on the screen and the person can see
+   * what they are typing against, so the character lands where they put it. The
+   * last case here is that one, and it is why these drive with it off.
+   */
+  {
+    name: 'typing at the end of a line keeps a backslash break, the form Shift+Enter writes',
+    run: () =>
+      withRevealOnLine(false, () => {
+        const p = mountProse(P0 + 'A line ending in a break\\\nand the line after it.\n');
+        type(p, atEndOfLine(p, 3), 'Z');
+        const ok = p.doc() === P0 + 'A line ending in a breakZ\\\nand the line after it.\n';
+        p.destroy();
+        return ok;
+      }),
+  },
+  {
+    name: 'typing at the end of a line keeps a two-space break',
+    run: () =>
+      withRevealOnLine(false, () => {
+        const p = mountProse(P0 + 'A line ending in a break  \nand the line after it.\n');
+        type(p, atEndOfLine(p, 3), 'Z');
+        const ok = p.doc() === P0 + 'A line ending in a breakZ  \nand the line after it.\n';
+        p.destroy();
+        return ok;
+      }),
+  },
+  {
+    name: 'a second character goes in beside the first, still in front of the marker',
+    run: () =>
+      withRevealOnLine(false, () => {
+        const p = mountProse(P0 + 'A line ending in a break\\\nand the line after it.\n');
+        type(p, atEndOfLine(p, 3), 'Z');
+        type(p, p.view.state.selection.main.head, 'Y');
+        const ok = p.doc() === P0 + 'A line ending in a breakZY\\\nand the line after it.\n';
+        p.destroy();
+        return ok;
+      }),
+  },
+  {
+    name: 'a line with no break takes the character at the end of its words',
+    run: () =>
+      withRevealOnLine(false, () => {
+        const p = mountProse(P0 + 'A line ending in a word\nand the line after it.\n');
+        type(p, atEndOfLine(p, 3), 'Z');
+        const ok = p.doc() === P0 + 'A line ending in a wordZ\nand the line after it.\n';
+        p.destroy();
+        return ok;
+      }),
+  },
+  {
+    name: 'a single trailing space is not a break, so the character lands past it',
+    run: () =>
+      withRevealOnLine(false, () => {
+        const p = mountProse(P0 + 'A line ending in a space \nand the line after it.\n');
+        type(p, atEndOfLine(p, 3), 'Z');
+        const ok = p.doc() === P0 + 'A line ending in a space Z\nand the line after it.\n';
+        p.destroy();
+        return ok;
+      }),
+  },
+  {
+    name: 'a trailing backslash that is not a break is text, so the character lands past it',
+    run: () =>
+      withRevealOnLine(false, () => {
+        // Nothing follows inside the paragraph, so CommonMark makes this a literal
+        // backslash rather than a break, and it is on the screen as one.
+        const p = mountProse(P0 + 'A paragraph ending in a backslash\\\n');
+        type(p, atEndOfLine(p, 3), 'Z');
+        const ok = p.doc() === P0 + 'A paragraph ending in a backslash\\Z\n';
+        p.destroy();
+        return ok;
+      }),
+  },
+  {
+    name: 'with the line showing its source the character lands where it was typed',
+    run: () =>
+      withRevealOnLine(true, () => {
+        const p = mountProse(P0 + 'A line ending in a break\\\nand the line after it.\n');
+        type(p, atEndOfLine(p, 3), 'Z');
+        const ok = p.doc() === P0 + 'A line ending in a break\\Z\nand the line after it.\n';
+        p.destroy();
+        return ok;
+      }),
   },
 ];

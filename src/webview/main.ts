@@ -34,7 +34,7 @@ import { coveredEnd } from './selectionExtent';
 import { buildRef, setCellRefSource, tableRowRef } from './refs';
 import { tableRowRefAt, setTableWidthsHost, handleTableWidths, setTableBoardsHost, handleTableBoards, setMoveToFile, setCreateView } from './tables';
 import { remeasureAllTables } from './columnLayout';
-import { viewBlocks, setDataFileHost, handleDataFile, handleDataFileCreated, moveBlockToFile, createViewOf } from './viewBlock';
+import { viewBlocks, setDataFileHost, handleDataFile, handleDataFileCreated, handleDataFileEdited, moveBlockToFile, createViewOf } from './viewBlock';
 import { minimalEdit, toWebviewText } from '../textSync';
 import { outsideWrite } from './changeMarks';
 
@@ -113,6 +113,7 @@ type ToWebview =
   | { type: 'dataFile'; id?: string; path: string; text?: string; error?: string; notice?: string; missing?: boolean }
   /** The answer to `dataFileCreate`: the path written, or why nothing was. */
   | { type: 'dataFileCreated'; id: string; path?: string; error?: string }
+  | { type: 'dataFileEdited'; id: string; error?: string }
   /** A key that names the selection is waiting on the answer, so it goes at once. */
   | { type: 'getSelection'; id: string }
   | { type: 'toggleSourceMode' };
@@ -252,10 +253,22 @@ function toggleTableOfContents(): void {
  * toolbar draws itself unavailable, which is the ticket's rule that a control unable to reach
  * the current selection says so rather than acting somewhere else.
  */
+/*
+ * And `undefined` while a table's **grid** holds focus with a cell picked, which is a third state
+ * neither branch below covered. A single click on a cell picks it and leaves focus on the grid, with
+ * no cell editor open at all, so `focusedCellEditor()` is null and the outer view was handed over.
+ * The outer caret is then wherever it was last left, which on a freshly opened document is the first
+ * character of the file: measured as `{from: 0, to: 0}` at `"Intro paragr"` while a data cell in a
+ * `csv` block three paragraphs down was the thing on screen. A button pressed there writes into prose
+ * the person is not looking at, which is the same fault one state along from the one the paragraph
+ * above describes.
+ */
 const toolbarTarget = (): EditorView | undefined => {
   const cell = focusedCellEditor();
-  if (!cell) return view;
-  return cell.view ?? undefined;
+  if (cell) return cell.view ?? undefined;
+  const active = document.activeElement;
+  if (active && active.classList.contains('sheaf-table-grid')) return undefined;
+  return view;
 };
 
 /*
@@ -899,6 +912,10 @@ window.addEventListener('message', (e: MessageEvent<ToWebview>) => {
       break;
     case 'dataFileCreated':
       handleDataFileCreated(msg);
+      break;
+
+    case 'dataFileEdited':
+      handleDataFileEdited(msg);
       break;
     case 'setContent':
       setContent(msg.text, msg.tookTypedText === true, msg.ownUndo === true);

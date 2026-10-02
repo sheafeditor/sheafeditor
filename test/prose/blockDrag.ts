@@ -140,8 +140,8 @@ export const scenarios: Scenario[] = [
   },
   ...(
     [
-      ['the window losing focus', (p: Prose) => fire(window, 'blur')],
-      ['the next pointer move with no button held', (p: Prose) => fire(document.body, 'pointermove', { clientY: 5, buttons: 0 })],
+      ['the window losing focus', (_p: Prose) => fire(window, 'blur')],
+      ['the next pointer move with no button held', (_p: Prose) => fire(document.body, 'pointermove', { clientY: 5, buttons: 0 })],
       ['the next mouse move with no button held', (p: Prose) => fire(p.view.contentDOM, 'mousemove', { clientY: 5, buttons: 0 })],
       ['the grip losing pointer capture', (p: Prose) => fire(gripOf(p), 'lostpointercapture')],
     ] as [string, (p: Prose) => void][]

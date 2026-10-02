@@ -567,6 +567,63 @@ const cases = [
     const e = planEdit('a\r\nb\nc\rd\n', 'a\nb\nc\nd!\n', false);
     return e?.start === 8 && e.end === 8 && e.replacement === '!' && e.text === 'a\r\nb\nc\rd!\n';
   }],
+
+  /*
+   * A wide edit, which is the case the one above cannot reach.
+   *
+   * `minimalEdit` is minimal, so a one-word change gives a span a few characters long and
+   * cannot touch an ending it did not match. Change something near the top and something
+   * near the bottom, which is what Replace all does, and the span spans the lines in
+   * between. Every ending inside it used to be rewritten in the one style the host reports
+   * for the whole file, and a line ending has three forms while the host's answer has two.
+   *
+   * So the two shapes with no right answer available to them are a file holding both CRLF
+   * and LF, and a file written entirely in lone carriage returns, which is perfectly
+   * consistent and still cannot be described. The endings in the span being replaced are
+   * the answer, and they are already in hand.
+   *
+   * The uniform files below are the controls: they came out right before this and have to
+   * keep coming out right, because a fix that read the span wrongly would show up there
+   * first.
+   */
+  ['wide edit, mixed file whose first ending is the odd one: the CRLFs inside the span survive', () => {
+    const doc = 'first line\nA plum here.\r\nA pear there.\r\nAnother plum\r\n';
+    // What the host reports: `firstEolIsCrlf` reads the byte before the first newline, and
+    // here that is the odd one out, so the whole file is called LF on the strength of it.
+    const e = planEdit(doc, toWebviewText(doc).replace(/plum/g, 'pear'), false);
+    return e?.text === 'first line\nA pear here.\r\nA pear there.\r\nAnother pear\r\n';
+  }],
+  ['wide edit, lone-CR file: the carriage returns inside the span survive', () => {
+    const doc = 'one\rtwo\rthree\rfour\r';
+    // No newline anywhere, so the host's boolean is false and the file reads as LF. There
+    // is no value it could have held that would have been right.
+    const e = planEdit(doc, 'ONE\ntwo\nthree\nFOUR\n', false);
+    return e?.text === 'ONE\rtwo\rthree\rFOUR\r';
+  }],
+  ['CONTROL: wide edit, uniform CRLF file: every ending stays CRLF', () => {
+    const doc = 'A plum here.\r\nA pear there.\r\nAnother plum\r\n';
+    const e = planEdit(doc, toWebviewText(doc).replace(/plum/g, 'pear'), true);
+    return e?.text === 'A pear here.\r\nA pear there.\r\nAnother pear\r\n';
+  }],
+  ['CONTROL: wide edit, uniform LF file: every ending stays LF', () => {
+    const doc = 'A plum here.\nA pear there.\nAnother plum\n';
+    const e = planEdit(doc, doc.replace(/plum/g, 'pear'), false);
+    return e?.text === 'A pear here.\nA pear there.\nAnother pear\n';
+  }],
+  ['the file decides over the host: told CRLF about an LF file, the LF endings are left alone', () => {
+    // Deliberate, and a change from what this did before: the bytes in the span are a fact
+    // and the host's answer is a summary of the whole file. A summary cannot say which
+    // ending line three had. Nothing the person did not type changes, which is the promise.
+    const doc = 'A plum here.\nA pear there.\nAnother plum\n';
+    const e = planEdit(doc, doc.replace(/plum/g, 'pear'), true);
+    return e?.text === 'A pear here.\nA pear there.\nAnother pear\n';
+  }],
+  ['a line the edit adds takes the host\'s ending, because the span has none to copy', () => {
+    // A pure insertion replaces nothing, so there is no original ending to read and the
+    // host's answer is all there is. This is the case the boolean is still for.
+    const e = planEdit('a\r\nb\r\n', 'a\nnew\nb\n', true);
+    return e?.text === 'a\r\nnew\r\nb\r\n';
+  }],
   // The rest drive the real webview, `src/webview/main.ts`, and hand it the file's own
   // bytes. The host converts line endings before it posts, but the webview must not
   // depend on that: CodeMirror reads a carriage return as a line break whoever sent it.
@@ -674,17 +731,17 @@ const cases = [
    */
   ['lost text: a write made from text read before the keystroke names what it took', () => {
     const typing = recently();
-    typing.record('Some words.\n');
+    typing.record('Some words.\n', 'Some woZZrds.\n');
     return typing.dropped('Some woZZrds.\n', 'Some words.\nAdded by a tool.\n') === 'ZZ';
   }],
   ['lost text: a write that keeps what was typed takes nothing', () => {
     const typing = recently();
-    typing.record('Some words.\n');
+    typing.record('Some words.\n', 'Some woZZrds.\n');
     return typing.dropped('Some woZZrds.\n', 'Some woZZrds.\nAdded by a tool.\n') === undefined;
   }],
   ['lost text: a write to a part of the file the person never touched takes nothing', () => {
     const typing = recently();
-    typing.record('Intro.\n\nSome words.\n');
+    typing.record('Intro.\n\nSome words.\n', 'Intro.\n\nSome woZZrds.\n');
     return typing.dropped('Intro.\n\nSome woZZrds.\n', 'Intro changed.\n\nSome woZZrds.\n') === undefined;
   }],
   ['lost text: a row added, then a write to a row below it, takes nothing', () => {
@@ -701,18 +758,140 @@ const cases = [
     const T = 'Intro\n\n| n | v |\n| - | - |\n| a | 1 |\n| b | 2 |\n| c | 3 |\n| d | 4 |\n\nAfter\n';
     const mine = T.replace('| a | 1 |', '| a | 1 |\n|   |   |');
     const typing = recently();
-    typing.record(T);
+    typing.record(T, mine);
     /*
-     * Against the merged document, which is what the editor ends up holding: nothing is
-     * gone, so nothing is named.
+     * Nothing is gone, so nothing is named, and this now holds for the reason it says rather
+     * than by luck.
      *
-     * Against the write exactly as it arrived, before the merge puts the row back, this
-     * answers `"  |   |\n| "`: the scaffolding of the row, which is not something a person
-     * would recognise as their change even when a row really has gone. That is a separate
-     * defect with an issue of its own and it is not asserted here, because what this check
-     * is for is the path the editor actually takes.
+     * It used to pass because it asked about the *merged* document, where the row really is
+     * still there. Asked about the write exactly as it arrived it answered `"  |   |\n| "`, the
+     * scaffolding of the inserted row, because the run attributed to the person was the whole
+     * span from the insert to the end of the document and the write changed a line inside it.
+     * The run is each edit's own span now, so the inserted row and a write three rows below it
+     * do not overlap, and both readings answer nothing.
      */
     return typing.dropped(mine, mine.replace('| d | 4 |', '| d | 44 |')) === undefined;
+  }],
+  /*
+   * What the notice is allowed to call the person's, which is the question behind both halves of a
+   * defect that looked like one bug about table rows.
+   *
+   * `typed()` used to compare the oldest baseline in its window against the current text and call
+   * the whole difference the person's. Everything below follows from that, and the first case is the
+   * control: with nothing but the person's own edit in the window the answer is exactly what they
+   * typed, so the quoting is right and it is the attribution that goes wrong.
+   */
+  ['lost text, the control: with only the person’s edit in the window, the quote is what they typed', () => {
+    const was = 'Top line.\n\nMiddle line here.\n';
+    const mine = 'Top line.\n\nQMiddle line here.\n';
+    const typing = recently();
+    typing.record(was, mine);
+    // The write is made from a copy read before the Q, so it really does take it.
+    return typing.dropped(mine, was) === 'Q';
+  }],
+  ['lost text: two edits far apart do not make the text between them the person’s', () => {
+    /*
+     * No outside writer at all, and this is the simplest form of it. The person types at the top of
+     * a document and then at the bottom. `minimalEdit` reports one span covering both, so the whole
+     * middle of the document was attributed to them, and a write touching any of it was reported as
+     * taking their work.
+     *
+     * The write has to **replace** text in the gap between the two edits, and getting there took two
+     * corrections that the control found rather than reading.
+     *
+     * A first version had the write take one of the typed letters, and the intersection then
+     * produced the right answer out of the wrong span, so it passed against the defect. A second had
+     * the write insert into the gap, which also passed, and for a reason worth keeping: a pure
+     * insertion has `start === end`, so it removes nothing from the current text and overlaps
+     * nothing, however wide the span called the person's. Only a replacement inside the gap
+     * discriminates.
+     *
+     * Both letters survive the write, and the line between them is rewritten, so the right answer is
+     * that nothing of the person's was taken.
+     */
+    const a = 'Top line.\n\nMiddle line.\n\nBottom line.\n';
+    const b = 'XTop line.\n\nMiddle line.\n\nBottom line.\n';
+    const c = 'XTop line.\n\nMiddle line.\n\nYBottom line.\n';
+    const typing = recently();
+    typing.record(a, b);
+    typing.record(b, c);
+    // Both letters kept, and the line between them replaced rather than added to.
+    const incoming = 'XTop line.\n\nRewritten by a tool.\n\nYBottom line.\n';
+    return typing.dropped(c, incoming) === undefined;
+  }],
+  ['lost text: a change that arrived from outside is not quoted back as the person’s', () => {
+    /*
+     * The worst of it, because here something really did take the person's letter and the notice is
+     * right to appear. It read back 287 characters of a document they never touched: twelve
+     * paragraphs, one of which another program had rewritten, because that paragraph was inside the
+     * span between the window's baseline and the current text.
+     *
+     * No comparison of two texts can say who changed them, which is why the spans are recorded as
+     * each edit happens. Here the rewritten paragraph was never recorded, so it is not the person's,
+     * and the only thing named is the Q.
+     *
+     * The order matters and it is what makes this discriminate. The person has to have edited
+     * *before* the outside change arrives, so that the oldest baseline predates it: recording only
+     * the edit after it leaves the baseline already holding the other program's paragraph, and then
+     * even a baseline comparison answers correctly. A first version did exactly that and passed
+     * against the defect.
+     */
+    const paras = (first) =>
+      `Heading\n\n${Array.from({ length: 12 }, (_, i) => (i === 0 ? first : `Paragraph ${i} as it was.`)).join('\n\n')}`;
+    const t0 = `${paras('Paragraph 0 as it was.')}\n\nMiddle line here.\n`;
+    // The person's first edit, recorded.
+    const t1 = `${paras('Paragraph 0 as it was.')}\n\nMiddle line here. Done.\n`;
+    // Somebody else's change arrives and reaches the webview. Nothing records it.
+    const t2 = `${paras('Paragraph 0 REWRITTEN BY SOMETHING ELSE.')}\n\nMiddle line here. Done.\n`;
+    // The person types the Q.
+    const t3 = `${paras('Paragraph 0 REWRITTEN BY SOMETHING ELSE.')}\n\nQMiddle line here. Done.\n`;
+    // A write from a copy read before the Q, which also rewrites paragraph 0 again.
+    const incoming = `${paras('Paragraph 0 REWRITTEN AGAIN.')}\n\nMiddle line here. Done.\n`;
+    const typing = recently();
+    typing.record(t0, t1);
+    typing.record(t2, t3);
+    const lost = typing.dropped(t3, incoming);
+    /*
+     * Only the Q, and the length is asserted as well as the text. The defect's answer here was 287
+     * characters, so a check that only compared the string would be reporting the same failure in a
+     * form nobody reads: the number is what says how far wrong it was.
+     */
+    return lost === 'Q' && lost.length === 1;
+  }],
+  ['lost text: a change nobody recorded moves the typing rather than losing track of it', () => {
+    /*
+     * The guard against fixing this too hard, and it is here because it caught exactly that.
+     *
+     * Refusing to answer whenever the text is not what the last recorded edit produced was tried
+     * first, on the reasoning that offsets into an unknown document are worthless. It silenced a
+     * real notice. A save participant trimming a trailing space on a line the person is not typing
+     * on reaches the webview without being recorded, so the text differs from the last recorded one
+     * by a character, and a write that then genuinely takes their letter has to be reported. The
+     * host suite's "a save of their own does not throw away the record of what they typed" is where
+     * that showed, and the risk it names is the one that matters: silencing the conflict the notice
+     * exists for is worse than the false positive this issue was filed about.
+     *
+     * So an unrecorded change carries the runs along instead. It adds none, because it is not the
+     * person's, which is the distinction the whole fix rests on.
+     */
+    const typing = recently();
+    typing.record('Start \n\nSome words.\n', 'Start \n\nSome woZZrds.\n');
+    // The save participant trims the first line. Nothing records it, and every offset after it moves.
+    const trimmed = 'Start\n\nSome woZZrds.\n';
+    return typing.dropped(trimmed, 'Start\n\nSome words.\n') === 'ZZ';
+  }],
+  ['lost text: two separate runs both taken are both named, with a mark between them', () => {
+    /*
+     * When a write does take two of the person's runs, both are named. They are not next to each
+     * other in the document, so running them together would read as a phrase nobody wrote.
+     */
+    const a = 'aaa bbb ccc\n';
+    const b = 'Xaaa bbb ccc\n';
+    const c = 'Xaaa bbb cccY\n';
+    const typing = recently();
+    typing.record(a, b);
+    typing.record(b, c);
+    return typing.dropped(c, a) === 'X … Y';
   }],
   ['lost text: a change with no words in it is reported as a change, not quoted back', () => {
     /*
@@ -736,38 +915,38 @@ const cases = [
   ['lost text: typing that has fallen out of the window is no longer something a write can take', () => {
     const clock = { now: 1_000 };
     const typing = recently(clock);
-    typing.record('Some words.\n');
+    typing.record('Some words.\n', 'Some woZZrds.\n');
     clock.now += RECENT_TYPING_MS + 1;
     return typing.dropped('Some woZZrds.\n', 'Some words.\n') === undefined;
   }],
   ['lost text: the keystroke before the window closes still counts', () => {
     const clock = { now: 1_000 };
     const typing = recently(clock);
-    typing.record('Some words.\n');
+    typing.record('Some words.\n', 'Some woZZrds.\n');
     clock.now += RECENT_TYPING_MS - 1;
     return typing.dropped('Some woZZrds.\n', 'Some words.\n') === 'ZZ';
   }],
   ['lost text: only the part of the typing the write did not keep is named', () => {
     const typing = recently();
-    typing.record('Row: \n');
+    typing.record('Row: \n', 'Row: abcd\n');
     // The write kept the line and everything on it up to `ab`, and dropped the rest.
     return typing.dropped('Row: abcd\n', 'Row: ab\n') === 'cd';
   }],
   ['lost text: a write that takes only whitespace says nothing', () => {
     const typing = recently();
-    typing.record('Start\n');
+    typing.record('Start\n', 'Start   \n');
     return typing.dropped('Start   \n', 'Start\n') === undefined;
   }],
   ['lost text: text deleted and then written back by the tool is not something taken', () => {
     const typing = recently();
-    typing.record('Some words.\n');
+    typing.record('Some words.\n', 'Some .\n');
     // The person deleted `words`; the write from outside puts it back. Nothing of
     // theirs is in the file to lose.
     return typing.dropped('Some .\n', 'Some words.\n') === undefined;
   }],
   ['lost text: what is on record is forgotten once a document from outside has landed', () => {
     const typing = recently();
-    typing.record('Some words.\n');
+    typing.record('Some words.\n', 'Some woZZrds.\n');
     typing.forget();
     return typing.dropped('Some woZZrds.\n', 'Some words.\n') === undefined;
   }],

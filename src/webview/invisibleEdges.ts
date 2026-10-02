@@ -42,6 +42,7 @@
 import { EditorSelection, EditorState, findClusterBreak } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
 import { syntaxTree } from '@codemirror/language';
+import { activeLines, sourceModeOn } from './livePreview';
 import { showingSource } from './lineStart';
 
 /**
@@ -429,17 +430,75 @@ function linkLabelAt(state: EditorState, pos: number): { close: string; open: st
 }
 
 /**
+ * The start of the hard-break marker `pos` has landed past, or null.
+ *
+ * A heading's marker is in front of the words and a hard break's is behind them,
+ * so this is the same defect at the other end of the line. Both spellings, a
+ * trailing backslash and two or more trailing spaces, are drawn as nothing, which
+ * puts the end of the words and the end of the line in one place on the screen.
+ * End goes to the end of the line, so a character typed there lands on the far
+ * side of the marker: the spaces stop being trailing, or the backslash turns up in
+ * the middle of the sentence. Either way the break is gone.
+ *
+ * It is quieter than the heading case and worse. Sheaf draws source lines as rows,
+ * so the two lines still look like two lines afterwards, and it is only where the
+ * document is published that a single newline reads as a soft break and the
+ * paragraph joins up. The person who broke it cannot see that they did.
+ *
+ * The parser decides what is a break, so the look-alikes are left alone on their
+ * own: a single trailing space, and a backslash that ends a paragraph rather than
+ * a line inside one, produce no `HardBreak` node and nothing is hidden to land
+ * past.
+ */
+function hardBreakBefore(state: EditorState, pos: number): number | null {
+  const line = state.doc.lineAt(pos);
+  /*
+   * Only where the marker is hidden, and `showingSource` is not that question.
+   *
+   * It answers source mode and an explicit reveal, and it does not answer
+   * reveal-on-line, which is the third way a line comes to show its Markdown.
+   * What decides whether this marker is drawn is `lineActive` in `livePreview.ts`,
+   * which is `sourceModeOn` or the line being in `activeLines`, and that is the
+   * pair asked here so the rule cannot disagree with the drawing. With the
+   * backslash on the screen a person typing past it meant to, and moving their
+   * character would overrule them.
+   *
+   * The handlers below still ask `showingSource`, so under reveal-on-line they
+   * move a space past a `**` the person can see. Same mistake, different rule, and
+   * its own fix: it changes three behaviours that have their own cases.
+   */
+  if (sourceModeOn(state) || activeLines(state).has(line.number)) return null;
+  let at: number | null = null;
+  // The node starts at the marker and runs past the newline it belongs to, so it is
+  // found by overlap with the line rather than by being contained in it.
+  syntaxTree(state).iterate({
+    from: line.from,
+    to: line.to,
+    enter: (node) => {
+      if (node.name !== 'HardBreak') return undefined;
+      if (node.from >= line.from && node.from < pos) at = node.from;
+      return undefined;
+    },
+  });
+  return at;
+}
+
+/**
  * Where text typed at `pos` should go instead, or null when it belongs where it
  * was typed.
  *
  * A link's `](` join takes anything, not only a space: typing a letter there gave
  * `Before altX(http://example.test/i.png) after`, the image gone and its address
- * on the screen. A run's edge only cares about whitespace, because that is the
- * only thing CommonMark refuses to let a delimiter sit against.
+ * on the screen. A hard break's marker takes anything too, for the same reason: it
+ * is the character arriving that destroys the break, whatever the character is. A
+ * run's edge is the one that only cares about whitespace, because that is the only
+ * thing CommonMark refuses to let a delimiter sit against.
  */
 function typedTextBelongsAt(state: EditorState, pos: number, text: string): number | null {
   const join = linkJoin(state, pos)?.typing ?? null;
   if (join !== null) return join;
+  const hardBreak = hardBreakBefore(state, pos);
+  if (hardBreak !== null) return hardBreak;
   return /^\s+$/.test(text) ? (runEdgeOutside(state, pos)?.at ?? null) : null;
 }
 

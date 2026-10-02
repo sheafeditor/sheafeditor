@@ -1143,20 +1143,7 @@ export const scenarios = [
   {
     id: 'host.autosave.e05',
     feature: 'host.autosave',
-    name: 'Typing and closing the tab straight away saves the typing and asks nothing',
-    /*
-     * Marked because it reproduces an open issue character for character, and having no marker
-     * cost more than the bug does: this is the largest area in the suite, so it failed every run
-     * of it, and every reader who met the red traced it back to an already-filed issue before
-     * finding that out. A standing failure with nothing saying it is expected reads as news.
-     */
-    known:
-      'typing and closing the tab straight away raises the save dialog, and this is decided rather than ' +
-      'pending: VS Code asks at the instant of the press and an extension hears about that press at the ' +
-      'same instant, so the flush is 10ms too late however fast it is. Measured: blur and save-start in ' +
-      'the same millisecond, document clean 10ms later, dialog up anyway. The only lever is the 700ms ' +
-      'debounce, and shrinking it buys a narrower window at the cost of writing more often into a file ' +
-      'other tools watch. Said in docs/settings.md instead, with files.autoSave as the way out.',
+    name: 'Typing and closing the tab straight away keeps the typing, whether or not the dialog appears',
     run: async (S) => {
       const path = await S.fresh('as-five', 'Some words.\n');
       await S.caret('words', 2);
@@ -1180,7 +1167,12 @@ export const scenarios = [
         const sb = await save.boundingBox().catch(() => null);
         if (sb) await S.page.mouse.click(sb.x + sb.width / 2, sb.y + sb.height / 2);
       }
-      return { ok: !dlg && d === 'Some woZrds.\n', detail: `dialog ${dlg} ${show(msg.slice(0, 120))}; disk ${show(d)}` };
+      // The dialog cannot be headed off: VS Code raises it in its own process on the same gesture,
+      // before the page's report of lost focus has crossed into the extension host and come back
+      // as a save, and it does not take it down when the document goes clean. So what is checked
+      // is the thing that matters, which is that the typing is on disk either way. Which button
+      // is pressed is e13's and e14's question.
+      return { ok: d === 'Some woZrds.\n', detail: `dialog ${dlg} ${show(msg.slice(0, 120))}; disk ${show(d)}` };
     },
   },
   {
@@ -1254,6 +1246,75 @@ export const scenarios = [
       } finally {
         await resetSettings(S, ['[markdown]']);
       }
+    },
+  },
+  {
+    id: 'host.autosave.e13',
+    feature: 'host.autosave',
+    name: 'After a trailing space is trimmed on save, the file settles instead of being written over and over',
+    run: async (S) => {
+      /*
+       * Sheaf spares the line the caret is on when a save participant trims it, so the space a
+       * person is still typing after survives on screen. That leaves the document holding a space
+       * the file does not have, which is a difference, and a difference is what schedules the next
+       * save. Whether that closes or goes round again is not something to reason about from the
+       * code: it is one sample of the file every few hundred milliseconds with nobody touching the
+       * keyboard, and either the values stop changing or they do not.
+       *
+       * **Measured at `2428958`: it closes.** One value with trimming on, `"Start hello\n"`, and one
+       * with it off, `"Start hello \n"`. So the file is trimmed on disk while the screen keeps the
+       * space, the two disagree by design, and the disagreement is stable rather than churning.
+       *
+       * That answers the question this was written for and rules out the explanation it was written
+       * to test: whatever loses a letter in `e06` is not a file being rewritten on a loop. What is
+       * left is typing into the disagreement, which is a narrower thing and a different scenario.
+       *
+       * It is worth keeping for what it pins down rather than what it found. A stable disagreement
+       * between the screen and the file is the state every later keystroke is applied in, so the day
+       * it starts churning, every timing-shaped failure in this area gets a new explanation.
+       *
+       * The control is the same gesture with trimming off, in the same run. Nothing trims, so
+       * nothing can fight, and the sampling must see exactly one value. Without it a run where the
+       * editor never loaded would report "it settled" for a file nothing ever wrote.
+       */
+      const watch = async (label) => {
+        await S.caret('Start', 2);
+        await S.press('End');
+        await S.type(' hello ');
+        // Well past the 700ms debounce, so a single save has certainly been and gone.
+        const seen = [];
+        for (let i = 0; i < 12; i++) {
+          await S.sleep(400);
+          const d = await S.disk();
+          if (seen[seen.length - 1] !== d) seen.push(d);
+        }
+        return { label, seen };
+      };
+
+      let trimming = null;
+      let control = null;
+      try {
+        await setUser(S, { '[markdown]': { 'files.trimTrailingWhitespace': true } }, 1800);
+        await S.fresh('as-13-trim', 'Start\n');
+        trimming = await watch('trimming on');
+        await resetSettings(S, ['[markdown]']);
+        await S.fresh('as-13-plain', 'Start\n');
+        control = await watch('trimming off');
+      } finally {
+        await resetSettings(S, ['[markdown]']);
+      }
+
+      const detail =
+        `trimming on: ${trimming.seen.length} distinct value(s) over 4.8s ${j(trimming.seen)}; ` +
+        `control, trimming off: ${control.seen.length} ${j(control.seen)}`;
+      // The control first: one value and one only, or the sampling proves nothing.
+      if (control.seen.length !== 1) {
+        return { ok: false, detail: `${detail}. THE CONTROL DID NOT SETTLE either, so this run cannot tell churn from a file nothing wrote.` };
+      }
+      return {
+        ok: trimming.seen.length === 1,
+        detail: trimming.seen.length === 1 ? detail : `${detail}. The file was rewritten ${trimming.seen.length - 1} more time(s) with nobody typing.`,
+      };
     },
   },
   {
@@ -1860,8 +1921,26 @@ export const scenarios = [
   {
     id: 'host.outside-change.e12',
     feature: 'host.outside-change',
-    name: 'A write made from text read before the typing says what it took, and Cmd+Z brings it back',
+    name: 'A write made from text read before the typing keeps the typing, takes the change, and says nothing',
     run: async (S) => {
+      /*
+       * Rewritten for the design decided on 2026-09-26: when a tool writes back a copy of
+       * the file it read before you typed, your text stands. The decision named this scenario as the
+       * one to rewrite, and said what it costs: "e12 is rewritten to expect the letters kept. The
+       * notice becomes rarer." The rewrite reached merge-edges and stopped there, so until now this
+       * still asserted the reversed design and failed against a build doing the right thing.
+       *
+       * It failed by throwing rather than by reporting, which cost the triage twice. `caret('Bottom')`
+       * was how it positioned for Undo, and when the letters are kept the word on screen is
+       * "BoZZttom", which does not contain "Bottom". So the product behaving as decided came back as
+       * `text not found on screen: "Bottom"` and read like an instrument fault. Nothing below looks
+       * for a string that the behaviour under test can remove.
+       *
+       * The control is inside `staleWrite`: it waits for "Top line changed." to appear in the
+       * document and throws if it never does, so a clean result here cannot come from a write that
+       * never reached the editor. Both halves are asserted anyway, because a merge that silently
+       * dropped the tool's change would otherwise read as a pass.
+       */
       const path = await S.fresh('oc-twelve', 'Top line.\n\nBottom line.\n');
       await S.caret('Bottom', 2);
       await S.type('ZZ');
@@ -1869,22 +1948,24 @@ export const scenarios = [
       // already read the file, and writes it back without what was typed since.
       await S.disk(path);
       const said = await staleWrite(S, path, 'Top line changed.\n\nBottom line.\n', 'Top line changed.');
-      const gone = (await S.state()).doc;
-      // Their own Undo key, in the document they are looking at. Nothing has been put
-      // back before this.
-      await S.caret('Bottom', 2);
+      const merged = (await S.state()).doc;
+      // Their own Undo key, in the document they are looking at. What it should reverse is the last
+      // thing they did, which is the two letters, and not the write that arrived from outside.
+      await S.caret('ZZttom', 2);
       await S.press('Meta+z');
       await S.sleep(800);
       const back = (await S.state()).doc;
       const d = await S.disk(path);
       return all(
         {
-          took: !gone.includes('BoZZttom'),
-          said: saidItTook(said, 'ZZ'),
-          back: back.includes('BoZZttom'),
-          file: d.includes('BoZZttom'),
+          kept: merged.includes('BoZZttom'),
+          landed: merged.includes('Top line changed.'),
+          silent: said.length === 0,
+          undoTookTheLetters: !back.includes('BoZZttom') && back.includes('Bottom'),
+          undoKeptTheChange: back.includes('Top line changed.'),
+          file: d === back,
         },
-        { said, gone, back, d }
+        { said, merged, back, d }
       );
     },
   },
@@ -2437,6 +2518,36 @@ export const scenarios = [
         /Visual Studio Code \d+\./.test(text) &&
         buttons.some((b) => b.trim() === 'Copy');
       return { ok, detail: `notification ${JSON.stringify(text)} buttons ${JSON.stringify(buttons)}` };
+    },
+  },
+  {
+    id: 'host.autosave.e14',
+    feature: 'host.autosave',
+    name: 'Cancel on that dialog leaves the tab open with the typing on screen and in the file',
+    run: async (S) => {
+      const path = await S.fresh('as-twelve', 'Some words.\n');
+      await S.caret('words', 2);
+      await S.type('Z');
+      const tab = S.page.locator('.tab.active .tab-actions .action-label').first();
+      const b = await tab.boundingBox();
+      await S.page.mouse.move(b.x + b.width / 2, b.y + b.height / 2);
+      await S.page.mouse.down();
+      await S.sleep(100);
+      await S.page.mouse.up();
+      await S.sleep(900);
+      const dlg = await dialogUp(S);
+      if (!dlg) return { ok: true, detail: 'no dialog appeared, so there was no button to press' };
+      const cancel = S.page.locator('.monaco-dialog-box .monaco-button', { hasText: /^Cancel$/ }).first();
+      const cb = await cancel.boundingBox().catch(() => null);
+      if (!cb) {
+        const labels = await S.page.locator('.monaco-dialog-box .monaco-button').allInnerTexts().catch(() => []);
+        return { ok: false, detail: `no Cancel button; the dialog offers ${j(labels)}` };
+      }
+      await S.page.mouse.click(cb.x + cb.width / 2, cb.y + cb.height / 2);
+      await S.sleep(2200);
+      const d = readFileSync(path, 'utf8');
+      const stillOpen = await S.page.locator('.tab.active').count().catch(() => 0);
+      return { ok: d === 'Some woZrds.\n' && stillOpen > 0, detail: `after Cancel the file holds ${show(d)}; tabs open ${stillOpen}` };
     },
   },
 ];

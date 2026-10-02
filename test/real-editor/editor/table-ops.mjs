@@ -5,6 +5,7 @@ import { writeFileSync } from 'node:fs';
 import { show } from '../session.mjs';
 
 const inDoc = (t) => `Intro text.\n\n${t}\n\nAfter text.\n`;
+const j = (x) => JSON.stringify(x);
 const RAGGED = '| Fruit | Qty |\n|---|:-:|\n| apple | 3 |\n| kiwi fruit |12|';
 const PADDED = '| Fruit      | Qty |\n| ---------- | :-: |\n| apple      | 3   |\n| kiwi fruit | 12  |';
 const T4 = '| n | v |\n| - | - |\n| a | 1 |\n| b | 2 |\n| c | 3 |\n| d | 4 |';
@@ -904,6 +905,44 @@ export const scenarios = [
       return all({ marked: JSON.stringify(m) === JSON.stringify([['c|33']]), faded: faded.length === 0, redraw: redraw.length === 0 }, { m, faded, redraw });
     },
   },
+  {
+    /*
+     * R6: a table that flashes and fades is byte for byte the table that arrived.
+     *
+     * The requirement is on this feature rather than on every drawn thing because the flash is
+     * triggered by a file change arriving from outside, which is the one path where an incoming read
+     * and an outgoing write are interleaved. A flash that wrote would not look like a flash bug; it
+     * would look like the merge losing a letter and be chased somewhere else for a day.
+     *
+     * Two things make the reading worth taking. The arriving table is padded by nobody on two rows,
+     * so a write would be visible: a table Sheaf itself would have padded the same way cannot tell a
+     * write from a no-write. And the mark is asserted before the file is read, because a run where
+     * nothing flashed reports no write for the wrong reason.
+     */
+    id: 'tables.change-flash.e10',
+    feature: 'tables.change-flash',
+    name: 'A table that flashes and fades is byte for byte the table that arrived',
+    run: async (S) => {
+      const ragged = '| n | v |\n| - | - |\n|a|1|\n| b   | 2 |\n|c|3|';
+      const path = await S.fresh('flash-writes-nothing', inDoc(ragged));
+      await S.click({ text: 'Intro', offset: 2 });
+      const arriving = inDoc(ragged.replace('|c|3|', '|c|33|'));
+      const m = await outside(S, path, arriving, '|c|33|');
+      const flashed = m.flat().length > 0;
+      await S.sleep(3000); // Past the tint's own life, so this is the file after the fade.
+      const faded = (await marks(S)).flat().length === 0;
+      const d = await S.disk(path);
+      // Returned rather than run through `all`, which prints nothing on a pass: the measurement is
+      // the point of this scenario and a reader should see it without having to break it first.
+      return {
+        ok: flashed && faded && d === arriving,
+        detail:
+          `${flashed ? `marked ${JSON.stringify(m.flat())}` : 'NOTHING FLASHED, so this says nothing about a flash'}; ` +
+          `${faded ? 'the mark faded' : 'THE MARK IS STILL THERE'}; ` +
+          `the file is ${show(d)}, and ${arriving === d ? 'that is what arrived' : `what arrived was ${show(arriving)}`}`,
+      };
+    },
+  },
 
   // ---- tables.outside-merge -------------------------------------------------
   {
@@ -1054,19 +1093,25 @@ export const scenarios = [
       const shown = (await S.state()).doc;
       const d = await diskAfterMerge(S, path, stale);
       /*
-       * The notice is read and printed rather than asserted, which is the one place in this
-       * group it is not, and the reason is a defect of its own rather than a doubt about the
-       * rule.
+       * The notice is asserted now, and for most of this scenario's life it was printed instead.
        *
-       * Run on its own this says nothing, which is right. Run with the rest of the area it
-       * sometimes says `your last change is gone: "1"` while `| a | 1 |` is still in the
-       * document above, so it names as lost a character that is there. That is a false
-       * report and it has its own issue. Asserting no notice here would make this scenario
-       * fail for that bug instead of for its own subject, and asserting that a notice may
-       * appear would be asserting the bug.
+       * Run on its own it said nothing, which is right. Run with the rest of the area it sometimes
+       * said `your last change is gone: "1"` while `| a | 1 |` was still in the document above, so
+       * it named as lost a character that was there. Asserting silence would have failed this
+       * scenario for that defect rather than for its own subject, and asserting a notice might
+       * appear would have been asserting the defect, so it was printed and left alone.
+       *
+       * The cause was that the run of text called the person's was worked out by comparing the
+       * oldest text in the window against the current one, which attributes every change in between
+       * to them: the inserted row, and anything that reached the webview without being recorded.
+       * The write's own change to a row below fell inside that span. Each edit's span is recorded as
+       * it happens now, so an inserted row and a write three rows below it do not overlap.
+       *
+       * Which also removes the order-dependence this used to have, because what decided it was
+       * whether the person's own save had landed first and therefore what the window's oldest text
+       * held. There is no window-wide span any more for that to widen.
        */
-      if (said.length) console.log(`    (stray notice, a known gap: ${JSON.stringify(said)})`);
-      return all({ kept: shown === both, onDisk: d === both }, { said, shown, d });
+      return all({ kept: shown === both, said: said.length === 0, onDisk: d === both }, { said, shown, d });
     },
   },
   {
@@ -1161,6 +1206,167 @@ export const scenarios = [
     },
   },
 
+  {
+    /*
+     * A column's name survives a paste over the whole column, by the route that had no guard.
+     *
+     * `tables.selection` R6 keeps a column's name when the column is emptied, and gives the reason: the
+     * rest of the document reaches that column by its name. A reason about a dependency governs every way
+     * of emptying it, and the requirement named one gesture, so the guard was written once for that
+     * gesture. There turned out to be two more ways in, with two different answers:
+     *
+     *   Backspace over a whole column      `clearSelected` filters `r === -1` through `columnKeepsItsName`
+     *   one value pasted over a whole column  the fill loop has its own `r >= 0 || !wholeCol(c)`
+     *   a block pasted over a whole column    `pasteGrid` starts at the selection's top-left, and for a
+     *                                         whole column that is `r1 === -1`, the header. No guard.
+     *
+     * So the same rule had two implementations and one hole. Both cases are driven here, the guarded one
+     * as the control, because a case over Backspace alone passes today and would keep passing with this
+     * path broken, which is how the hole survived.
+     */
+    id: 'tables.paste-range.e18',
+    feature: 'tables.paste-range',
+    name: 'A block pasted over a whole column keeps the column\u2019s name, as clearing it does',
+    run: async (S) => {
+      const before = 'Intro.\n\n| Name  | Qty |\n| ----- | --- |\n| fig   | 7   |\n| apple | 12  |\n\nAfter.\n';
+      await S.fresh('paste-over-column', before);
+      await S.sleep(900);
+      // A block whose top cell is empty: `tables.paste-range` R4 keeps an empty cell as an empty cell, so
+      // this is the value that reaches the header and would take the name with it.
+      await S.clipboard.write('\npear\nplum');
+      // The whole column, picked by its header, which is what puts `r1` at -1.
+      await S.click({ sel: '.sheaf-table-grid thead th[data-c="0"]' });
+      await S.sleep(300);
+      const picked = await S.eval(() => document.querySelectorAll('.sheaf-table [data-c="0"].is-sel').length);
+      await S.press('Meta+v');
+      await S.sleep(600);
+      const afterPaste = await S.disk();
+      /*
+       * The block has to land whole as well as leave the name alone. Starting it at the body's first row
+       * means it reaches one row further than it used to, and `tables.clipboard` R2 says a paste grows the
+       * table by the rows it needs, so losing the last value would be a new fault traded for the old one.
+       */
+      const rows = afterPaste.split('\n').filter((l) => l.startsWith('|'));
+      return {
+        ok:
+          picked >= 3 &&
+          afterPaste.includes('| Name') &&
+          afterPaste.includes('pear') &&
+          afterPaste.includes('plum') &&
+          // The other column is untouched: the paste was one column wide.
+          afterPaste.includes('Qty'),
+        detail:
+          `the header click marked ${picked} cells; the header is ` +
+          `${afterPaste.includes('| Name') ? 'still Name' : 'LOST'}; pear ${afterPaste.includes('pear')}, ` +
+          `plum ${afterPaste.includes('plum')}; table ${JSON.stringify(rows)}`,
+      };
+    },
+  },
+  {
+    /*
+     * A reading, because it decides whether a filed issue is real: are the bar's commands reachable
+     * without the bar?
+     *
+     * Three were reported as living only on the bar, which matters because the bar sits at a long table's
+     * top and is off screen for a reader in the middle of it. Two of the three are in `menuActions`, which
+     * feeds the bar and the right-click menu alike, and are *disabled* when there is nothing for them to do
+     * (`Reset column widths` needs a pinned width, `Clear column alignment` needs an alignment). The bar is
+     * built with `keepDisabled` true and the menu with it false, so comparing the two lists on a table with
+     * neither set compares a list that shows inapplicable items against one that drops them.
+     *
+     * So this sets both, and then asks the menu. If they appear, "only on the bar" is wrong.
+     */
+    id: 'tables.rows-columns.e19',
+    feature: 'tables.rows-columns',
+    name: 'Reading: with a width and an alignment set, the right-click menu offers Reset column widths and Clear column alignment',
+    run: async (S) => {
+      await S.fresh('bar-only-commands', 'Intro.\n\n| Name | Qty |\n| ---- | --- |\n| fig  | 7   |\n| plum | 12  |\n\nAfter.\n');
+      await S.sleep(1000);
+      const itemsOn = async (sel) => {
+        await S.rightClick({ sel });
+        await S.sleep(300);
+        const got = await S.eval(() =>
+          [...document.querySelectorAll('.sheaf-ctx-menu:not([hidden]) .sheaf-ctx-item')].map((b) => (b.textContent ?? '').trim())
+        );
+        await S.page.keyboard.press('Escape');
+        await S.sleep(200);
+        return got;
+      };
+      const before = await itemsOn('.sheaf-table tbody td[data-c="1"]');
+      // Give the table an alignment and a pinned width, which is what makes those two applicable.
+      await S.hover({ sel: '.sheaf-table-grid thead th[data-c="1"]' });
+      await S.sleep(300);
+      await S.click({ sel: '.sheaf-table-grid thead th[data-c="1"] > .sheaf-table-chevron' });
+      await S.sleep(300);
+      await S.click({ sel: '.sheaf-table-menu-item[data-cmd="col.alignRight"]' });
+      await S.sleep(600);
+      await S.click({ sel: '.sheaf-table-ctrl[data-cmd="overflow"]' });
+      await S.sleep(300);
+      await S.click({ sel: '.sheaf-table-menu-item[data-cmd="table.fitColumns"]' });
+      await S.sleep(800);
+      const after = await itemsOn('.sheaf-table tbody td[data-c="1"]');
+      const has = (list, text) => list.some((l) => l.toLowerCase().includes(text));
+      return {
+        ok:
+          // The precondition: the menu has to have opened at all, both times.
+          before.length > 0 &&
+          after.length > 0 &&
+          // Absent when inapplicable, present once applicable. Both halves, or this says nothing.
+          !has(before, 'reset column widths') &&
+          !has(before, 'clear column alignment') &&
+          has(after, 'reset column widths') &&
+          has(after, 'clear column alignment'),
+        detail:
+          `with neither set, the menu holds ${before.length} items and offers reset ` +
+          `${has(before, 'reset column widths')} / clear-align ${has(before, 'clear column alignment')}; ` +
+          `after setting an alignment and fitting the columns it holds ${after.length} and offers reset ` +
+          `${has(after, 'reset column widths')} / clear-align ${has(after, 'clear column alignment')}`,
+      };
+    },
+  },
+  /*
+   * Two gaps found by auditing what these requirements promise against what their cases drive.
+   *
+   * `tables.rows-columns` R1 names eight commands and no case drove `Insert column left`; its mirror
+   * `Insert column right` was driven and the two are not the same code path, since one lands at the
+   * target's index and the other past it. And `tables.sort` R4 promises ordering "a CSV field by its
+   * exact text" while every case under it was a pipe table, so the promise about CSV rested on the pipe
+   * implementation happening to be shared.
+   */
+  menuCase(
+    'tables.rows-columns.e20',
+    'Insert column left on the second column puts the new one before it, and the rows keep their values',
+    'insert-col-left',
+    inDoc('| a | b | c |\n| - | - | - |\n| 1 | 2 | 3 |'),
+    cell(0, 1),
+    'Insert column left',
+    // The new column pads to five, because its delimiter needs three dashes and the column is at least
+    // as wide as its delimiter. My first expectation here said `|  |` and the product was right.
+    inDoc('| a |     | b | c |\n| - | --- | - | - |\n| 1 |     | 2 | 3 |')
+  ),
+  {
+    /*
+     * Sorting a CSV block, which R4 promises and no case drove. A csv block is not a pipe table: its
+     * fields are commas and its first line is its header, so an ordering that works on one is a claim
+     * about the other until it is driven.
+     */
+    id: 'tables.sort.e18',
+    feature: 'tables.sort',
+    name: 'Sort A to Z on a csv block orders its fields by their exact text and rewrites the block',
+    run: async (S) => {
+      const before = 'Intro.\n\n```csv\nk,v\na,pear\nb,apple\nc,fig\n```\n\nAfter.\n';
+      await S.fresh('sort-csv', before);
+      await S.sleep(1000);
+      await menuOn(S, cell(0, 1), 'Sort column A to Z');
+      await S.sleep(600);
+      const after = await S.disk();
+      const want = 'Intro.\n\n```csv\nk,v\nb,apple\nc,fig\na,pear\n```\n\nAfter.\n';
+      return {
+        ok: after === want,
+        detail: after === want ? 'apple, fig, pear' : `got ${JSON.stringify(after)} wanted ${JSON.stringify(want)}`,
+      };
+    },
+  },
   // ---- tables.paste-range ---------------------------------------------------
   {
     id: 'tables.paste-range.e01',
@@ -1493,6 +1699,132 @@ export const scenarios = [
       return {
         ok: wroteAtOnce && clearWroteToo && undoTookOne && ended === afterUndo,
         detail: `written when the alignment was made ${wroteAtOnce}; Clear wrote too ${clearWroteToo}; one Cmd+Z left the file at the aligned text ${undoTookOne}; after leaving the table ${ended === afterUndo ? 'unchanged' : j(ended)}`,
+      };
+    },
+  },
+
+  // ---- the table's own bar, and its overflow ---------------------------------
+  /*
+   * Four requirements promise their commands on "the right-click menu, the table's bar and its
+   * overflow", and until now no case anywhere named the bar or the overflow as the surface it drove.
+   * The reason the bar could not be found in the stylesheet is that it is called neither: it is
+   * `.sheaf-table-controls`, holding `.sheaf-table-ctrl` buttons that each carry `data-cmd`.
+   *
+   * The surfaces, by selector, since the requirements name three and the code says four:
+   *
+   *   the bar          `.sheaf-table-controls`, six buttons of its own, all `data-cmd`
+   *   its overflow     `.sheaf-table-ctrl[data-cmd="overflow"]`, opening the full action list
+   *   the chevron      `.sheaf-table-chevron` on a column header or a row number
+   *   the right-click  the same action list from `menuActions`
+   *
+   * **Only six commands have a button on the bar**: insert and delete for a row, the same for a
+   * column. Sorting, aligning and moving are not on the bar itself and are reached from its overflow,
+   * which is a narrower claim than those four requirements make.
+   *
+   * Why two scenarios and not a case per surface per operation. The overflow, the chevron and the
+   * right-click all open the list `menuActions` builds, through one `openMenu`, so a command chosen on
+   * any of them runs the identical function and sixteen cases would be driving one code path through
+   * four doors. What is worth driving separately is the bar's own buttons, which are a different code
+   * path, and the overflow's list holding the commands those requirements promise there.
+   */
+  {
+    id: 'tables.rows-columns.e21',
+    feature: 'tables.rows-columns',
+    name: 'The table’s own bar: its six buttons are the row and column ones, and they act on the chosen cell',
+    run: async (S) => {
+      const path = await S.fresh('bar-own-buttons', inDoc(T4));
+      await S.sleep(800);
+      // A cell is chosen first, because a bar button acts on the active cell and that starts on the
+      // header row. Choosing one is what a person does and it keeps this scenario off that question.
+      await S.click(cell(1, 0));
+      await S.sleep(300);
+      await S.hover({ sel: '.sheaf-table-grid table' });
+      await S.sleep(400);
+      const buttons = await S.eval(() =>
+        [...document.querySelectorAll('.sheaf-table-controls .sheaf-table-ctrl')].map((b) => b.dataset.cmd ?? '?')
+      );
+      const start = await S.disk(path);
+      await S.click({ sel: '.sheaf-table-controls .sheaf-table-ctrl[data-cmd="row.insertBelow"]' });
+      await S.sleep(700);
+      const rowAdded = await S.disk(path);
+      // No menu anywhere in this: the gesture is a button on the bar, and saying so is the whole
+      // point, since every one of these commands is reachable four ways.
+      const menuOpened = await S.eval(() => !!document.querySelector('.sheaf-table-menu, .sheaf-ctx-menu:not([hidden])'));
+      await S.click({ sel: '.sheaf-table-controls .sheaf-table-ctrl[data-cmd="col.insertRight"]' });
+      await S.sleep(700);
+      await leave(S);
+      const both = await S.disk(path);
+      const lines = (t) => t.split('\n').filter((l) => l.startsWith('|'));
+      const cells = (l) => l.split('|').slice(1, -1).length;
+      const rowsBefore = lines(start).length;
+      const rowsAfter = lines(rowAdded).length;
+      const colsAfter = lines(both).map(cells);
+      /*
+       * The six are asserted present and the three this is really about are asserted absent, rather
+       * than the whole list being pinned. A pinned list would fail the day a button is added, which is
+       * not what this is checking; what it is checking is that sorting, aligning and moving are not on
+       * the bar itself, which is narrower than the four requirements claim. The list is printed either
+       * way, so a reader sees what the bar actually held.
+       */
+      const own = ['row.insertAbove', 'row.insertBelow', 'row.delete', 'col.insertLeft', 'col.insertRight', 'col.delete'];
+      const notOnIt = ['col.sortAsc', 'col.sortDesc', 'col.alignRight', 'row.moveDown', 'col.moveRight'];
+      return {
+        ok:
+          own.every((c) => buttons.includes(c)) &&
+          buttons.includes('overflow') &&
+          notOnIt.every((c) => !buttons.includes(c)) &&
+          rowsAfter === rowsBefore + 1 &&
+          !menuOpened &&
+          colsAfter.every((n) => n === 3),
+        detail:
+          `the bar holds ${j(buttons)}; its own six present ${own.every((c) => buttons.includes(c))}, ` +
+          `and sorting, aligning and moving ${notOnIt.some((c) => buttons.includes(c)) ? 'ARE ON IT TOO' : 'are not, so they are reached from the overflow'}; ` +
+          `pipe lines ${rowsBefore} then ${rowsAfter} after Insert row below; ` +
+          `${menuOpened ? 'A MENU WAS OPEN, so this was not a bar gesture' : 'no menu opened, so the bar is the surface that acted'}; ` +
+          `cells per line after Insert column right ${j(colsAfter)}; file ${j(both)}`,
+      };
+    },
+  },
+  {
+    id: 'tables.sort.e19',
+    feature: 'tables.sort',
+    name: 'The bar’s overflow offers moving, sorting and aligning, and one chosen there acts on the table',
+    run: async (S) => {
+      const path = await S.fresh('bar-overflow-list', inDoc(T4));
+      await S.sleep(800);
+      // A column is picked by its header, so the column-scoped commands apply to a known column.
+      await S.click({ sel: '.sheaf-table-grid thead th[data-c="0"]' });
+      await S.sleep(300);
+      await S.hover({ sel: '.sheaf-table-grid table' });
+      await S.sleep(400);
+      await S.click({ sel: '.sheaf-table-controls .sheaf-table-ctrl[data-cmd="overflow"]' });
+      await S.sleep(400);
+      const items = await S.eval(() => [...document.querySelectorAll('.sheaf-table-menu-item')].map((b) => b.dataset.cmd ?? b.textContent.trim()));
+      const start = await S.disk(path);
+      await S.click({ sel: '.sheaf-table-menu-item[data-cmd="col.sortDesc"]' });
+      await S.sleep(800);
+      await leave(S);
+      const after = await S.disk(path);
+      const firstCells = after
+        .split('\n')
+        .filter((l) => l.startsWith('|') && !/^\|[\s:-]+\|/.test(l))
+        .slice(1)
+        .map((l) => l.split('|')[1].trim());
+      const has = (cmd) => items.includes(cmd);
+      return {
+        ok:
+          items.length > 0 &&
+          has('row.moveDown') &&
+          has('col.sortAsc') &&
+          has('col.sortDesc') &&
+          has('col.alignRight') &&
+          j(firstCells) === j(['d', 'c', 'b', 'a']) &&
+          after !== start,
+        detail:
+          `the overflow opened ${items.length} items; it offers Move row down ${has('row.moveDown')}, ` +
+          `Sort A to Z ${has('col.sortAsc')}, Sort Z to A ${has('col.sortDesc')}, Align column right ${has('col.alignRight')}; ` +
+          `after Sort column Z to A the first column reads ${j(firstCells)}` +
+          `${after === start ? ' AND THE FILE DID NOT CHANGE, so nothing was chosen' : ''}; items ${j(items)}`,
       };
     },
   },

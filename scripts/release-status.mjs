@@ -1,8 +1,11 @@
 /*
  * What the public repository's workflows have done lately, and where a failed one stopped.
  *
- *   npm run release:status            the last few runs
- *   npm run release:status -- --watch poll until the newest run finishes
+ *   npm run release:status                       the last few runs
+ *   npm run release:status -- --watch            poll until the newest run finishes
+ *   npm run release:status -- --watch --for=release.yml --sha=<sha>
+ *                                                poll until *that* workflow's run on that
+ *                                                commit finishes, waiting for it to appear
  *
  * Runs and step lists need no credentials, because `sheafeditor/sheafeditor` is public and
  * GitHub serves both to anyone who asks. Log text is the one thing it does not, and knowing
@@ -18,48 +21,61 @@
  * Unauthenticated requests are rate limited per address, around sixty an hour. `--watch`
  * polls every twenty seconds, which is three an minute of a run that takes two or three, so
  * a couple of watched releases in an hour is fine and a loop left running all day is not.
+ *
+ * ## Why `--for` and `--sha` exist
+ *
+ * `--watch` used to take the newest run of any workflow. A tag push starts the Release run,
+ * and pushing the branch alongside it starts CI, so the newest run at that moment was
+ * routinely CI on `main`. The end of a cut then watched CI, printed CI's verdict, and called
+ * it the release's. That is a wrong answer rather than a slow one, and at the one moment
+ * somebody is deciding whether a release went out.
+ *
+ * Naming the workflow and the commit also fixes what the old behaviour was working around.
+ * A run does not exist the instant a tag is pushed; GitHub takes a few seconds to create it.
+ * Taking the newest run meant never having to wait for the right one to appear, at the cost
+ * of watching the wrong one. This waits instead, and says that it is waiting.
  */
 
-import { spawnSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { token } from './lib/github.mjs';
 
-const REPO = 'sheafeditor/sheafeditor';
-const API = `https://api.github.com/repos/${REPO}`;
 const WATCH = process.argv.includes('--watch');
+/** Which workflow to watch, and on which commit. Both optional; see the note above. */
+const arg = (name) => process.argv.find((a) => a.startsWith(`--${name}=`))?.split('=')[1];
+const FOR = arg('for');
+const SHA = arg('sha');
+/*
+ * Which repository, because there are two and they run different workflows.
+ *
+ * The public one is the default and is what a release is watched on. CI on the development
+ * branch runs on the private one, so reading a CI result means naming it, and without this the
+ * reader silently answered about the wrong repository: asked for a CI run on a commit that only
+ * exists on `sheaf-dev`, it listed the public repository's runs and said "No workflow runs",
+ * which reads as CI not having started rather than as having looked in the wrong place.
+ *
+ * `--repo=owner/name` says it outright. The private one needs a token, since nothing about it
+ * is public, and a 404 from the API is what a token without access to it looks like.
+ */
+const REPO = arg('repo') ?? 'sheafeditor/sheafeditor';
+const API = `https://api.github.com/repos/${REPO}`;
 /** Twenty seconds: a release run takes two to three minutes, so this is a dozen or so asks. */
 const EVERY_MS = 20_000;
+/** How long to wait for a named run to appear before giving up on it existing. */
+const APPEAR_MS = 3 * 60 * 1000;
 
 const say = (line) => process.stdout.write(`${line}\n`);
+/** Elapsed, so a line that repeats still carries something that changed. */
+const since = (t0) => {
+  const s = Math.round((Date.now() - t0) / 1000);
+  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m${String(s % 60).padStart(2, '0')}s`;
+};
 
 /*
  * A read-only token, if there is one, for the single thing a public repository does not
- * serve: the log text of a step.
+ * serve: the log text of a step. Everything else here works without one and keeps working
+ * without one, which is the point: a missing token costs the log and nothing else.
  *
- * Everything else here works without one and keeps working without one, which is the point:
- * a missing token costs the log and nothing else. Read from the login keychain rather than a
- * file, so it is never plain text on disk and never in a shell's history, and from `GH_TOKEN`
- * first for a runner or a one-off.
- *
- * It is never printed, never written anywhere, and never passed to a subprocess. The only
- * thing it is used for is an Authorization header on api.github.com.
+ * The lookup itself is in `lib/github.mjs`, because the release command needs the same one.
  */
-function token() {
-  if (process.env.GH_TOKEN) return process.env.GH_TOKEN.trim();
-  // A file outside every repository, readable only by its owner. Tried before the keychain
-  // because it works without one and needs no `security` invocation.
-  try {
-    const t = readFileSync(join(process.env.HOME ?? '', '.config', 'sheaf', 'actions-token'), 'utf8').trim();
-    if (t) return t;
-  } catch {
-    // No file: fall through to the keychain, then to no token at all.
-  }
-  const r = spawnSync('security', ['find-generic-password', '-a', 'sheaf', '-s', 'sheaf-actions-token', '-w'], {
-    encoding: 'utf8',
-  });
-  return r.status === 0 && r.stdout.trim() ? r.stdout.trim() : null;
-}
-
 const TOKEN = token();
 
 /**
@@ -126,28 +142,81 @@ async function whereItStopped(run) {
 }
 
 const { workflow_runs: runs } = await get('/actions/runs?per_page=5');
-if (!runs?.length) {
+if (!runs?.length && !WATCH) {
   say('No workflow runs.');
   process.exit(0);
 }
 
 say(`${REPO}\n`);
-for (const run of runs) say(`  ${line(run)}`);
+for (const run of runs ?? []) say(`  ${line(run)}`);
 
-const newest = runs[0];
-if (newest.status === 'completed' && newest.conclusion !== 'success') await whereItStopped(newest);
+/**
+ * The run this is about: the one `--for` and `--sha` name, or the newest when they say nothing.
+ *
+ * Asked of the named workflow's own endpoint rather than filtered out of the general list,
+ * because the general list is five runs deep and the run being waited for can be pushed off
+ * it by anything else that starts.
+ */
+async function subject() {
+  if (!FOR) return runs?.[0];
+  const q = SHA ? `?head_sha=${SHA}&per_page=5` : '?per_page=5';
+  const { workflow_runs: mine } = await get(`/actions/workflows/${FOR}/runs${q}`);
+  return mine?.[0];
+}
 
-if (!WATCH || newest.status === 'completed') process.exit(0);
+let watched = await subject();
 
-say(`\nWatching ${newest.name} on ${newest.head_sha.slice(0, 7)}, asking every ${EVERY_MS / 1000}s.`);
+/*
+ * Wait for it to appear, when it was named and is not there yet.
+ *
+ * A tag push does not create its run instantly, so the seconds after a cut are exactly when
+ * this is asked and exactly when the answer is "no such run". Silence here reads as a release
+ * that never started, so it says what it is waiting for and how long it has been waiting.
+ */
+if (WATCH && FOR && !watched) {
+  const began = Date.now();
+  say(`\nWaiting for ${FOR}${SHA ? ` on ${SHA.slice(0, 7)}` : ''} to appear.`);
+  while (!watched) {
+    if (Date.now() - began > APPEAR_MS) {
+      say(`  no run of ${FOR}${SHA ? ` on ${SHA.slice(0, 7)}` : ''} after ${since(began)}. It may not have been triggered.`);
+      process.exit(1);
+    }
+    await new Promise((r) => setTimeout(r, EVERY_MS));
+    say(`  still no run, ${since(began)} so far`);
+    watched = await subject();
+  }
+}
+
+if (!watched) {
+  say('No workflow runs.');
+  process.exit(0);
+}
+
+if (watched.status === 'completed' && watched.conclusion !== 'success') await whereItStopped(watched);
+
+if (!WATCH || watched.status === 'completed') process.exit(0);
+
+/*
+ * One line per change of state, plus elapsed, rather than one line per poll.
+ *
+ * It used to print the status every twenty seconds, so watching a three-minute run produced
+ * a column of twenty identical `in_progress` lines that said nothing and hid the one line
+ * that mattered. What a person watching wants to know is what is being watched, that it is
+ * still going, and how long it has been going, so that is what each line carries.
+ */
+const began = Date.now();
+say(`\nWatching ${watched.name} on ${watched.head_sha.slice(0, 7)}, asking every ${EVERY_MS / 1000}s.`);
+say(`  ${watched.html_url}`);
+let was = watched.status;
 for (;;) {
   await new Promise((r) => setTimeout(r, EVERY_MS));
-  const run = await get(`/actions/runs/${newest.id}`);
+  const run = await get(`/actions/runs/${watched.id}`);
   if (run.status !== 'completed') {
-    say(`  ${run.status}`);
+    if (run.status !== was) say(`  ${run.status}, ${since(began)} in`);
+    was = run.status;
     continue;
   }
-  say(`\n${run.name}: ${run.conclusion}`);
+  say(`\n${run.name} on ${run.head_sha.slice(0, 7)}: ${run.conclusion} after ${since(began)}`);
   if (run.conclusion !== 'success') await whereItStopped(run);
   process.exit(run.conclusion === 'success' ? 0 : 1);
 }

@@ -12,14 +12,13 @@ import { EditorSelection, EditorState, Extension, Transaction } from '@codemirro
 import { history, undo, redo, undoDepth, redoDepth, isolateHistory } from '@codemirror/commands';
 import { minimalEdit } from '../src/textSync';
 import { EditorView } from '@codemirror/view';
-import { markdown } from '@codemirror/lang-markdown';
 import { languages } from '@codemirror/language-data';
 import { forceParsing } from '@codemirror/language';
 import { SearchQuery, setSearchQuery, closeSearchPanel, openSearchPanel } from '@codemirror/search';
 import { livePreview, revealField, setLivePreviewConfig } from '../src/webview/livePreview';
 import { revealBlockAt } from '../src/webview/revealBlock';
 import { searchSupport, findNextMatch, findPreviousMatch } from '../src/webview/search';
-import { sheafMarkdownLanguage } from '../src/webview/markdownDialect';
+import { sheafMarkdown, sheafMarkdownLanguage } from '../src/webview/markdownDialect';
 import {
   tables,
   tableRowSourceAt,
@@ -34,6 +33,8 @@ import {
   tableWidthKey,
   estimateTableHeight,
   estimateColumnWidths,
+  gridToTSV,
+  parseClipboardGrid,
   delimitedParseCount,
   tableSearchPasses,
   dataBlocks,
@@ -47,7 +48,7 @@ import {
 import { setBlockRefHost, setCellRefSource, tableRowRef } from '../src/webview/refs';
 import { tableIcon } from '../src/webview/tableIcons';
 import { setResourceBaseUri } from '../src/webview/images';
-import { createViewOf, viewBlocks, setDataFileHost, handleDataFile, handleDataFileCreated, moveBlockToFile } from '../src/webview/viewBlock';
+import { createViewOf, viewBlocks, setDataFileHost, handleDataFile, handleDataFileCreated, handleDataFileEdited, moveBlockToFile } from '../src/webview/viewBlock';
 import { notionTheme } from '../src/webview/theme';
 import { mountContextMenu } from '../src/webview/contextmenu';
 import { hint } from '../src/webview/shortcuts';
@@ -76,7 +77,7 @@ function mkView(doc: string, extra: Extension[] = []): EditorView {
       doc,
       extensions: [
         // The webview's own dialect, so the suite parses what the editor parses.
-        markdown({ base: sheafMarkdownLanguage, codeLanguages: languages }),
+        sheafMarkdown({ base: sheafMarkdownLanguage, codeLanguages: languages }),
         revealField,
         livePreview,
         tables,
@@ -1002,6 +1003,94 @@ export async function runAll(): Promise<Result[]> {
   );
 
   results.push(
+    await scenario('a copied range survives the round trip when a cell holds a tab, a newline or a quote', () => {
+      /*
+       * The clipboard's plain text for a range is tab-separated, so a cell holding a tab needs
+       * quoting or the range comes out ragged: a two-column table wrote three fields on one line,
+       * and a spreadsheet given that gains a column on that row and shifts everything right of it
+       * down the sheet.
+       *
+       * **Checked as a round trip through the reader rather than against a literal string.** The
+       * two halves have to agree, and that is the actual requirement: Sheaf could already read a
+       * quoted range and could not write one, so the round trip it exists for lost the shape it was
+       * given. A string assertion would pass on any self-consistent convention, including one no
+       * spreadsheet writes.
+       *
+       * The last case is the subtle one. `parseClipboardGrid` chooses between a quoted reading and
+       * a plain split **per range**, on whether any cell holds a tab or a newline. So once one cell
+       * is quoted the whole range is read by the quoting parser, and a cell that merely starts with
+       * a quote would then be read as quoted and lose it. `27" monitor` is safe either way, because
+       * a quote only opens a field at its start.
+       */
+      const cases: [string, string[][]][] = [
+        ['a tab in a cell', [['a', 'b'], ['x\ty', '2'], ['plain', '3']]],
+        ['a newline in a cell', [['a', 'b'], ['two\nlines', '2']]],
+        ['a quoted value beside a tab', [['a', 'b'], ['"quoted"', 'x\ty']]],
+        ['an inch mark beside a tab', [['a', 'b'], ['27" monitor', 'x\ty']]],
+        ['a quote inside a tabbed cell', [['a', 'b'], ['say "hi"\tnow', '2']]],
+        ['nothing needing quotes', [['a', 'b'], ['plain', '3']]],
+      ];
+      const wrong: string[] = [];
+      for (const [name, grid] of cases) {
+        const back = parseClipboardGrid(gridToTSV(grid));
+        if (JSON.stringify(back) !== JSON.stringify(grid)) wrong.push(`${name}: ${JSON.stringify(back)}`);
+      }
+      // And a grid needing nothing is written exactly as before, so the common case is untouched.
+      const plainOut = gridToTSV([['a', 'b'], ['c', 'd']]);
+      if (plainOut !== 'a\tb\nc\td') wrong.push(`a plain grid was rewritten as ${JSON.stringify(plainOut)}`);
+      // Every line has the same field count once quoted, which is what a spreadsheet needs.
+      const ragged = gridToTSV([['a', 'b'], ['x\ty', '2']]).split('\n').map((l) => parseClipboardGrid(l)[0].length);
+      if (new Set(ragged).size !== 1) wrong.push(`fields per line ${JSON.stringify(ragged)}`);
+      return wrong.length === 0;
+    })
+  );
+
+  results.push(
+    await scenario('the space held for a table counts the scrollbar it will get, and only when it gets one', () => {
+      /*
+       * A table too wide for its room gets a horizontal scrollbar, and the scrollbar takes real
+       * height inside the frame. Left out of the estimate, everything under a wide table sat that
+       * far too high until the table drew, and then dropped.
+       *
+       * **Checked here with the height handed in rather than in a window, and that is the point.**
+       * Whether a scrollbar reserves any room is a setting of the machine, not of the build: a Mac
+       * with overlay scrollbars reserves none, and the same fixture on the same build read 15px
+       * this morning and 0px an hour later with nothing in the build changing. So a rendered check
+       * cannot distinguish this fix from its absence on a host that reserves nothing, which is
+       * every host here today. The arithmetic can be checked anywhere.
+       *
+       * Three columns of sentences in a 300px room, which cannot hold them at their floors, so the
+       * division scrolls. The control is the same table in a room wide enough to fit: it gets no
+       * scrollbar and must not be given room for one, because a table that fits held 15px too tall
+       * trades this jump for the same jump in the commoner direction.
+       */
+      /*
+       * Twelve short columns, which cannot fit a 300px room even at their floors, so the division
+       * really overflows. Three columns of sentences were tried first and do not: the allocator
+       * squeezes them to the room and the table fits, correctly, with no scrollbar to count. A
+       * table only gets one when its floors will not fit, which is many columns rather than long
+       * ones.
+       */
+      const headers = Array.from({ length: 12 }, (_, i) => `H${i + 1}`);
+      const rows = [Array.from({ length: 12 }, () => 'value'), Array.from({ length: 12 }, () => 'other')];
+      const tight = { pane: 300 } as const;
+      const scrollsWithout = estimateTableHeight(headers, rows, null, { ...tight, scrollbar: 0 });
+      const scrollsWith = estimateTableHeight(headers, rows, null, { ...tight, scrollbar: 12 });
+      // Wide enough that twelve columns fit comfortably, so nothing scrolls and nothing is counted.
+      const fitsWithout = estimateTableHeight(headers, rows, null, { pane: 3000, scrollbar: 0 });
+      const fitsWith = estimateTableHeight(headers, rows, null, { pane: 3000, scrollbar: 12 });
+      // Widths from a table drawn wider than the room it is estimated in count one too.
+      const laidWide = estimateTableHeight(headers, rows, Array.from({ length: 12 }, () => 100), { pane: 300, scrollbar: 12 });
+      const laidWideNone = estimateTableHeight(headers, rows, Array.from({ length: 12 }, () => 100), { pane: 300, scrollbar: 0 });
+      return (
+        scrollsWith - scrollsWithout === 12 &&
+        fitsWith - fitsWithout === 0 &&
+        laidWide - laidWideNone === 12
+      );
+    })
+  );
+
+  results.push(
     await scenario('a table whose height changes after it is drawn asks the editor to measure it again', async () => {
       const Real = G.ResizeObserver;
       const watching: { cb: () => void; el: Element }[] = [];
@@ -1185,7 +1274,7 @@ export async function runAll(): Promise<Result[]> {
       const h = mount(P + '```csv\nrole,qty\nSystems technician,3\n```');
       h.dblclick(h.cell(0, 0)!);
       const field = h.input(0, 0);
-      if (!(field instanceof G.HTMLTextAreaElement)) return false;
+      if (!field || !(field instanceof G.HTMLTextAreaElement)) return false;
       field.setSelectionRange(8, 18);
       h.dblclick(field);
       const same = h.input(0, 0) === field;
@@ -2582,6 +2671,17 @@ export async function runAll(): Promise<Result[]> {
 
   results.push(
     await scenario('typing under a table starts its own paragraph', () => {
+      /*
+       * And this is the scenario to find from the symptom, which is that typing on the empty line
+       * under a table appears one line lower than the caret was. That reads as a fault and has been
+       * filed as one. It is the file below being correct: the blank line has to stay between the
+       * table and the new text, so the text is one line further down than where the caret sat, and
+       * a file with the text on the caret's old line and a blank line above it is the same file.
+       *
+       * Measured with `keepTypingOutOfTableBelow` removed: the text lands on the caret's own line,
+       * the table's range grows to include it, and the grid stops being drawn. So the cost of this
+       * behaviour is a line number and the cost of dropping it is the table.
+       */
       const T = RAGGED + '\n\n### Next';
       const at = RAGGED.length + 1; // the blank line under the table
       const h = mount(T);
@@ -3843,7 +3943,7 @@ export async function runAll(): Promise<Result[]> {
       return (
         seen.join(' ') === '5,0 5,2 29,2 -1,2 -1,0 29,2' &&
         afterPageUp !== '29,2' &&
-        afterPageUp?.endsWith(',2') &&
+        afterPageUp?.endsWith(',2') === true &&
         extended === 3 &&
         stillInGrid
       );
@@ -5238,6 +5338,44 @@ export async function runAll(): Promise<Result[]> {
   );
 
   results.push(
+    await scenario("the table's menu draws the axis keys on the picked axis's commands and on nothing else", () => {
+      /*
+       * The menu computed the hint and threw it away, so the one pair of keys a table promises was
+       * announced in the right-click menu and nowhere else. The axis pair needs announcing more than
+       * most, because the selection is what decides which of four things the key does.
+       *
+       * The precondition is the whole of the difficulty: `keyed` is null unless the selection covers
+       * whole rows or whole columns, so a plain cell click shows no hints at all and a check written
+       * that way passes while reading nothing. The row is picked by its number, and the assertion
+       * below requires the row hint to be *present*, so an absent precondition fails rather than
+       * reading as the feature being off.
+       */
+      const h = mount(P + '| n | v |\n| - | - |\n| a | 1 |\n| b | 2 |\n');
+      h.mousedown(gutter(h, 1));
+      mouseup();
+      h.ctrl('overflow')!.click();
+      const row = document.querySelector('.sheaf-table-menu .sheaf-table-menu-item[data-cmd="row.insertBelow"]');
+      const col = document.querySelector('.sheaf-table-menu .sheaf-table-menu-item[data-cmd="col.insertRight"]');
+      const keyOf = (el: Element | null) => el?.querySelector('.sheaf-table-menu-key');
+      const rowKey = keyOf(row);
+      // The hint the picked axis earns, drawn, and announced the way every other menu announces one.
+      const drawn = !!rowKey && (rowKey.textContent ?? '').length > 0;
+      const hidden = rowKey?.getAttribute('aria-hidden') === 'true';
+      const announced = (row?.getAttribute('aria-keyshortcuts') ?? '').length > 0;
+      // The other axis is not the picked one, so its commands carry none, and no empty box either.
+      const otherAxisBare = !!col && !keyOf(col) && !col.hasAttribute('aria-keyshortcuts');
+      // Nothing anywhere in the menu is an empty hint, which is what a careless draw would leave.
+      const noEmpty = Array.from(document.querySelectorAll('.sheaf-table-menu .sheaf-table-menu-key')).every(
+        (k) => (k.textContent ?? '').trim().length > 0
+      );
+      // The label is still the label: the accessible name must not have the keys run onto it.
+      const labelClean = !((row?.textContent ?? '').includes('=') && !(row?.querySelector('span')?.textContent ?? '').length);
+      h.view.destroy();
+      return drawn && hidden && announced && otherAxisBare && noEmpty && labelClean;
+    })
+  );
+
+  results.push(
     await scenario('a menu takes the keyboard, the arrows move in it, and Escape puts the caret back in the cell', () => {
       const h = mount(P + '| a | b |\n| - | - |\n| 1 | 2 |\n| 3 | 4 |');
       h.mousedown(h.cell(0, 0)!);
@@ -5311,7 +5449,9 @@ export async function runAll(): Promise<Result[]> {
       (h.root()!.querySelector('thead th[data-c="2"] > .sheaf-table-chevron') as HTMLButtonElement).click();
       // The whole column is now picked, and the menu names it in the singular.
       const picked = h.root()!.querySelectorAll('[data-c="2"].is-sel').length;
-      const label = document.querySelector('.sheaf-table-menu .sheaf-table-menu-item[data-cmd="col.delete"]')!.textContent;
+      // The label apart from the row, which also holds the icon and, now a whole column is picked, the
+      // axis key hint. Reading the row's whole text made this assert the label plus the keys.
+      const label = document.querySelector('.sheaf-table-menu .sheaf-table-menu-item[data-cmd="col.delete"] .sheaf-table-menu-label')!.textContent;
       (document.querySelector('.sheaf-table-menu .sheaf-table-menu-item[data-cmd="col.delete"]') as HTMLButtonElement).click();
       const doc = await h.commit();
       h.view.destroy();
@@ -8050,7 +8190,7 @@ export async function runAll(): Promise<Result[]> {
   );
 
   results.push(
-    await scenario('the table menu shows the insert and delete keys only when they would act', () => {
+    await scenario('the right-click menu shows the insert and delete keys only when they would act', () => {
       const h = mount(AX);
       mountContextMenu(h.view.dom, { getView: () => h.view, getFileName: () => 'doc.md', copyToClipboard: () => {} });
       const keysIn = (target: Element): Record<string, string> => {
@@ -9084,9 +9224,6 @@ function clickHead(h: Harness, col: number, kind: 'sort' | 'filter', shiftKey = 
   return true;
 }
 
-/** The query's body lines of the first view in `doc`. */
-const viewBody = (doc: string): string => doc.slice(doc.indexOf('```view\n') + 8, doc.lastIndexOf('\n```'));
-
 /** Open the header menu for `col`, set its operator and value, and press Apply. */
 function filterBy(h: Harness, col: number, op: string, value: string): boolean {
   if (!clickHead(h, col, 'filter')) return false;
@@ -9544,6 +9681,105 @@ async function viewEditChecks(): Promise<Result[]> {
   );
 
   results.push(
+    await scenario('a host that refuses an edit leaves the view saying so, with the typed value still on screen', async () => {
+      /*
+       * The edit is applied to the grid before any answer arrives, because the person is typing
+       * into it. So the answer decides whether they are told, not whether the edit happens, and the
+       * value stays: taking it away would destroy work and is a product call rather than this one's.
+       */
+      const sent: any[] = [];
+      setDataFileHost((m) => sent.push(m));
+      const doc = P + '```view\nfrom: data/tasks.csv\n```\n';
+      const h = mount(doc, [viewBlocks]);
+      handleDataFile({ path: 'data/tasks.csv', text: 'feature,status\nSearch,Open\nExport,Done\n' });
+      await tick();
+      // A value the cell does not already hold, or nothing is posted: the sender returns early when
+      // the rewritten file matches the one it has, and both of these checks failed together on that.
+      typeInView(h, 1, 1, 'Open');
+      const edit = sent.find((m) => m.type === 'dataFileEdit');
+      handleDataFileEdited({ id: edit?.id, error: 'data/tasks.csv was not written: a browser tab cannot write other files beside it.' });
+      await tick();
+      const said = viewMessages(h);
+      const shown = viewCell(h, 1, 1)?.textContent;
+      h.view.destroy();
+      setDataFileHost(null);
+      return !!edit?.id && said.some((line) => line.includes('was not written')) && shown === 'Open';
+    })
+  );
+
+  results.push(
+    await scenario('CONTROL: an edit the host answers without an error leaves no notice, so the notice above is the refusal', async () => {
+      const sent: any[] = [];
+      setDataFileHost((m) => sent.push(m));
+      const doc = P + '```view\nfrom: data/tasks.csv\n```\n';
+      const h = mount(doc, [viewBlocks]);
+      handleDataFile({ path: 'data/tasks.csv', text: 'feature,status\nSearch,Open\nExport,Done\n' });
+      await tick();
+      typeInView(h, 1, 1, 'Open');
+      const edit = sent.find((m) => m.type === 'dataFileEdit');
+      handleDataFileEdited({ id: edit?.id });
+      await tick();
+      const said = viewMessages(h);
+      h.view.destroy();
+      setDataFileHost(null);
+      return !!edit?.id && !said.some((line) => line.includes('was not written'));
+    })
+  );
+
+  results.push(
+    await scenario('a host that never answers an edit leaves the same notice, so silence is told apart from success', async () => {
+      /*
+       * The other way an edit fails to land, and the one with no host behind it. A host that refuses
+       * says so and the check above reads its words; a host that drops the message says nothing, and
+       * before the answer existed those two were the same event. The timer is what closes that, and
+       * it was the one path here with no check on it.
+       *
+       * The wait is shortened through `setDataFileHost`'s second argument, which exists for this.
+       */
+      const sent: any[] = [];
+      setDataFileHost((m) => sent.push(m), 20);
+      const doc = P + '```view\nfrom: data/tasks.csv\n```\n';
+      const h = mount(doc, [viewBlocks]);
+      handleDataFile({ path: 'data/tasks.csv', text: 'feature,status\nSearch,Open\nExport,Done\n' });
+      await tick();
+      typeInView(h, 1, 1, 'Open');
+      const edit = sent.find((m) => m.type === 'dataFileEdit');
+      // Nothing answers. Past the wait, the editor should have said so by itself.
+      await new Promise((r) => setTimeout(r, 60));
+      const said = viewMessages(h);
+      const shown = viewCell(h, 1, 1)?.textContent;
+      h.view.destroy();
+      setDataFileHost(null);
+      return !!edit?.id && said.some((line) => line.includes('Nothing came back from the host')) && shown === 'Open';
+    })
+  );
+
+  results.push(
+    await scenario('CONTROL: an answer that arrives before the wait leaves no notice, so the sentence above is the silence and not the short wait', async () => {
+      /*
+       * The control the timeout check needs, and it is not the no-error control above: that one
+       * never starts a timer worth watching. This one runs the same shortened wait with an answer
+       * arriving inside it, so a notice appearing here would mean the sentence comes from the wait
+       * being short rather than from nothing coming back.
+       */
+      const sent: any[] = [];
+      setDataFileHost((m) => sent.push(m), 20);
+      const doc = P + '```view\nfrom: data/tasks.csv\n```\n';
+      const h = mount(doc, [viewBlocks]);
+      handleDataFile({ path: 'data/tasks.csv', text: 'feature,status\nSearch,Open\nExport,Done\n' });
+      await tick();
+      typeInView(h, 1, 1, 'Open');
+      const edit = sent.find((m) => m.type === 'dataFileEdit');
+      handleDataFileEdited({ id: edit?.id });
+      await new Promise((r) => setTimeout(r, 60));
+      const said = viewMessages(h);
+      h.view.destroy();
+      setDataFileHost(null);
+      return !!edit?.id && !said.some((line) => line.includes('Nothing came back from the host'));
+    })
+  );
+
+  results.push(
     await scenario('a cell edited in a view of a file goes to the host as the file with one field changed, and shows at once', async () => {
       const sent: any[] = [];
       setDataFileHost((m) => sent.push(m));
@@ -9735,7 +9971,7 @@ async function viewEditChecks(): Promise<Result[]> {
     await scenario('the formatting toolbar is not offered for a selection that ends in a named CSV block or a view, as for any grid', async () => {
       // Loaded here rather than at the top: importing it first changes the order this suite's
       // modules initialise in, and the cell editors are built on that order.
-      const { toolbarEligible } = await import('../src/webview/floatingState');
+      const { toolbarEligible } = await import('../src/webview/floatingState.js');
       // A selection from the prose into the block: formatting would write markers into its data.
       const eligible = (fence: string): boolean => {
         const doc = `Some prose here.\n\n\`\`\`${fence}\na,b\n1,2\n\`\`\`\n`;
@@ -10189,12 +10425,16 @@ const tableNote = (h: Harness): string => {
 
 /** The items of the table menu standing open, by their text. */
 const tableMenuItems = (): string[] =>
-  Array.from(document.querySelectorAll('.sheaf-table-menu .sheaf-table-menu-item')).map((b) => b.textContent ?? '');
+  Array.from(document.querySelectorAll('.sheaf-table-menu .sheaf-table-menu-item')).map(
+    // The label, not the row: a row carries an icon and may carry a key hint, so its whole text is the
+    // label with the keys run onto it.
+    (b) => b.querySelector('.sheaf-table-menu-label')?.textContent ?? b.textContent ?? ''
+  );
 
 /** Pick the item reading `label` in the table menu standing open, and let what it opens arrive. */
 async function pickTableMenu(label: string): Promise<boolean> {
   const item = Array.from(document.querySelectorAll<HTMLElement>('.sheaf-table-menu .sheaf-table-menu-item')).find(
-    (b) => b.textContent === label
+    (b) => (b.querySelector('.sheaf-table-menu-label')?.textContent ?? b.textContent) === label
   );
   if (!item || item.getAttribute('aria-disabled') === 'true') return false;
   item.click();

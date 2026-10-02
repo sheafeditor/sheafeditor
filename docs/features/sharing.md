@@ -30,7 +30,7 @@ Cmd+Shift+Alt+R, the key earlier versions used, still works.
 
 ## Copy a reference to table cells
 
-Pick cells, a row or a column in the grid and copy a reference the same way. A table reference names the lines and then the cells, by the column's header and the row number beside the grid, and quotes what you picked:
+Pick cells, a row or a column in the grid and copy a reference the same way. A table reference names the lines and then the cells, by the column's header and the row's number counting from the first row under the header, and quotes what you picked:
 
 | You picked | The reference starts | It quotes |
 |---|---|---|
@@ -40,7 +40,7 @@ Pick cells, a row or a column in the grid and copy a reference the same way. A t
 | A column, by its header | `notes.md:12-40 (Beacon column)` | That column's cells |
 | The whole table | `notes.md:12-40` | The table from the file |
 
-A column with an empty header is named by its position, as in `column 3`. The row numbers are the ones the grid shows, which count from the first row under the header, so row 4 is the fourth row of data wherever the table sits in the file.
+A column with an empty header is named by its position, as in `column 3`. Row numbers count from the first row under the header, whether or not the grid is drawing them, so row 4 is the fourth row of data wherever the table sits in the file.
 
 ## Send a reference to the terminal
 

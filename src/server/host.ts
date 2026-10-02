@@ -83,6 +83,33 @@ type Decision =
    * question still open, and gets asked again instead of being done.
    */
   | 'known-gap'
+  /**
+   * The editor never sends it to this host, because a capability it declared in `init` removed
+   * the only control that would.
+   *
+   * Distinct from `nothing-to-do`, which is a message that arrives and needs no work, and from
+   * `known-gap`, which is a thing a person meets. Here the person meets nothing at all: the
+   * item is not in the menu, which is `CLAUDE.md`'s rule that a host without something says so
+   * and the editor leaves it out rather than offering a control that does nothing.
+   *
+   * It is worth its own value because the three read alike in a record and want different work.
+   * A `nothing-to-do` entry is finished. A `known-gap` is a ticket. This one is finished too,
+   * and it stops being true the moment somebody gives this host the capability, so it names what
+   * would have to change.
+   */
+  | 'capability-off'
+  /**
+   * Answered, and the answer is a reason it cannot be done.
+   *
+   * Distinct from `editor-explains`, where the host says nothing and the editor invents the
+   * sentence from a timeout, and from `known-gap`, where nobody says anything at all. Here the host
+   * is the one that knows why, so it is the one that says it, and the person gets a sentence about
+   * their own host rather than a sentence about silence.
+   *
+   * A refused request still owes its paired answer, which is why the derivation that checks what
+   * this host sends counts it alongside `handled`.
+   */
+  | 'refused'
   /** Nobody has looked yet. */
   | 'undecided';
 
@@ -121,20 +148,71 @@ export const BROWSER_HOST: Record<FromWebviewType, Decision> = {
    */
   docTitleRead: 'handled',
 
-  tableWidthsRead: 'undecided',
-  tableWidthsWrite: 'undecided',
-  tableBoardsRead: 'undecided',
-  tableBoardsWrite: 'undecided',
-  commentFoldsRead: 'undecided',
-  commentFoldsWrite: 'undecided',
-  frontMatterStateRead: 'undecided',
-  frontMatterStateWrite: 'undecided',
-  outlineStateRead: 'undecided',
-  outlineStateWrite: 'undecided',
-  dataFileEdit: 'undecided',
-  dataFileCreate: 'undecided',
-  selection: 'undecided',
-  runCommand: 'undecided',
+  /*
+   * The presentation state, all of it answered from `localStorage`.
+   *
+   * These were ten `undecided` entries, which is the honest value for a question nobody had
+   * asked rather than a gap. Asking it: VS Code keeps all of this in `context.workspaceState`,
+   * its own key-value store, so none of it is in the document and losing it loses only the
+   * arrangement. That is what `localStorage` is, and the equivalence is the reason rather than
+   * a convenience, which is why these are `handled` and not a narrower value.
+   *
+   * What is narrower out here is the scope, and it is the honest limit of the analogue:
+   * `workspaceState` follows a person to another window on the same machine, and
+   * `localStorage` is per origin and per browser, so the same folder served on another port
+   * keeps its own arrangement. Nothing in the editor depends on the scope.
+   */
+  tableWidthsRead: 'handled',
+  tableWidthsWrite: 'handled',
+  tableBoardsRead: 'handled',
+  tableBoardsWrite: 'handled',
+  commentFoldsRead: 'handled',
+  commentFoldsWrite: 'handled',
+  frontMatterStateRead: 'handled',
+  frontMatterStateWrite: 'handled',
+  outlineStateRead: 'handled',
+  outlineStateWrite: 'handled',
+  /*
+   * Editing a data file: the same question `dataFileRead` above answers, plus a write. Refused,
+   * and the refusal is the whole of the change: this was `known-gap` while the message carried no
+   * id and had no answer, so a host that dropped the write was indistinguishable from one that
+   * made it and a person saw their edit on screen and nothing on disk. It is answered now, so the
+   * editor says so, in this host's own words rather than out of a timeout.
+   *
+   * Still not written. What a tab is allowed to write beside the document it was opened on is the
+   * larger question the read defers, and nothing here answers it. The difference is that a person
+   * is told rather than left to find out.
+   */
+  dataFileEdit: 'refused',
+
+  /*
+   * And creating one **does** explain itself, which is the correction to the entry above: it was
+   * `known-gap` beside the edit for an hour, on the assumption that neither write was
+   * acknowledged, and the two are not alike.
+   *
+   * `dataFileCreate` carries an id and is answered with `dataFileCreated`, and `createFile` in
+   * `src/webview/viewBlock.ts` holds a promise against it with a timeout, so a host that never
+   * answers resolves with "Nothing came back from the host about <path> in time. Check whether the
+   * file was written before trying again." The editor even carries a message for a host that
+   * cannot post at all. The person is told; what they are told is a timeout rather than a refusal,
+   * which is a worse sentence than it could be and not a silent loss.
+   */
+  dataFileCreate: 'editor-explains',
+
+  /*
+   * The editor reports its selection after every change, unprompted. Out here nothing consumes
+   * it: the extension host keeps it to serve Copy ref and Send to terminal, which it runs
+   * itself, and this host runs no commands of the editor's. The `getSelection` entry in the
+   * record below is `nothing-to-do` for the same reason, from the other direction.
+   */
+  selection: 'nothing-to-do',
+
+  /*
+   * Never sent here. The only message of this type the editor posts is Send to terminal, and
+   * `main.ts` removes that menu item outright when a host declares `capabilities.terminal` false,
+   * which this host always does. So there is no control to press and no message to answer.
+   */
+  runCommand: 'capability-off',
 };
 
 /**
@@ -220,6 +298,7 @@ export const BROWSER_SENDS: Record<ToWebviewType, Decision> = {
   outlineState: 'answers',
   dataFile: 'answers',
   dataFileCreated: 'answers',
+  dataFileEdited: 'answers',
 };
 
 const bootEl = document.getElementById('sheaf-boot');
@@ -250,6 +329,52 @@ function api(path: string, init?: RequestInit): Promise<Response> {
  * read but a control that did nothing. The other direction has been checked message by
  * message for a while. This is the same boundary from the other end.
  */
+/* --- Presentation state this viewer keeps ---------------------------------- */
+
+/**
+ * The widths, boards, folds and panel states a person sets, kept per document.
+ *
+ * VS Code keeps these in `context.workspaceState`, which is its own key-value store rather
+ * than a file: none of it touches the `.md`, and deleting it loses only the arrangement. A
+ * tab's equivalent is `localStorage`, and the equivalence is close enough to be the reason
+ * rather than a convenience. Both are per-installation, invisible, outside the document, and
+ * safe to lose. Keying on the document's path is what VS Code does with `tableWidthsKey`.
+ *
+ * Reached as `window.localStorage` rather than as a bare name, which is how this file already
+ * reaches `window.postMessage` and the clipboard. The bare name was the first spelling and it
+ * resolved to nothing in the bundle's own scope under the suite, so every write was swallowed
+ * by the guard below and every read answered with the fallback. The product would have worked
+ * in a browser and no check could have seen it, and the case written for a browser that blocks
+ * site data passed for that reason rather than its own.
+ *
+ * Every read and write is wrapped, because `localStorage` throws rather than returning
+ * nothing when a browser is in a private window or has site data blocked. A tab that cannot
+ * keep the arrangement behaves as a document opened for the first time, which is a state the
+ * editor already draws correctly; it is not a state worth refusing to open over.
+ */
+const KEPT = 'sheaf:kept:';
+
+function readKept<T>(kind: string, fallback: T): T {
+  try {
+    const raw = window.localStorage.getItem(`${KEPT}${kind}:${file}`);
+    return raw ? (JSON.parse(raw) as T) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+/** Keep `value`, or forget it when there is nothing left to keep, as VS Code does. */
+function writeKept(kind: string, value: unknown): void {
+  const key = `${KEPT}${kind}:${file}`;
+  const empty = value === null || value === undefined || (typeof value === 'object' && Object.keys(value as object).length === 0);
+  try {
+    if (empty) window.localStorage.removeItem(key);
+    else window.localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // Nothing to do and nothing to say: the arrangement is not kept and the document is fine.
+  }
+}
+
 function toEditor(message: ToWebview): void {
   window.postMessage(message, '*');
 }
@@ -657,6 +782,63 @@ window.acquireVsCodeApi = function acquireVsCodeApi(): VsCodeApi {
 
         case 'setLineNumbers':
           setSetting('lineNumbers', message.on);
+          break;
+
+        /*
+         * The presentation state, answered from this viewer's own storage.
+         *
+         * Each read is answered even when nothing is kept, with the empty value, because the
+         * editor waits for an answer and a host that stays silent leaves it waiting. That is
+         * the same reason the extension host's own comment gives.
+         */
+        /*
+         * Refused rather than dropped. This host serves one document and has no endpoint for
+         * writing another file beside it, which is the same larger question `dataFileRead` defers.
+         * What changed is that the editor can now be told: the message carries an id and is
+         * answered, so a person editing a cell of a file-backed view gets a sentence instead of a
+         * grid that quietly disagrees with the file.
+         */
+        case 'dataFileEdit':
+          toEditor({
+            type: 'dataFileEdited',
+            id: message.id,
+            error: `${message.path} was not written: a browser tab can read the document it was opened on and cannot write other files beside it. Open the folder in VS Code to edit this file.`,
+          });
+          break;
+
+        case 'tableWidthsRead':
+          toEditor({ type: 'tableWidths', id: message.id, widths: readKept('widths', {}) });
+          break;
+        case 'tableWidthsWrite':
+          writeKept('widths', message.widths);
+          break;
+
+        case 'tableBoardsRead':
+          toEditor({ type: 'tableBoards', id: message.id, boards: readKept('boards', {}) });
+          break;
+        case 'tableBoardsWrite':
+          writeKept('boards', message.boards);
+          break;
+
+        case 'commentFoldsRead':
+          toEditor({ type: 'commentFolds', id: message.id, folds: readKept('folds', {}) });
+          break;
+        case 'commentFoldsWrite':
+          writeKept('folds', message.folds);
+          break;
+
+        case 'frontMatterStateRead':
+          toEditor({ type: 'frontMatterState', id: message.id, state: readKept('frontMatter', null) });
+          break;
+        case 'frontMatterStateWrite':
+          writeKept('frontMatter', message.state);
+          break;
+
+        case 'outlineStateRead':
+          toEditor({ type: 'outlineState', id: message.id, state: readKept('outline', null) });
+          break;
+        case 'outlineStateWrite':
+          writeKept('outline', message.state);
           break;
       }
     },

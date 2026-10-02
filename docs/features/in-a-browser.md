@@ -22,8 +22,10 @@ Run **Sheaf: Stop Serving to the Browser** from the Command Palette. It also sto
 
 ## Edit a document in the tab
 
-Type as you would in your editor. Everything works the same way: the toolbar, the slash menu, the right-click menu, tables as a grid, callouts, typeset maths, the table of contents.
+Type as you would in your editor: the toolbar, the slash menu, the right-click menu, tables as a grid, callouts, typeset maths and the table of contents are all here. Two things need your editor window, and both say so where you meet them rather than going quiet.
 
+- **Send to terminal** is not on the right-click menu, because there is no terminal behind a browser tab. Copy ref is, so you can still take a reference and paste it into whichever terminal you are working in.
+- **A view that reads a data file needs your editor.** In a tab the view names the file it wanted and gives you the alternative: a CSV block in the same document, named with `from: #tasks`, which works in every host. See [Data files](data-files.md) and [Datatables and views](datatables.md).
 - Typing writes to the file. There is no save button and nothing to press, in the same way there is nothing to press in your editor.
 - Links between documents open the document they point at, and a link to a heading scrolls to it.
 - Images pasted or dropped into a document are written into an `assets` folder beside it and linked from there, which is where they go in your editor too.

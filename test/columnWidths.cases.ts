@@ -122,7 +122,7 @@ export const columnWidthChecks: Check[] = [
       // the ceiling's own rule starts and the two meet without a step.
       const cap = width * 0.45;
       const soft = cols.map((c, i) => Math.max(b[i], Math.min(c.max, cap)));
-      const t = cols.map((c, i) => (a.widths[i] - b[i]) / (soft[i] - b[i]));
+      const t = cols.map((_c, i) => (a.widths[i] - b[i]) / (soft[i] - b[i]));
       return t.every((x) => near(x, t[0], 0.02)) && a.total === 700;
     },
   },

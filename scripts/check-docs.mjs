@@ -102,6 +102,24 @@ const SUMMARY_MAX_WORDS = 25;
 const OPENING_MAX_WORDS = 60;
 const PAGE_MAX_WORDS = 1800;
 
+/*
+ * A page is said to be getting close before it is refused.
+ *
+ * The cap is enforced and nothing used to announce it, so a page at 1799 words passed in
+ * silence and the next person to add a sentence met a hard failure with no notice. That
+ * happened: `features/tables.md` sat at exactly one word under the cap, a correction of
+ * about a hundred words took it to 1996, and the gates stop at this step, so the fix had
+ * to be cut to two sentences to get back under. The warning is what turns that into a
+ * thing somebody sees weeks earlier, while a section can still be moved cheaply.
+ *
+ * 90 percent, measured rather than guessed: it names the three pages that are genuinely
+ * close (1799, 1793 and 1674 at the time of writing) and the next one down is 1355, so
+ * there is no band where this is noise. A warning never fails the check, because a long
+ * page is not a broken document.
+ */
+const PAGE_WARN_WORDS = Math.round(PAGE_MAX_WORDS * 0.9);
+const warnings = [];
+
 /** The anchor GitHub and the site give a heading: lower case, punctuation gone, spaces as hyphens. */
 function slug(heading) {
   return heading
@@ -172,6 +190,8 @@ function checkTemplate(rel, text, fm) {
   const total = words(body.replace(/^```[\s\S]*?^```/gm, ''));
   if (total > PAGE_MAX_WORDS) {
     problems.push(`${rel}: the page is ${total} words. A page over ${PAGE_MAX_WORDS} covers more than one job; split it.`);
+  } else if (total > PAGE_WARN_WORDS) {
+    warnings.push(`${rel}: ${total} words, ${PAGE_MAX_WORDS - total} from the ${PAGE_MAX_WORDS} cap. Split a section out before the next change needs the room.`);
   }
 }
 
@@ -242,6 +262,14 @@ for (const rel of pages) {
 const index = readFileSync(join(DOCS, 'README.md'), 'utf8');
 for (const rel of pages.filter((p) => p.startsWith('features/'))) {
   if (!index.includes(`](${rel})`)) problems.push(`README.md: the index does not link ${rel}.`);
+}
+
+// Before the verdict either way, so a page running out of room is not hidden behind an
+// unrelated failure and is not lost in a clean run.
+if (warnings.length > 0) {
+  console.log(`${warnings.length} page(s) in docs/ are close to the word cap:\n`);
+  for (const w of warnings) console.log(`  ${w}`);
+  console.log('');
 }
 
 if (problems.length > 0) {

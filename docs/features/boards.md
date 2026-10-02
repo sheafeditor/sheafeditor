@@ -81,7 +81,7 @@ A board has no cells to select, so the row and column commands are on the grid o
 
 - **A pipe table's board is a view preference.** Which table is a board, and what it is grouped by, is kept the way column widths are: never in the file, kept by VS Code for this workspace on this machine, under the document and the table's header row. The table is still a board when you reopen the file.
 - **A pipe table goes back to a grid when its header changes.** If the header row changes while the file is closed, the table opens as a grid again. If the grouping column is renamed or removed while you have it open, the table goes back to a grid and a note above it says why.
-- **In a browser tab**, a pipe table's board lasts until you close the tab.
+- **In a browser tab**, a pipe table's board lasts as long as the page, and is gone when you reload or close the tab.
 - **A view's board is written in its query**, as the `layout` and `group` lines, so it travels with the file.
 - **A pipe table's cards draw Markdown; a view's cards show the field as written.** A `[guide](https://example.com)` on a pipe table's card is a link you can click. The same text in a CSV or TSV block is a value, so its card shows the brackets and the address, exactly as that block's own grid does. See [Datatables and views](datatables.md#good-to-know).
 - **Cards keep their order.** A board cannot yet reorder cards within a column: their order always comes from `sort` or the table.

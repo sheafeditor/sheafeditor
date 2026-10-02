@@ -165,13 +165,98 @@ function tab({ replies = {}, boot = { file: 'notes.md' } } = {}) {
   };
 }
 
+/*
+ * An edit to a data file is refused out loud rather than dropped.
+ *
+ * This is the whole of what moved `dataFileEdit` off `known-gap`. The host cannot write a file
+ * beside the document it was opened on, which is unchanged; what changed is that it says so, so the
+ * editor can tell the person instead of leaving the grid quietly disagreeing with the file.
+ */
+check('an edit to a data file is answered with a reason, under the id it was sent with', async () => {
+  const t = tab({ replies: { '/api/doc': { json: DOC } } });
+  t.post({ type: 'dataFileEdit', id: 'edit-1', path: 'data/tasks.csv', base: 'a\n', text: 'b\n' });
+  await settle();
+  const answer = t.got('dataFileEdited')[0];
+  const wrote = t.asked('/api/data') ?? [];
+  t.close();
+  return {
+    ok: !!answer && answer.id === 'edit-1' && typeof answer.error === 'string' && answer.error.includes('data/tasks.csv'),
+    detail: answer
+      ? `answered ${j(answer.id)} with ${j(answer.error)}; wrote ${wrote.length} file(s)`
+      : 'NOTHING WAS ANSWERED, so the editor is left waiting and a dropped edit is invisible again',
+  };
+});
+
+/*
+ * The presentation state a tab keeps, which is what the ten entries above being `handled`
+ * means. Three readings, and the third is the one that matters: a browser that refuses
+ * `localStorage` has to behave as a document opened for the first time rather than fail, and
+ * refusing is what a private window and blocked site data both do.
+ */
+check('a width set in a tab is kept and read back, and one cleared reads empty again', async () => {
+  const t = tab({ replies: { '/api/doc': { json: DOC } } });
+  t.post({ type: 'tableWidthsRead', id: 'a' });
+  await settle();
+  const before = t.got('tableWidths').slice(-1)[0];
+  t.post({ type: 'tableWidthsWrite', widths: { 'k|v': { 0: 120 } } });
+  await settle();
+  t.post({ type: 'tableWidthsRead', id: 'b' });
+  await settle();
+  const kept = t.got('tableWidths').slice(-1)[0];
+  t.post({ type: 'tableWidthsWrite', widths: {} });
+  await settle();
+  t.post({ type: 'tableWidthsRead', id: 'c' });
+  await settle();
+  const cleared = t.got('tableWidths').slice(-1)[0];
+  t.close();
+  return {
+    ok: j(before?.widths) === '{}' && j(kept?.widths) === '{"k|v":{"0":120}}' && j(cleared?.widths) === '{}' && kept?.id === 'b',
+    detail:
+      `a document with nothing kept reads ${j(before?.widths)}; after a write it reads ${j(kept?.widths)} under the id it asked with (${j(kept?.id)}); ` +
+      `after a write of nothing it reads ${j(cleared?.widths)}, so the entry is forgotten rather than left empty`,
+  };
+});
+
+/*
+ * The case a browser puts a host in rather than the one a person does: `localStorage` throws
+ * instead of returning nothing in a private window and wherever site data is blocked.
+ *
+ * It is the reading that decides whether these ten entries are honestly `handled`. A host that
+ * fell over here would be worse than one that never answered, because the document would not
+ * open at all, and the arrangement is the only thing at stake.
+ */
+check('a browser that refuses to keep anything still answers, as a document opened for the first time', async () => {
+  const t = tab({ replies: { '/api/doc': { json: DOC } } });
+  const refuse = () => {
+    throw new Error('site data blocked');
+  };
+  Object.defineProperty(globalThis.window, 'localStorage', {
+    configurable: true,
+    get() {
+      refuse();
+    },
+  });
+  t.post({ type: 'tableWidthsWrite', widths: { 'k|v': { 0: 120 } } });
+  await settle();
+  t.post({ type: 'tableWidthsRead', id: 'd' });
+  await settle();
+  const answered = t.got('tableWidths').slice(-1)[0];
+  t.close();
+  return {
+    ok: !!answered && j(answered.widths) === '{}' && answered.id === 'd',
+    detail: answered
+      ? `answered ${j(answered.widths)} under ${j(answered.id)}, so the write was dropped and the read was still answered`
+      : 'NOTHING WAS ANSWERED, so the editor is left waiting when a browser blocks site data',
+  };
+});
+
 /**
  * How many messages nobody has decided about yet, and the number it may not exceed.
  *
  * Raising this is a deliberate act with a reason written beside the entry in
  * `src/server/host.ts`. Lowering it is what deciding one looks like.
  */
-const UNDECIDED_BASELINE = 14;
+const UNDECIDED_BASELINE = 0;
 
 /**
  * How many messages this host is knowingly worse at than VS Code, and the number it may not
@@ -184,6 +269,21 @@ const UNDECIDED_BASELINE = 14;
  * than a side effect.
  */
 const KNOWN_GAP_BASELINE = 0;
+
+/*
+ * Back to 0 on 2026-10-02. It was 1 for an hour, for `dataFileEdit`, with the reason
+ * beside that entry in `src/server/host.ts`: it carries no id and has no answer in the protocol,
+ * so a host that drops the write is indistinguishable from one that made it. That is a gap a
+ * person meets and the right value for it is the one that counts.
+ *
+ * It was 2 for an hour, because `dataFileCreate` was marked the same way on the assumption that
+ * neither write was acknowledged. That one does carry an id and is answered, and the editor holds
+ * a promise against it with a timeout, so it explains itself. Only the edit is silent.
+ *
+ * **And the ratchet now covers both records.** It read only the record of what this host *sends*,
+ * so a `known-gap` among the messages it *answers* was unratcheted, which is the hole this
+ * comment's own argument is about, one record along. Both are counted below.
+ */
 
 check('no message is left undecided without somebody raising the count on purpose', async () => {
   /*
@@ -489,14 +589,18 @@ check('what this host sends the editor and what it says it sends are the same se
     else if (decision === 'answers') {
       const request = answers.get(name);
       if (!request) unpaired.push(name);
-      else if (reads.get(request) === 'handled') expected.push(name);
+      // A refused request is answered too: the answer carries the reason. The derivation counted
+      // only `handled`, so a host that refused out loud read as sending something it did not owe.
+      else if (reads.get(request) === 'handled' || reads.get(request) === 'refused') expected.push(name);
     }
   }
   const body = src.slice(src.indexOf('};', src.indexOf('export const BROWSER_SENDS')));
   const sent = [...new Set([...body.matchAll(/toEditor\(\{\s*type: '(\w+)'/g)].map(([, name]) => name))].sort();
   const missing = expected.filter((name) => !sent.includes(name)).sort();
   const extra = sent.filter((name) => !expected.includes(name)).sort();
-  const gaps = [...sends].filter(([, d]) => d === 'known-gap').map(([name]) => name);
+  // Both records, because a gap among the messages this host answers is as much a gap as one
+  // among the messages it sends, and only the second was counted.
+  const gaps = [...reads, ...sends].filter(([, d]) => d === 'known-gap').map(([name]) => name);
   return {
     ok: missing.length === 0 && extra.length === 0 && unpaired.length === 0 && gaps.length <= KNOWN_GAP_BASELINE,
     detail:

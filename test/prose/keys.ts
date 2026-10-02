@@ -4,7 +4,7 @@ import { setDocumentSourceMode } from '../../src/webview/livePreview';
 import { revealRange } from '../../src/webview/revealBlock';
 import { blockRangeAt } from '../../src/webview/blockModel';
 import { turnInto, BlockKind } from '../../src/webview/toolbar';
-import { createShortcutsOverlay } from '../../src/webview/shortcuts';
+import { createShortcutsOverlay, hint, hintParts } from '../../src/webview/shortcuts';
 
 /** Put the caret at `at` in `doc`, run `act`, and return the resulting text. */
 const after = (doc: string, at: number, act: (p: ReturnType<typeof mountProse>) => void): string => {
@@ -17,6 +17,52 @@ const after = (doc: string, at: number, act: (p: ReturnType<typeof mountProse>) 
 };
 
 export const scenarios: Scenario[] = [
+  {
+    /*
+     * A key hint names keys the way a person does, not the way the browser does.
+     *
+     * The block menu read `⌥ArrowUp` for Move up while every other hint read like `⌘⇧X`, because
+     * `hintParts` mapped the modifiers and passed anything longer than one character through
+     * unchanged. `ArrowUp` is the browser's name for that key and nobody else's.
+     *
+     * The controls are the words that are already right, and they matter more than the arrows: a
+     * fix that symbolised every multi-character name would turn `Enter` into `↩` and `Backspace`
+     * into `⌫`, which is a different and unasked-for change. `Escape` is the precedent, spelled
+     * `Esc` rather than `⎋` because a symbol nobody recognises is worse than a word.
+     */
+    name: 'an arrow key is drawn as an arrow, and the keys people have words for keep them',
+    run: () => {
+      const wrong: string[] = [];
+      const arrows: [string, string][] = [
+        ['ArrowUp', '↑'],
+        ['ArrowDown', '↓'],
+        ['ArrowLeft', '←'],
+        ['ArrowRight', '→'],
+      ];
+      for (const [name, symbol] of arrows) {
+        const got = hintParts(name);
+        if (got.length !== 1 || got[0] !== symbol) wrong.push(`${name} -> ${JSON.stringify(got)}`);
+      }
+      // The words that are already right and must not become symbols.
+      for (const name of ['Enter', 'Tab', 'Backspace', 'Delete', 'Home']) {
+        const got = hintParts(name);
+        if (got.length !== 1 || got[0] !== name) wrong.push(`${name} -> ${JSON.stringify(got)} (should be unchanged)`);
+      }
+      if (hintParts('Escape')[0] !== 'Esc') wrong.push('Escape is no longer Esc');
+      // And the whole hint the block menu shows, which is what the report was about.
+      const moveUp = hint('Alt-ArrowUp');
+      if (!moveUp.endsWith('↑') || moveUp.includes('Arrow')) wrong.push(`Alt-ArrowUp -> ${JSON.stringify(moveUp)}`);
+      /*
+       * A single letter still upper-cases, so the ordinary hint is untouched. Asserted on the
+       * letter alone rather than on the whole string: jsdom reports a platform that is not a Mac,
+       * so the modifiers spell out as `Ctrl+Shift+`, and my first version of this check asked
+       * whether the whole hint was upper-case and failed on `Ctrl`.
+       */
+      const plain = hint('Mod-Shift-x');
+      if (!plain.endsWith('X') || plain.includes('Arrow')) wrong.push(`Mod-Shift-x -> ${JSON.stringify(plain)}`);
+      return wrong.length ? { ok: false, detail: wrong.join('; ') } : true;
+    },
+  },
   {
     /*
      * Where the start of a line is when the line opens with a marker.

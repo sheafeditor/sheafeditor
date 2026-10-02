@@ -47,6 +47,46 @@ interface Keystroke {
 }
 
 /**
+ * One region of the current text that one of the person's edits put there.
+ *
+ * Held in the coordinates of the text as it stands after the most recent recorded edit, and moved
+ * along by each later edit, because that is the text an incoming write is compared against.
+ */
+interface OwnRun {
+  at: number;
+  start: number;
+  end: number;
+}
+
+/**
+ * The same runs, in the coordinates of `now` instead of `was`.
+ *
+ * Everything before the change keeps its offsets and everything after it moves by the change's own
+ * difference in length. A run the change lands inside is split, keeping the parts outside it: those
+ * characters are still the person's and still there.
+ *
+ * **No run is added for the change itself**, and that is the whole point of the function. It is used
+ * for changes that are not the person's: a save participant trimming another line, or a write from
+ * outside that reached the webview. Their text is not theirs to lose, and the old code's mistake was
+ * exactly to count it.
+ */
+function carried(runs: readonly OwnRun[], was: string, now: string): OwnRun[] {
+  if (was === now) return [...runs];
+  const { start, end, replacement } = minimalEdit(was, now);
+  const delta = replacement.length - (end - start);
+  const out: OwnRun[] = [];
+  for (const r of runs) {
+    if (r.end <= start) out.push(r);
+    else if (r.start >= end) out.push({ at: r.at, start: r.start + delta, end: r.end + delta });
+    else {
+      if (r.start < start) out.push({ at: r.at, start: r.start, end: start });
+      if (r.end > end) out.push({ at: r.at, start: end + delta, end: r.end + delta });
+    }
+  }
+  return out;
+}
+
+/**
  * The webview's recent edits, and what an incoming document takes back of them.
  *
  * Every edit is recorded as the text that came before it, so the oldest one still
@@ -55,15 +95,55 @@ interface Keystroke {
  */
 export class RecentTyping {
   private readonly keystrokes: Keystroke[] = [];
+  /**
+   * The regions of the current text the person's own edits put there.
+   *
+   * Kept alongside `keystrokes` rather than derived from them, because the two answer different
+   * questions and only one of them can be answered by a diff. `restored` asks what the window
+   * removed, which a baseline comparison gives correctly. `dropped` asks which characters are the
+   * person's, and no comparison of two texts can say who changed them: see `typed`.
+   */
+  private runs: OwnRun[] = [];
+  /**
+   * The text as it stood after the most recent recorded edit.
+   *
+   * `runs` are offsets into this, so a caller asking about a different text is asking about one
+   * whose edits were not all recorded, and the offsets do not describe it.
+   */
+  private lastText: string | undefined;
 
   constructor(
     private readonly windowMs: number = RECENT_TYPING_MS,
     private readonly clock: () => number = Date.now
   ) {}
 
-  /** An edit the webview posted, with `was` the text it held before that edit. */
-  public record(was: string): void {
-    this.keystrokes.push({ at: this.clock(), was });
+  /**
+   * An edit the webview posted: `was` the text it held before, `now` the text it holds after.
+   *
+   * `now` is needed because the span of an edit can only be known when it happens. It used to
+   * take `was` alone and work the span out later by comparing the oldest baseline against the
+   * current text, which cannot tell the person's edits from anybody else's: see `typed`.
+   */
+  public record(was: string, now: string): void {
+    const at = this.clock();
+    this.keystrokes.push({ at, was });
+    /*
+     * Two steps, because two different things can have happened since the last recorded edit.
+     *
+     * First the text may have moved without anybody recording it: a save participant trimming
+     * another line, or a change from outside that reached the webview. Those are not the person's,
+     * so their runs are carried through and no run is added for them.
+     *
+     * Then this edit, which is the person's, so its span becomes a run.
+     */
+    const base = this.lastText === undefined ? this.runs : carried(this.runs, this.lastText, was);
+    const next = carried(base, was, now);
+    const { start, replacement } = minimalEdit(was, now);
+    // An edit that only removes text adds no run: there is nothing of the person's in the result
+    // to lose. `restored` is what reports a deletion being undone from outside.
+    if (replacement.length > 0) next.push({ at, start, end: start + replacement.length });
+    this.runs = next.filter((r) => r.end > r.start).sort((a, b) => a.start - b.start);
+    this.lastText = now;
     this.prune();
   }
 
@@ -74,27 +154,86 @@ export class RecentTyping {
    * is either in that document or gone, and either way it is no longer something a
    * later write can take away.
    */
+  /**
+   * The text as it stood before the person's oldest edit still inside the window.
+   *
+   * The base a three-way merge needs, and the one thing here that is about putting work back rather
+   * than reporting it gone. A write from outside is measured against what the person started from,
+   * not against what the file last held: told the latter, `mergeOutsideChange` sees `mine === base`,
+   * concludes they have nothing pending, and takes the write whole. That is how a letter already
+   * saved to disk is removed by a write that never touched its line.
+   */
+  public baseline(): string | undefined {
+    this.prune();
+    return this.keystrokes[0]?.was;
+  }
+
   public forget(): void {
     this.keystrokes.length = 0;
+    this.runs = [];
+    this.lastText = undefined;
   }
 
   /**
-   * The one run of characters in `mine` that the person's own edits inside the window
-   * put there, or undefined when they added nothing in it.
+   * The runs of characters in `mine` that the person's own edits inside the window put there, in
+   * order, or an empty list when they added nothing in it.
    *
-   * It is one run because `minimalEdit` reports one: two edits in different places
-   * come back as the single span that covers both, which is wider than what they
-   * typed. That is the direction to be wrong in, because the span is only ever used
-   * to narrow what an outside write is said to have taken.
+   * **Several runs, because there are several, and the one that used to be returned was not the
+   * person's.** This compared the oldest baseline in the window against `mine` and called the whole
+   * difference theirs. Its own comment said the span was wider than what they typed and argued the
+   * direction was safe, "because the span is only ever used to narrow what an outside write is said
+   * to have taken". Two things read it, and that sentence is true of one of them.
+   *
+   * It is false of the decision. A wider run overlaps an incoming write more readily, so it reports
+   * a loss where there is none: the notice that names text still sitting in the document.
+   *
+   * It is false of the quote. The slice handed to the notice comes out of the same span, so
+   * whatever the span wrongly contains is read back to the person as the work they just lost.
+   * Measured at 287 characters of somebody else's document, twelve paragraphs of it, in a case where
+   * something really had taken their letter and the notice was right to appear.
+   *
+   * Two edits in different places are enough on their own: type at the top of a document and then
+   * at the bottom, and the span between them is the whole document. Worse, a change that arrived
+   * from outside and reached the webview is inside that span too, and no comparison of two texts
+   * can say who made it. That is why the spans are recorded when each edit happens rather than
+   * worked out afterwards.
+   *
+   * An empty list is also the answer when `mine` is not the text the last recorded edit produced,
+   * because then an edit reached the webview without being recorded and these offsets describe a
+   * different text. Saying nothing is the only honest answer there: the alternative is naming
+   * characters by position in a text they do not belong to, which is the defect above.
+   *
+   * **Control log.** Putting the baseline comparison back makes four checks in the sync suite fail
+   * and leaves the fifth passing, which is the one that is supposed to pass either way: with only
+   * the person's own edit in the window both answer exactly what they typed, so the quoting was
+   * never the broken part.
+   *
+   * Three of those four only discriminate because the control said so, and each correction is a
+   * trap worth knowing. A write that *takes one of the typed letters* gives the right answer out of
+   * the wrong span, because the intersection rescues it. A write that *inserts* into the gap between
+   * two edits overlaps nothing whatever the span is, since a pure insertion has `start === end` and
+   * removes nothing from the current text. And a window where the outside change arrives *before*
+   * the person's only recorded edit leaves the baseline already holding it, so a baseline comparison
+   * answers correctly too. Only a replacement, inside the gap, after an earlier recorded edit, tells
+   * the two implementations apart.
    */
-  public typed(mine: string): TypedRun | undefined {
+  public typed(mine: string): TypedRun[] {
     this.prune();
-    const baseline = this.keystrokes[0]?.was;
-    if (baseline === undefined) {
-      return undefined;
+    if (this.lastText === undefined) {
+      return [];
     }
-    const { start, replacement } = minimalEdit(baseline, mine);
-    return replacement ? { start, text: replacement } : undefined;
+    /*
+     * Carried into `mine`'s coordinates when it is not the text the last recorded edit produced.
+     *
+     * Refusing to answer was tried first and it silenced a real notice. A save participant trimming
+     * a trailing space on a line the person is not typing on reaches the webview without being
+     * recorded, so `mine` differs from the last recorded text by one character, and a write that
+     * then really takes their letter has to be reported. The host suite caught it, which is what
+     * `tables.outside-merge.e06` and that check are there for: the risk in narrowing this is
+     * silencing the conflict that matters.
+     */
+    const runs = carried(this.runs, this.lastText, mine);
+    return runs.map((r) => ({ start: r.start, text: mine.slice(r.start, r.end) })).filter((r) => r.text !== '');
   }
 
   /**
@@ -112,18 +251,33 @@ export class RecentTyping {
    * would be noise, and there is a separate path that keeps the line being typed on.
    */
   public dropped(mine: string, incoming: string): string | undefined {
-    const run = this.typed(mine);
-    if (!run) {
+    const runs = this.typed(mine);
+    if (runs.length === 0) {
       return undefined;
     }
     const took = minimalEdit(mine, incoming);
-    const from = Math.max(run.start, took.start);
-    const to = Math.min(run.start + run.text.length, took.end);
-    if (to <= from) {
+    /*
+     * Every run the write reaches, and only the parts of them it reaches.
+     *
+     * Each run is intersected with the changed region separately. Taking the outer bounds of the
+     * runs instead and intersecting once would put the gaps between them back into the answer,
+     * which is the whole of the defect described on `typed`.
+     *
+     * The pieces are joined with an ellipsis because they are not adjacent in the document and
+     * running them together would read as one phrase the person never wrote. `quoteLost` collapses
+     * whitespace and the ellipsis survives it, so the notice shows that something sits between.
+     */
+    const pieces: string[] = [];
+    for (const run of runs) {
+      const from = Math.max(run.start, took.start);
+      const to = Math.min(run.start + run.text.length, took.end);
+      if (to > from) pieces.push(mine.slice(from, to));
+    }
+    if (pieces.length === 0) {
       return undefined;
     }
-    const lost = mine.slice(from, to);
-    return lost.trim() === '' ? undefined : lost;
+    const lost = pieces.join(' … ');
+    return lost.replace(/…/g, '').trim() === '' ? undefined : lost;
   }
 
   /**
@@ -164,6 +318,13 @@ export class RecentTyping {
     const cutoff = this.clock() - this.windowMs;
     while (this.keystrokes.length > 0 && this.keystrokes[0].at < cutoff) {
       this.keystrokes.shift();
+    }
+    // The runs as well, and forgetting this is what the window check caught: text typed a minute
+    // ago is not something a write can take back, and a run that outlives its own keystroke says
+    // it is. `filter` rather than `shift`, because runs are held in document order and the oldest
+    // one is not necessarily first.
+    if (this.runs.some((r) => r.at < cutoff)) {
+      this.runs = this.runs.filter((r) => r.at >= cutoff);
     }
   }
 }

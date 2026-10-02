@@ -199,6 +199,54 @@ function createFile(path: string, text: string, nextFree: boolean): Promise<Crea
   });
 }
 
+/*
+ * Edits in flight, by the id they were sent with.
+ *
+ * An edit is applied to the grid at once, because the person is typing into it and waiting for a
+ * round trip would make every keystroke feel like a network. So the answer cannot decide whether
+ * the edit happens; it decides whether the person is told it did not. A host that refuses, or one
+ * that never answers, leaves a notice on the file saying the view and the file disagree, which is
+ * the same shape as the one an undo already leaves when the file moved underneath it.
+ *
+ * Not rolled back. Taking the value away would be the other defensible answer and it destroys work
+ * somebody did, so it is a product call rather than this change's to make.
+ */
+const editing = new Map<string, { path: string }>();
+let editSeq = 0;
+
+/**
+ * Post an edit and wait for the answer, so both senders carry an id and neither writes the timer
+ * out again. One of the two is an undo, which is why `step` rides along.
+ */
+function postEditOfFile(edit: { path: string; base: string; text: string; step?: 'undo' | 'redo' }): void {
+  if (!post) return;
+  const id = `edit-${++editSeq}`;
+  editing.set(id, { path: edit.path });
+  post({ type: 'dataFileEdit', id, ...edit });
+  setTimeout(() => {
+    if (!editing.delete(id)) return;
+    editRefused(edit.path, `Nothing came back from the host about ${edit.path} in time. The view shows your edit; the file may not have it.`);
+  }, waitMs);
+}
+
+/** Tell the reader the file did not take an edit, leaving what they typed on screen. */
+function editRefused(path: string, why: string): void {
+  const file = files.get(path);
+  if (file?.status !== 'ready') return;
+  files.set(path, { status: 'ready', text: file.text, notice: why });
+  dropFileSteps(path);
+  redraw();
+}
+
+/** The host's answer to an edit: nothing to do when it took, a notice when it did not. */
+export function handleDataFileEdited(message: { id?: unknown; error?: unknown }): void {
+  if (typeof message.id !== 'string') return;
+  const pending = editing.get(message.id);
+  if (!pending) return;
+  editing.delete(message.id);
+  if (typeof message.error === 'string' && message.error) editRefused(pending.path, message.error);
+}
+
 /** The host's answer to a request to write a file. */
 export function handleDataFileCreated(message: { id?: unknown; path?: unknown; error?: unknown }): void {
   if (typeof message.id !== 'string') return;
@@ -560,7 +608,7 @@ function writeThrough(view: EditorView, source: Source, change: DataChange): boo
     if (file?.status !== 'ready' || !post) return false;
     const next = writeDataFile(file.text, langOf(source.path), change);
     if (next === file.text) return false;
-    post({ type: 'dataFileEdit', path: source.path, base: file.text, text: next });
+    postEditOfFile({ path: source.path, base: file.text, text: next });
     fileUndo.push({ path: source.path, before: file.text, after: next });
     fileRedo.length = 0;
     fileEditedLast = true;
@@ -631,7 +679,7 @@ function stepFile(view: EditorView, again: boolean): boolean {
     view.dispatch({ effects: filesChanged.of(null) });
     return true;
   }
-  post({ type: 'dataFileEdit', path: step.path, base: from, text: to, step: again ? 'redo' : 'undo' });
+  postEditOfFile({ path: step.path, base: from, text: to, step: again ? 'redo' : 'undo' });
   (again ? fileUndo : fileRedo).push(step);
   fileEditedLast = true;
   files.set(step.path, { status: 'ready', text: to });

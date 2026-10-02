@@ -10,6 +10,7 @@
  * them ends by reading the document back, because the bytes must never move.
  */
 
+import { setLivePreviewConfig } from '../../src/webview/livePreview';
 import { Scenario, mountProse } from '../harness';
 import { commentKeyFor, handleCommentFolds, setCommentFoldsHost, setCommentsMode } from '../../src/webview/comments';
 
@@ -222,6 +223,9 @@ export const scenarios: Scenario[] = [
   {
     name: 'the caret in a comment shows the raw angle brackets, and leaving it draws the box again',
     run: () => {
+      // The caret on the line is what this reads, so it needs reveal-on-line rather than
+      // inheriting whatever ran before it. The runner resets the setting for each scenario.
+      setLivePreviewConfig({ revealSyntaxOnLine: true });
       const p = mount(ONE);
       p.select(2);
       const drawn = boxes(p).length === 1;

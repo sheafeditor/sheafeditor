@@ -1283,10 +1283,24 @@ export const scenarios = [
       await scrollTo(S, 'A 2,000-row CSV block', { far: 6000, dir: -1 });
       await S.sleep(800);
       const backAtTop = await probe();
+      /*
+       * And a second round trip, which is what makes the return leg checkable without a fitted
+       * number. A document legitimately converges as somebody scrolls through it, because
+       * CodeMirror refines an estimated block height into a measured one as each block is drawn,
+       * so the height after one trip is not expected to equal the height at the start. What it is
+       * expected to do is **settle**: the second trip draws the same blocks from remembered heights
+       * and must add nothing. That distinguishes converging once from growing every time, which is
+       * the defect this round trip exists to catch, and it needs no tolerance chosen to fit today.
+       */
+      await scrollTo(S, 'A small one, for scale', { far: 6000 });
+      await S.sleep(600);
+      await scrollTo(S, 'A 2,000-row CSV block', { far: 6000, dir: -1 });
+      await S.sleep(800);
+      const afterTwoTrips = await probe();
 
       const d = readFileSync(file, 'utf8');
-      if (atTop?.error || atBottom?.error || backAtTop?.error) {
-        return { ok: false, detail: `no editor view to read: ${JSON.stringify({ atTop, atBottom, backAtTop })}` };
+      if (atTop?.error || atBottom?.error || backAtTop?.error || afterTwoTrips?.error) {
+        return { ok: false, detail: `no editor view to read: ${JSON.stringify({ atTop, atBottom, backAtTop, afterTwoTrips })}` };
       }
       /*
        * Two things, and they fail for different reasons. The held height must match the
@@ -1297,18 +1311,59 @@ export const scenarios = [
       const matchesWhenDrawn = atTop.csvDrawn ? Math.abs(atTop.csv.held - atTop.csvDrawn.drawn) : null;
       const heldDrift = Math.abs(atTop.csv.held - atBottom.csv.held);
       const docDrift = Math.abs(atTop.scrollHeight - atBottom.scrollHeight);
+      /*
+       * The return leg, which this scenario used to measure and then discard. Two readings, and
+       * they answer different questions.
+       *
+       * `heldOnReturn` is the strict one and takes no slack: the block's own held height is the
+       * thing the comment above promises does not change, and a block thrown away and redrawn has
+       * every number it needs to come back the same size. Measured at 122074 at all three probes.
+       *
+       * `settled` is the document, and it is a convergence test rather than a bound. The height
+       * after one trip is legitimately larger than at the start, because each block drawn on the way
+       * refines an estimate into a measurement, and that was 114px on one run and 58px on another
+       * depending on which blocks the scroll happened to draw. Picking a number to cover it would be
+       * fitting the check to the day. A second trip redraws the same blocks from heights already
+       * remembered, so it must add nothing, and a document that grows on every trip fails here while
+       * one that converges passes.
+       */
+      /*
+       * `docDrift` is bounded at 200 rather than 40, and the reason is the same argument as the one
+       * above rather than a concession to a failing run.
+       *
+       * It compares the document's height at the top against its height at the bottom, which is
+       * convergence **in progress**: every block drawn on the way down refines an estimate into a
+       * measurement, so the number is a function of which blocks the scroll happened to draw and
+       * not of anything being wrong. Measured across today it has been 30, 45 and 58 on the same
+       * document at different commits and in two hosts, so 40 was a bound that a correct run could
+       * fail and did: 45 against 40, with every other reading in this scenario at 0.
+       *
+       * It is kept rather than dropped because it catches a gross divergence that `settled` cannot:
+       * a document that grows by thousands of pixels on one pass still settles on the next. The
+       * regression this bound exists for was 7230 here. So it wants to sit clearly above convergence and
+       * clearly below a defect, and 200 has margin on both sides: four times the largest convergence
+       * seen and a thirty-sixth of the regression it is there to catch.
+       *
+       * The precise question is `settled` below, which needs no number at all.
+       */
+      const heldOnReturn = Math.abs(atTop.csv.held - backAtTop.csv.held);
+      const settled = Math.abs(backAtTop.scrollHeight - afterTwoTrips.scrollHeight);
       return {
         ok:
           atTop.csvDrawn?.rows === 2000 &&
           matchesWhenDrawn !== null &&
           matchesWhenDrawn <= 40 &&
           heldDrift <= 40 &&
-          docDrift <= 40 &&
+          docDrift <= 200 &&
+          heldOnReturn <= 2 &&
+          settled <= 4 &&
           d === before,
         detail:
           `held vs drawn while on screen ${matchesWhenDrawn}, held drift when scrolled away ${heldDrift}, ` +
-          `document height drift ${docDrift}; at top ${JSON.stringify(atTop)}; at bottom ${JSON.stringify(atBottom)}; ` +
-          `back at top ${JSON.stringify(backAtTop)}${d === before ? '' : '; the file changed'}`,
+          `document height drift ${docDrift}, held height on return ${heldOnReturn}, settled after a second trip ${settled}; ` +
+          `at top ${JSON.stringify(atTop)}; at bottom ${JSON.stringify(atBottom)}; ` +
+          `back at top ${JSON.stringify(backAtTop)}; after two trips ${JSON.stringify(afterTwoTrips)}` +
+          `${d === before ? '' : '; the file changed'}`,
       };
     },
   },

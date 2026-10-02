@@ -20,6 +20,7 @@ import { indentMore, indentLess, undo, redo } from '@codemirror/commands';
 import { indentUnit, syntaxTree } from '@codemirror/language';
 import type { SyntaxNode } from '@lezer/common';
 import { formatStateAt } from './formatState';
+import { isFenceLine } from './livePreview';
 import {
   toggleWrap,
   turnInto,
@@ -49,6 +50,30 @@ export function hintParts(key: string): string[] {
         return isMac ? '⌥' : 'Alt';
       case 'Escape':
         return 'Esc';
+      /*
+       * The arrows, which are the one group of key names that are identifiers rather than words.
+       *
+       * A hint read `⌥ArrowUp` in the block menu while every other hint read like `⌘⇧X`, because
+       * anything longer than one character fell through unchanged and `ArrowUp` is what the browser
+       * calls the key rather than what a person does. The arrows get symbols on both platforms, not
+       * only on a Mac: `↑` is what a Windows or Linux menu shows too, and "Arrow Up" is nobody's
+       * name for it.
+       *
+       * `Enter`, `Tab`, `Backspace`, `Delete` and `Home` stay as they are on purpose. Those are the
+       * words people use for those keys, so passing them through is already right, and `Escape`
+       * above shows the house preference: it is spelled `Esc` rather than `⎋`, because a symbol
+       * nobody recognises is worse than a word. `PageUp` and `PageDown` are camel-case like the
+       * arrows and are the next candidates, and they are left alone here because choosing between
+       * `⇞` and `Page Up` is a decision this issue did not ask for.
+       */
+      case 'ArrowUp':
+        return '↑';
+      case 'ArrowDown':
+        return '↓';
+      case 'ArrowLeft':
+        return '←';
+      case 'ArrowRight':
+        return '→';
       default:
         return part.length === 1 ? part.toUpperCase() : part;
     }
@@ -58,6 +83,39 @@ export function hintParts(key: string): string[] {
 /** Render a CodeMirror key spec (e.g. `Mod-Shift-x`) as a display string (`⌘⇧X`). */
 export function hint(key: string): string {
   return hintParts(key).join(isMac ? '' : '+');
+}
+
+/**
+ * The same key spec as `aria-keyshortcuts` wants it: `Mod-Shift-x` becomes `Meta+Shift+X` on a Mac
+ * and `Control+Shift+X` elsewhere.
+ *
+ * It lives beside `hintParts` on purpose, because the two are the same fact in two spellings and a
+ * key that gained a symbol in one and not the other would read one way and announce another. The
+ * split between them is the whole point: the visible hint is free to say `⌥↑`, which is what somebody
+ * looking at the menu wants, while assistive technology is given the canonical form it can announce
+ * in its own words, at the point in the announcement its user expects.
+ *
+ * Only the modifiers are mapped. Everything else is passed through as the browser's own key name,
+ * which is what this attribute is specified in terms of: `ArrowUp` rather than `↑`.
+ */
+export function keyShortcuts(key: string): string {
+  return key
+    .split(/-(?=.)/)
+    .map((part) => {
+      switch (part) {
+        case 'Mod':
+          return isMac ? 'Meta' : 'Control';
+        case 'Ctrl':
+          return 'Control';
+        case 'Alt':
+          return 'Alt';
+        case 'Shift':
+          return 'Shift';
+        default:
+          return part.length === 1 ? part.toUpperCase() : part;
+      }
+    })
+    .join('+');
 }
 
 /**
@@ -95,6 +153,16 @@ export function drawKeyHint(el: HTMLElement, key: string): void {
  */
 export function indentListItem(view: EditorView): boolean {
   const { state } = view;
+  /*
+   * A fence line takes no indent, which is the fourth position of a class already fixed for a
+   * paragraph, a heading and a list's first item.
+   *
+   * `codeBlock` is true on the fence lines as well as the code between them, so this used to hand them
+   * to `indentMore`. Four spaces is one more than a fence may carry, so the opening fence stopped
+   * being one, the closing fence then opened a block of its own, and everything after it became code
+   * text. One keystroke, and nothing on screen looked wrong at the time.
+   */
+  if (state.selection.ranges.some((r) => isFenceLine(state, r.head))) return true;
   if (state.selection.ranges.some((r) => formatStateAt(state, r.head).codeBlock)) return indentMore(view);
   const tree = syntaxTree(state);
   const at = new Set<number>();

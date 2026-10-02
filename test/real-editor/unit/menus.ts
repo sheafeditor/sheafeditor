@@ -21,7 +21,6 @@ const G: any = globalThis;
 if (!G.Window && G.window?.Window) G.Window = G.window.Window;
 const j = (x: unknown): string => JSON.stringify(x);
 const same = (got: string, want: string): Result => ({ ok: got === want, detail: got === want ? '' : `got ${j(got)}, want ${j(want)}` });
-const tick = (ms = 0): Promise<void> => new Promise((r) => setTimeout(r, ms));
 const key = (target: EventTarget, name: string, init: Record<string, unknown> = {}): KeyboardEvent => {
   const e = new G.KeyboardEvent('keydown', { key: name, bubbles: true, cancelable: true, ...init });
   target.dispatchEvent(e);

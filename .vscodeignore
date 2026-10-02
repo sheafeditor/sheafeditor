@@ -12,6 +12,7 @@ node_modules/**
 **/*.ts
 **/*.map
 **/tsconfig.json
+**/tsconfig.test.json
 esbuild.mjs
 
 .gitignore

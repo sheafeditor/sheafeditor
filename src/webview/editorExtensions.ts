@@ -7,8 +7,8 @@
 import { EditorState, Extension, Prec } from '@codemirror/state';
 import { EditorView, keymap, drawSelection, dropCursor, highlightActiveLine } from '@codemirror/view';
 import { history, historyKeymap, defaultKeymap } from '@codemirror/commands';
-import { markdown, commonmarkLanguage, markdownKeymap, insertNewlineContinueMarkupCommand } from '@codemirror/lang-markdown';
-import { markdownDialect } from './markdownDialect';
+import { commonmarkLanguage, markdownKeymap, insertNewlineContinueMarkupCommand } from '@codemirror/lang-markdown';
+import { markdownDialect, sheafMarkdown } from './markdownDialect';
 import { formatStateAt } from './formatState';
 import { languages } from '@codemirror/language-data';
 import { indentUnit, LanguageDescription } from '@codemirror/language';
@@ -142,13 +142,13 @@ export function editorExtensions(onShowShortcuts: () => void): Extension[] {
     dropCursor(),
     highlightActiveLine(),
     EditorState.allowMultipleSelections.of(true),
-    // `pasteURLAsLink` is off because Sheaf answers that paste itself, in
-    // linkPaste.ts, and two handlers for one gesture is two sets of rules. The
-    // one here reads any address-shaped text, so a clipboard holding several
-    // lines that happen to start with a scheme is written into a destination
-    // that cannot hold them, and it escapes nothing, so a bracket in the chosen
-    // words ends the label early.
-    markdown({ base: commonmarkLanguage, codeLanguages: codeLanguageFor, extensions: markdownDialect, addKeymap: false, pasteURLAsLink: false }),
+    // `sheafMarkdown` rather than `markdown()`: it installs no paste handler and no keymap of its
+    // own, and it leaves out the HTML parser that drags three other languages into the bundle. Sheaf
+    // answers that paste itself, in linkPaste.ts, and two handlers for one gesture is two sets of
+    // rules: Markdown's own reads any address-shaped text, so a clipboard holding several lines that
+    // happen to start with a scheme is written into a destination that cannot hold them, and it
+    // escapes nothing, so a bracket in the chosen words ends the label early.
+    sheafMarkdown({ base: commonmarkLanguage, codeLanguages: codeLanguageFor, extensions: markdownDialect }),
     // Markdown's Enter and Backspace, at the high precedence markdown() would give
     // them, with Sheaf's Enter for an empty list item or quote line ahead of them.
     // Enter at the start of a block's text goes ahead of Markdown's own Enter, which

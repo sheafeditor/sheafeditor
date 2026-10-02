@@ -25,6 +25,7 @@ import { createRequire } from 'node:module';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bootWebview } from './webview.mjs';
+import { eagerOutputs } from '../scripts/eager-closure.mjs';
 
 const require = createRequire(import.meta.url);
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -55,8 +56,16 @@ function makeWindow({ user = {}, workspace = {} } = {}) {
   let answer;
   /** Who is told when a tab opens, as `tabGroups.onDidChangeTabs` tells them. */
   const tabListeners = new Set();
-  /** The extension id the registry knows, and the version it reports for it. */
-  const extensionId = 'sheafeditor.sheafeditor';
+  /**
+   * The extension id the registry knows, and the version it reports for it.
+   *
+   * Not a constant, because a build does not always carry the published name: a development
+   * build is installed under its own id so it and the published one are two rows in the
+   * Extensions pane instead of a version race. Everything Sheaf does with its own id has to
+   * follow the host's answer rather than a string in the source, and the only way to show
+   * that is a window where the two differ.
+   */
+  let extensionId = 'sheafeditor.sheafeditor';
   let installedVersion = '0.2.0';
   /** Who is told when the extension registry moves, which an install does. */
   const registryListeners = new Set();
@@ -425,6 +434,14 @@ function makeWindow({ user = {}, workspace = {} } = {}) {
     answerWith: (label) => {
       answer = label;
     },
+    /** The id this build was installed under, which a development build changes. */
+    installedAs: (id) => {
+      extensionId = id;
+    },
+    /** The same, read back, because activation has to be told what the registry knows. */
+    get extensionId() {
+      return extensionId;
+    },
     /** A build installed while this window was open, as `--install-extension` does. */
     installBuild: async (version) => {
       installedVersion = version;
@@ -780,10 +797,16 @@ async function hostCases() {
     return module.exports;
   };
 
-  /** Load the host code into a window and activate the extension in it. */
+  /**
+   * Load the host code into a window and activate the extension in it.
+   *
+   * `extension` is what VS Code puts on the context, and it is how an extension learns what
+   * it was installed as. Reading it live rather than closing over it, so a window that sets
+   * the id before starting gets the id it set.
+   */
   const start = (win = makeWindow()) => {
     const host = load(win);
-    host.activate({ subscriptions: [], extensionUri: file('/extension') });
+    host.activate({ subscriptions: [], extensionUri: file('/extension'), extension: { id: win.extensionId } });
     return { host, win };
   };
 
@@ -3706,6 +3729,29 @@ async function hostCases() {
     return win.messages.length === 0;
   });
 
+  check('about: a build installed under its own id still notices a newer one, because the id comes from the host', async () => {
+    /*
+     * A development build is installed as a different extension so that it and the published
+     * one are two rows in the Extensions pane rather than a version race, and the pane can
+     * say which is which. Everything else about it is the published build.
+     *
+     * The notice below is what that could have broken, and it would have broken by going
+     * quiet: the lookup is by id, a hardcoded id finds nothing under any other name, and a
+     * notification that never appears looks exactly like a window that is up to date. It is
+     * also the one thing standing between asking for a change and not knowing whether you
+     * are looking at it, so it is worth a scenario of its own.
+     *
+     * The control: with the id left at the published one, this window's registry answers for
+     * nothing and no notice appears. Run that way it fails, which is how the check is known
+     * to be reading the id rather than passing for its own reasons.
+     */
+    const win = makeWindow();
+    win.installedAs('sheafeditor.sheaf-dev');
+    start(win);
+    await win.installBuild('0.2.812');
+    return win.messages.some((m) => m.includes('0.2.812') && m.includes('0.2.0'));
+  });
+
   check('packaging: the editor bundle is the same bytes in both hosts, so nothing host-specific can reach it', async () => {
     /*
      * Sheaf runs in a VS Code webview and in a browser tab, and the editor it
@@ -3837,7 +3883,7 @@ async function hostCases() {
   const STAYS = [
     '.claude', '.github', '.vscode', '.gitattributes', '.gitignore', '.gitleaksignore',
     '.vscodeignore', 'CLAUDE.md', 'CONTRIBUTING.md', 'docs', 'esbuild.mjs', 'sample',
-    'scripts', 'src', 'test', 'tsconfig.json', 'package-lock.json',
+    'scripts', 'src', 'test', 'tsconfig.json', 'tsconfig.test.json', 'package-lock.json',
   ];
   /* `vsce` drops this one itself, with `--no-dependencies`, so `.vscodeignore` never names it. */
   const DROPPED_BY_VSCE = ['package-lock.json'];
@@ -3898,12 +3944,39 @@ async function hostCases() {
     if (!written) return { ok: true, detail: '[Unreleased] is empty, which is what it holds from a release until the next change lands' };
 
     /*
-     * The guard the original slip needs, now that it can only fire on a section that has
-     * something in it. A matcher that finds nothing reports nothing wrong, so notes that
-     * were written and resolved to nothing are a parse to look at.
+     * Three states here rather than two, and the third is why this is not simply `!found`.
+     *
+     * **"Resolved nothing" and "nothing to resolve" are different facts.** A release note
+     * about layout names no setting, no command and no chord, and there is nothing wrong with
+     * it: the note that caught this was a table staying in the writing column instead of
+     * running to the edge of the pane. Failing that is a guard refusing a correct entry, and
+     * the only way past it is to write an identifier into the changelog for the checker's
+     * sake, which is worse than not checking.
+     *
+     * A note that *mentions* one and fails to resolve it is the parse break this exists for,
+     * where a stray backtick turns `sheaf.foo` into prose the matcher slides past.
+     *
+     * So the discriminator is whether anything identifier-shaped is in the text at all, looked
+     * for loosely and outside the strict patterns above. Loose on purpose: what it is hunting
+     * is the near miss, the shape the strict pattern was meant to catch and did not.
+     *
+     * This is the same mistake as the empty-section one directly above, one step along, and
+     * both were mine: an empty section and a section with no identifiers both resolve nothing,
+     * and neither is a broken parse. Collapsing the first pair failed a tagged release build.
+     * Collapsing this pair failed the first ordinary bug-fix note written after that.
      */
+    const mentions = /sheaf\.[A-Za-z]|Sheaf:\s|\b(?:Cmd|Ctrl|Alt|Shift|Opt)\+[A-Za-z0-9]/.test(notes);
+    if (!found && mentions) {
+      return {
+        ok: false,
+        detail: `read ${written} written lines of [Unreleased] that mention something setting-, command- or chord-shaped and resolved none of it, so a pattern slid past what it was meant to catch and this proved nothing`,
+      };
+    }
     if (!found) {
-      return { ok: false, detail: `read ${written} written lines of [Unreleased] and resolved no setting, command or chord, so the patterns matched nothing and this proved nothing` };
+      return {
+        ok: true,
+        detail: `${written} written lines naming no setting, command or chord, and nothing identifier-shaped in them for the patterns to have missed`,
+      };
     }
 
     return {
@@ -3952,22 +4025,45 @@ async function hostCases() {
    * The release it was written from is the first case: a section holding one blank line, which
    * the guard read as a parse failure and failed the tagged build on.
    */
-  check('CONTROL: an empty [Unreleased] passes, notes that resolve to nothing fail, and a wrong name still fails', () => {
+  check('CONTROL: an empty or identifier-free [Unreleased] passes, a missed pattern fails, and a wrong name still fails', () => {
     const declared = { settings: new Set(['sheaf.lineNumbers']), titles: new Set(['Open Raw Markdown']), chords: new Set(['cmd+b']) };
     const cases = {
       empty: judgeUnreleased('\n', declared),
       blanksOnly: judgeUnreleased('\n   \n\n', declared),
-      resolvesNothing: judgeUnreleased('\n### Fixed\n\n- A table drawn under a list item sits under the item.\n', declared),
+      /*
+       * A note naming nothing, which is an ordinary bug-fix entry and passes. This case
+       * expected a failure until 2026-09-30, and that was wrong: the first real note written
+       * against it was a table staying in the writing column, which names no setting, no
+       * command and no chord, and the guard refused it.
+       */
+      namesNothing: judgeUnreleased('\n### Fixed\n\n- A table drawn under a list item sits under the item.\n', declared),
+      /*
+       * And the parse break the guard is actually for, in its three shapes: a setting whose
+       * backticks were lost, a command title that was not bolded, a chord written as prose.
+       * Each mentions something the strict patterns should have caught and did not.
+       */
+      settingUnticked: judgeUnreleased('\n- sheaf.lineNumbers is off by default now.\n', declared),
+      commandUnbolded: judgeUnreleased('\n- Sheaf: Open Raw Markdown is on the toolbar.\n', declared),
+      chordUnbolded: judgeUnreleased('\n- Cmd+B still bolds the selection.\n', declared),
       allDeclared: judgeUnreleased('\n- `sheaf.lineNumbers` is off by default, and **Cmd+B** still bolds.\n', declared),
       undeclared: judgeUnreleased('\n- `sheaf.notAThing` was added, and **Sheaf: Nowhere** opens it.\n', declared),
     };
-    const want = { empty: true, blanksOnly: true, resolvesNothing: false, allDeclared: true, undeclared: false };
+    const want = {
+      empty: true,
+      blanksOnly: true,
+      namesNothing: true,
+      settingUnticked: false,
+      commandUnbolded: false,
+      chordUnbolded: false,
+      allDeclared: true,
+      undeclared: false,
+    };
     const wrong = Object.keys(want).filter((k) => cases[k].ok !== want[k]);
     return {
       ok: wrong.length === 0,
       detail: wrong.length
         ? `${JSON.stringify(wrong)} judged the wrong way: ${wrong.map((k) => `${k} → ${cases[k].ok} (${cases[k].detail})`).join('; ')}`
-        : 'empty and blank-only sections pass, written notes that resolve to nothing fail, and an undeclared name still fails',
+        : 'empty, blank-only and identifier-free sections pass; a setting, command or chord the patterns missed fails; an undeclared name still fails',
     };
   });
 
@@ -4308,7 +4404,67 @@ async function hostCases() {
       // 3266: the first drag on a table freezes every column, and the call that does it is one
       // line. The decision itself is `frozenWidths` at module scope, which is what this check
       // asks for; what is left in the closure is the call and nothing else.
-      ['tables.ts', 3266],
+      //
+      // 3267: whether a grid may wrap its cells to stay in the writing column, which a pipe table
+      // may and a data block may not. Same shape as the line above it: `wrapsToFit` is at module
+      // scope and takes its input explicitly, and the closure carries the call. Raised by one
+      // deliberately rather than worked around, because the alternative was reading the answer off
+      // the frame's `is-csv` class, and a layout rule decided from a CSS class is policy in a
+      // transport, where no test can see it.
+      //
+      // 3266: and back down, the same day. `gridToTSV` moved out of the closure to module scope so
+      // a test could reach it, which paid back the line `wrapsToFit` borrowed. This is the ratchet
+      // working: it caught the closure shrinking and refused to let the number drift above the real
+      // size, which is the half of it that a passing run would never have mentioned.
+      //
+      // 3271: a double-click on a column's divider fits that column to its content, which the grip's
+      // `dblclick` listener used to swallow. Five lines of listener, and both decisions are at module
+      // scope taking their inputs explicitly: `widthsFittedToContent` works out the pins, and
+      // `columnsToFit` works out which columns a gesture acts on.
+      //
+      // Raised from 3266 in two steps rather than one, and the first attempt is the useful part. The
+      // decision started inside the closure, 58 lines of it with the reasoning in comments, and this
+      // check refused it and said where to put it. Moving the arithmetic out took it to 3282, moving
+      // the selection out to 3278, and the comments to module scope to 3271. So the budget did not
+      // only measure the growth, it drove the shape: what is left in the closure is a listener that
+      // calls two functions and stores the answer.
+      // 3292: a double-click on a row's divider fits that row to its content, which is the other axis of
+      // the gesture at 3271 and almost none of the same work. The column half had a grip to listen on and
+      // a width already measured; the row half had no target at all, and the thing it changes is a clamp
+      // released rather than a number pinned.
+      //
+      // Twenty-one lines, all of them wiring: `fitKey`, one `wireRowDivider` call with four hooks, and
+      // one line each for the clamp predicate, the fittable-row marking, the press guard and the read at
+      // render. Five decisions are at module scope taking their inputs explicitly: `dividerUnder` says
+      // which row's boundary a pointer is on, `fittedRowsIn` and `toggleFittedRow` hold the per-table
+      // set, `markFittableRows` says which rows have anything to fit, and `cellWantsClamp` says whether a
+      // cell is drawn clamped.
+      //
+      // This check earned its keep twice over on the way. It refused the first version at 3391 and the
+      // second at 3328, and each refusal named a function to extract rather than a line to delete. Two
+      // other checks shaped the same work: a row-number cell must have zero element children, which is
+      // why the divider is a pseudo-element read by coordinate instead of a `<span>`; and dragging rows
+      // through a 3,000-row table must repaint only where the drop line moved, which is why the hover
+      // does nothing during a drag and writes only when the marked cell changes.
+      //
+      // 3294: and two more, for the rule that any reordering of a table's rows ends every fitting in it.
+      // One call in `sortRows` and one in `moveRowsTo`, which are the two places row order changes; the
+      // rule itself and why it is the rule are in `endFittingIn` at module scope. A column operation
+      // adds nothing here, because columns do not change which row is which.
+      //
+      // 3295: and one more, for the line that remembers which key a table's fitted rows are under.
+      // They were keyed by `tableWidthKey`, which is a column identity, so inserting or deleting a column
+      // stranded the set under the old key and the fittings silently ended. `fittedKeyFollow` at module
+      // scope migrates them; the closure keeps the `let` that holds where they currently are.
+      //
+      // 3297: and two more, for the table menu drawing the axis keys it had been computing and throwing
+      // away. One line names the label's span so the label can be read apart from a row that also holds
+      // an icon and now a hint, and one calls the drawer. Both are wiring: `menuActions` already decided
+      // whether the keys apply to what is picked, and `drawMenuShortcut` at module scope holds the rule
+      // that the hint is `aria-hidden` while the row carries `aria-keyshortcuts`. This check refused the
+      // first version at 3322, which was the same code with its reasoning inside the closure, and moving
+      // the explanation to the function it explains is what the refusal was asking for.
+      ['tables.ts', 3297],
       ['viewBlock.ts', 780],
     ];
     const over = [];
@@ -4685,8 +4841,8 @@ async function hostCases() {
      * The band is wide next to what this exists to catch. `@codemirror/language-data`
      * going eager again is a thousand kilobytes, forty times the headroom.
      */
-    const CEILING_KB = 1250;
-    const FLOOR_KB = 1200;
+    const CEILING_KB = 1001;
+    const FLOOR_KB = 951;
     /*
      * Moved up 25 KB on 2026-09-29, after a run of features took the closure from 1,222 to
      * 1,226 KB. Checked before moving it, which is the point of the check: the closure is the
@@ -4704,16 +4860,13 @@ async function hostCases() {
     const outputs = built.metafile.outputs;
     const entry = Object.keys(outputs).find((f) => f.endsWith('media/webview.js'));
     if (!entry) return { ok: false, detail: 'no media/webview.js in the build, so this check lost its subject' };
-    const eager = new Set([entry]);
-    const stack = [entry];
-    while (stack.length) {
-      for (const imp of outputs[stack.pop()]?.imports ?? []) {
-        if (imp.kind === 'import-statement' && !eager.has(imp.path)) {
-          eager.add(imp.path);
-          stack.push(imp.path);
-        }
-      }
-    }
+    /*
+     * The walk is `scripts/eager-closure.mjs`, shared with `check-bundle-size.mjs`, which asks the
+     * same question of the metafile the real build writes. The two metafiles are different because
+     * this check runs before anything is built and that one runs after; one closure defined twice
+     * would have been a second answer nobody chose.
+     */
+    const eager = eagerOutputs(built.metafile, entry);
     const deferred = Object.keys(outputs).length - eager.size;
     // Nothing deferred would mean splitting stopped working, and the total would be
     // under budget for the worst possible reason.
@@ -5435,6 +5588,41 @@ async function hostCases() {
     panel.receive({ type: 'commentFoldsRead', id: 'comments-4' });
     await settle();
     return same(foldsReply(panel), [{ type: 'commentFolds', id: 'comments-4', folds: {} }]);
+  });
+
+  /*
+   * The value `livePreview.ts` starts from must be the manifest's default.
+   *
+   * A host sends the config at `init`, so the initial value is overwritten before anybody
+   * sees a document and nothing in the product depends on it. Nothing sends one in a test,
+   * so it is the value every scenario inherits when it says nothing, and the two had come
+   * apart: the module started at `revealSyntaxOnLine: true` while the setting defaults to
+   * `false`. Scenarios that said nothing were written for a state a person has to turn on
+   * deliberately, and the guard they lean on cannot see that state either, so the pair was
+   * consistent and both halves were wrong.
+   *
+   * This reads the source text rather than importing the module, because the initial value
+   * is private and what is being pinned is two literals agreeing. That is exactly the claim:
+   * nothing else compared them.
+   */
+  check('the live-preview config starts at the manifest default, so a test inherits what a person has', () => {
+    const source = readFileSync(path.join(here, '..', 'src', 'webview', 'livePreview.ts'), 'utf8');
+    const found = /let currentConfig: LivePreviewConfig = \{ revealSyntaxOnLine: (true|false) \};/.exec(source);
+    if (!found) {
+      return { ok: false, detail: 'could not find the initial currentConfig in livePreview.ts, so nothing was compared' };
+    }
+    const declared = manifest().contributes.configuration.properties['sheaf.revealSyntaxOnLine']?.default;
+    if (typeof declared !== 'boolean') {
+      return { ok: false, detail: 'sheaf.revealSyntaxOnLine has no boolean default in the manifest, so there is nothing to pin to' };
+    }
+    const started = found[1] === 'true';
+    return {
+      ok: started === declared,
+      detail:
+        started === declared
+          ? `both ${String(declared)}`
+          : `livePreview.ts starts at ${String(started)} and the manifest default is ${String(declared)}, so a scenario that sets nothing runs in a state no person has`,
+    };
   });
 
   check('comments: the setting is offered and scoped exactly as the rest of Sheaf’s view settings are', () => {

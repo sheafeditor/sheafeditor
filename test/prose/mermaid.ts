@@ -323,7 +323,7 @@ export const scenarios: Scenario[] = [
         p.select(0);
         await settle();
         const drawn = count(p, '.md-mermaid') === 1;
-        const { setDocumentSourceMode } = await import('../../src/webview/livePreview');
+        const { setDocumentSourceMode } = await import('../../src/webview/livePreview.js');
         setDocumentSourceMode(p.view, document.createElement('div'), true);
         const source = count(p, '.md-mermaid') === 0 && text(p).includes('```mermaid');
         setDocumentSourceMode(p.view, document.createElement('div'), false);

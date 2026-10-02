@@ -42,11 +42,12 @@ import { resolveImageSrc } from './images';
 import { openLink } from './linkTarget';
 import { CellEditor, createCellEditor } from './cellEditor';
 import { ColumnLayout, createColumnLayout, digest } from './columnLayout';
-import { ColumnExtent, COLUMN_CAP_FRACTION, COLUMN_FLOOR_CH, allocateColumnWidths } from './columnWidths';
+import { ColumnExtent, COLUMN_CAP_FRACTION, COLUMN_FLOOR_CH, allocateColumnWidths, tightestWidth } from './columnWidths';
 import { TableIcon, tableIcon } from './tableIcons';
 import { arrivedLines } from './changeMarks';
 import { columnDateOrder, dateValue, leadingNumber, wholeNumber } from './cellNumbers';
 import { BoardState, drawBoard as drawBoardLayout, wireBoard } from './board';
+import { drawKeyHint, keyShortcuts } from './shortcuts';
 
 export type Align = 'left' | 'center' | 'right' | null;
 
@@ -543,7 +544,36 @@ export function containerPrefix(lineText: string, width: number, pipe: boolean):
  * so the quotes are read when they wrap one (and when `fits` accepts that reading).
  * Anywhere else a quote is part of the value and stays.
  */
-function parseClipboardGrid(raw: string, fits: (rows: string[][]) => boolean = () => true): string[][] {
+/**
+ * A grid as the tab-separated text a spreadsheet expects on the clipboard.
+ *
+ * A bare join is wrong for a cell holding a tab: a two-column table came out with three fields on
+ * one line, and a spreadsheet given that range gains a column on that row and shifts everything
+ * right of it down the sheet. Sheaf could already *read* such a range, because `parseClipboardGrid`
+ * understands a quoted cell, and could not write one back, so the round trip this exists for lost
+ * the shape it was given.
+ *
+ * The rule a spreadsheet uses: wrap a cell in double quotes and double any quote inside it.
+ *
+ * **Decided once for the whole grid rather than per cell**, which is the part that is easy to get
+ * wrong. `parseClipboardGrid` chooses between a quoted reading and a plain split **per range**, on
+ * whether any cell came out holding a tab or a newline. So once one cell is quoted the whole range
+ * is read by the quoting parser, and a cell that merely starts with a quote would then be read as
+ * quoted and lose it. `27" monitor` is safe either way, because a quote only opens a field at its
+ * start, but `"quoted"` as a value is not. So when any cell needs quoting, every cell carrying a
+ * quote is quoted too.
+ *
+ * A grid with no tabs and no newlines is written exactly as it was before, which is nearly all of
+ * them.
+ */
+export function gridToTSV(grid: readonly (readonly string[])[]): string {
+  const needs = grid.some((row) => row.some((cell) => /[\t\n\r]/.test(cell)));
+  if (!needs) return grid.map((r) => r.join('\t')).join('\n');
+  const cell = (v: string): string => (/[\t\n\r"]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v);
+  return grid.map((r) => r.map(cell).join('\t')).join('\n');
+}
+
+export function parseClipboardGrid(raw: string, fits: (rows: string[][]) => boolean = () => true): string[][] {
   const text = raw.replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/\n$/, '');
   // Every line is a row, an empty one included, as it is when the text is split.
   const quoted = parseDelimitedRows(text, '\t').map((r) => r.cells.slice());
@@ -771,6 +801,57 @@ export function laidInColumn(laid: number, grid: HTMLElement): boolean {
  * that a widget's `toDOM` holds the DOM wiring and the decisions live outside it, taking
  * their inputs explicitly, which is what this does.
  */
+/**
+ * How tall a horizontal scrollbar is in this host, measured once and remembered.
+ *
+ * Not a constant. VS Code's webview on macOS draws a 15px one, a browser with overlay
+ * scrollbars draws none that takes any room, and Windows and Linux differ again. A number
+ * written down here would be right in one host and wrong in the others by the height of most of
+ * a line of text, which is exactly the size of mistake that moves a paragraph.
+ *
+ * Measured from a probe forced to scroll rather than derived, because there is nothing to derive
+ * it from: `clientHeight` is the only thing that knows, and only on an element that has one.
+ * `media/webview.css` styles no scrollbar anywhere, so the host's default is what the grid gets
+ * and what the probe measures. Remembered because it cannot change without the host restyling,
+ * and a probe per estimate would be a forced layout per keystroke on a 200-row table.
+ *
+ * Zero where there is nothing to measure, which is jsdom and a page with overlay scrollbars.
+ */
+let scrollbarH: number | null = null;
+function scrollbarHeight(): number {
+  if (scrollbarH !== null) return scrollbarH;
+  if (typeof document === 'undefined' || !document.body) return 0;
+  const probe = document.createElement('div');
+  probe.style.cssText = 'position:absolute;top:-9999px;left:-9999px;visibility:hidden;overflow-x:scroll;width:100px;height:100px';
+  const inner = document.createElement('div');
+  inner.style.cssText = 'width:200px;height:1px';
+  probe.appendChild(inner);
+  document.body.appendChild(probe);
+  const h = probe.offsetHeight - probe.clientHeight;
+  probe.remove();
+  scrollbarH = Number.isFinite(h) && h > 0 ? h : 0;
+  return scrollbarH;
+}
+
+/**
+ * Whether a grid of this kind may wrap its cells in order to stay in the writing column.
+ *
+ * A pipe table is usually prose, and a column of sentences wrapping to two or three lines is what
+ * a table of prose looks like, so holding it to the writing column keeps the page's measure. A
+ * `csv` or `tsv` block is tabular data: the value of a row is reading across it, and a column of
+ * short values has nothing to gain from wrapping. Asking a data block to wrap squeezed a
+ * six-column TSV of `sku / description / warehouse / on_hand / reserved / reorder_at` into 708px,
+ * wrapped all three hundred of its rows to two lines and doubled its height, to earn a right
+ * margin it never had.
+ *
+ * At module scope and taking its input explicitly, because both the layout and the height
+ * estimate ask it and they have to get the same answer: they divide the same room, and a
+ * disagreement between them is a height the document holds and then does not need.
+ */
+function wrapsToFit(kind: 'pipe' | 'csv'): boolean {
+  return kind === 'pipe';
+}
+
 function dressFrame(wrap: HTMLElement, kind: 'pipe' | 'csv', prefix: string, listDepth: number): void {
   wrap.className = `sheaf-table${kind === 'csv' ? ' is-csv' : ''}${frameClasses(prefix, listDepth)}`;
   // The number the indent is worked out from, set the way a prose line sets it, so the frame
@@ -830,6 +911,58 @@ export function linkUnder(e: { target: EventTarget | null }): HTMLElement | null
  * dragged a divider expects to keep, and `Reset column widths` on the table's menu hands a
  * pinned one back.
  */
+/**
+ * The pinned widths that fit some columns to their content and leave the rest where they are.
+ *
+ * At module scope, taking its inputs explicitly, because the closure that draws a table is held to a
+ * line budget and this is a decision rather than DOM wiring. `null` when there is nothing to do.
+ *
+ * **No ceiling, deliberately**, which is a correction to the request this was built from. It asked for
+ * a fitted column to be held to "the same ceiling a drag is held to", and a drag has none: `follow`
+ * clamps the floor only, so a column can be dragged past the pane and the frame scrolls, which is
+ * what scrolling is for. `Fit columns to content` has no ceiling either and says so in as many words.
+ * A double-click capped at the allocator's 0.45 would do something different from the menu item
+ * beside it for the same word, which is worse than a wide column.
+ *
+ * **Every other column is frozen at its drawn width first**, so fitting one column moves one column.
+ * Without that the allocator redistributes the room and every neighbour shifts, which is the thing
+ * somebody fitting a single column is least expecting. Measured on an eight-column table: the fitted
+ * column went 188 to 334 and the other seven did not move.
+ *
+ * Idempotent by construction: the width asked for is the content's, so a column already at it is
+ * pinned to the number it already has.
+ */
+/**
+ * Which columns a fit gesture on column `c` acts on: every whole column selected when `c` is one of
+ * them, and `c` alone otherwise.
+ *
+ * So double-clicking one divider of a three-column selection fits all three, and one outside the
+ * selection fits that column without disturbing it. Takes the predicate and the count rather than
+ * reading them, so it is a decision at module scope rather than lines inside the drawing closure.
+ */
+export function columnsToFit(c: number, isWhole: (i: number) => boolean, count: number): number[] {
+  if (!isWhole(c)) return [c];
+  const all: number[] = [];
+  for (let i = 0; i < count; i++) if (isWhole(i)) all.push(i);
+  return all.includes(c) ? all : [c];
+}
+
+export function widthsFittedToContent(
+  measured: { columns: readonly ColumnExtent[] } | null,
+  drawn: readonly number[] | null,
+  pinned: ReadonlyMap<number, number> | null,
+  which: readonly number[]
+): Map<number, number> | null {
+  if (!measured || !drawn || which.length === 0) return null;
+  const next = new Map<number, number>(pinned?.size ? pinned : frozenWidths(drawn));
+  for (const c of which) {
+    const col = measured.columns[c];
+    if (!col) continue;
+    next.set(c, Math.max(1, Math.ceil(Math.max(col.max, col.min))));
+  }
+  return next;
+}
+
 export function frozenWidths(widths: readonly number[]): Map<number, number> {
   const frozen = new Map<number, number>();
   widths.forEach((w, i) => frozen.set(i, Math.round(w)));
@@ -1381,6 +1514,27 @@ const AXIS_KEYS: Partial<Record<string, string>> = {
   'col.delete': 'Mod-Alt--',
 };
 
+/**
+ * Put a command's shortcut on a menu row, for the eye and for assistive technology separately.
+ *
+ * At module scope, taking the row and the key, because the widget's `toDOM` has a line budget and
+ * this is a decision rather than DOM wiring. The check that enforces that budget is what moved it
+ * here, and it was right to: the closure should hold the building, not the rules about what to build.
+ *
+ * `aria-hidden` on the hint with `aria-keyshortcuts` on the row is the rule every menu that draws one
+ * follows. A row is a `<button>` with no label, so it takes its accessible name from its contents, and
+ * a hint left visible to a screen reader turns "Insert row below" into "Insert row below⌘⌥=": neither
+ * the label the requirement promises nor a usable announcement of the key.
+ */
+function drawMenuShortcut(row: HTMLElement, key: string, className: string): void {
+  const keys = document.createElement('span');
+  keys.className = className;
+  drawKeyHint(keys, key);
+  keys.setAttribute('aria-hidden', 'true');
+  row.setAttribute('aria-keyshortcuts', keyShortcuts(key));
+  row.appendChild(keys);
+}
+
 // ---- command registry -----------------------------------------------------
 
 /**
@@ -1747,6 +1901,193 @@ const liveArrived = new WeakMap<Element, (changes?: ChangeDesc) => void>();
 /** The widths set by hand in this document, by table key, each by column index. */
 const pinnedWidths = new Map<string, Map<number, number>>();
 
+/**
+ * The rows a reader has fitted to their content, by table, for as long as the document is open.
+ *
+ * Held here and not as a class on the row, which is where it was first written and where it did not
+ * survive. A table re-renders whenever its source changes, so typing in any cell of it rebuilt every
+ * row element and the fitting was silently gone: measured as the row dropping from 181px back to
+ * 109px on the keystroke. "Not remembered between sessions" was the decision; "lost the moment you
+ * type" was not, and they are different promises.
+ *
+ * Keyed by the same `tableWidthKey` the pinned widths use, so renaming a header keeps the fitting
+ * for the same reason it keeps the widths. Unlike the widths it is never saved: the clamp is the
+ * default view and a document opens in it.
+ *
+ * The row count is held beside the set because these are indices. A row inserted or deleted above a
+ * fitted one would leave the index pointing at a different row, and a row that opens for no reason a
+ * person can see is worse than one that forgot, so the set is dropped when the count changes.
+ */
+const fittedRows = new Map<string, { rows: number; set: Set<number> }>();
+
+/** How close to a row's bottom edge a pointer must be to be aiming at its divider. */
+const DIVIDER_ZONE = 7;
+
+/**
+ * The row whose divider a pointer is on, or null.
+ *
+ * At module scope because it is a decision rather than DOM wiring: it takes the event and reads the
+ * answer out of the document, with nothing from the widget's closure. `sectionRowIndex` rather than a
+ * scan of the rows, because this runs on `mousemove` and the corpus holds a 3,000-row table.
+ */
+function dividerUnder(e: MouseEvent): { gut: HTMLElement; row: number } | null {
+  const gut = (e.target as HTMLElement | null)?.closest?.('.sheaf-table-gutter') as HTMLElement | null;
+  const tr = gut?.closest('tr') as HTMLTableRowElement | null;
+  if (!gut || !tr || !tr.classList.contains('has-tall-cell')) return null;
+  if (e.clientY < gut.getBoundingClientRect().bottom - DIVIDER_ZONE) return null;
+  const row = tr.sectionRowIndex;
+  return row >= 0 ? { gut, row } : null;
+}
+
+/**
+ * The rows fitted in the table under `key`, given how many rows it has now.
+ *
+ * A change in the count drops the set, because these are indices: a row inserted or deleted above a
+ * fitted one leaves the index pointing at a different row, and a row that opens for no reason a person
+ * can see is worse than one that forgot. Committing a cell edit with Enter on the last row adds a row,
+ * which is the ordinary way that happens.
+ */
+function fittedRowsIn(key: string, rows: number): Set<number> {
+  const held = fittedRows.get(key);
+  if (!held) return new Set();
+  if (held.rows !== rows) {
+    fittedRows.delete(key);
+    return new Set();
+  }
+  return held.set;
+}
+
+/** The row-number cell currently marked as under the pointer's divider, per grid. */
+const dividerMarked = new WeakMap<Element, HTMLElement>();
+
+/**
+ * Listen for the row-divider gestures on one grid.
+ *
+ * At module scope taking its inputs explicitly, so the widget's closure carries the call and not the
+ * decisions. The hover does nothing while a row or an axis is being dragged, and writes to the DOM only
+ * when the marked cell changes: a check on a 3,000-row table asked for both, because during a drag the
+ * drop line is the only thing that should repaint.
+ */
+function wireRowDivider(
+  host: Element,
+  hooks: { dragging: () => boolean; key: () => string; rows: () => number; onFit: () => void }
+): void {
+  const mark = (gut: HTMLElement | null): void => {
+    const at = dividerMarked.get(host) ?? null;
+    if (gut === at) return;
+    at?.classList.remove('is-at-divider');
+    if (at) at.removeAttribute('title');
+    if (gut) {
+      gut.classList.add('is-at-divider');
+      /*
+       * The gesture, said in words, because no cursor can say it.
+       *
+       * This zone carried `cursor: row-resize`, which promises a drag. A row is never given a fixed
+       * height by design, so that promise cannot be kept, and dragging here does nothing. `pointer`
+       * would be no better: a single click does nothing either, because the press is swallowed so that
+       * aiming at the divider cannot pick the row up. There is no cursor for "double-click me", so the
+       * cell says what the gesture is instead, and the drawn line remains what draws the eye to it.
+       */
+      gut.title = 'Double-click to show every line of this row';
+      dividerMarked.set(host, gut);
+    } else dividerMarked.delete(host);
+  };
+  host.addEventListener('mousemove', (e) => {
+    if (hooks.dragging()) return;
+    mark(dividerUnder(e as MouseEvent)?.gut ?? null);
+  });
+  host.addEventListener('mouseleave', () => mark(null));
+  host.addEventListener('dblclick', (e) => {
+    const here = dividerUnder(e as MouseEvent);
+    if (!here) return;
+    e.preventDefault();
+    e.stopPropagation();
+    // Releasing the clamp, not setting a height: a row shows either its clamped lines or all of them,
+    // so this is a flag and the same gesture puts it back.
+    here.gut.closest('tr')?.classList.toggle('is-fitted', toggleFittedRow(hooks.key(), hooks.rows(), here.row));
+    hooks.onFit();
+  });
+}
+
+/**
+ * Whether a cell should be drawn clamped: tall enough, not the active or open cell, and not in a row
+ * the reader has fitted. The row carries the flag rather than the cell, because fitting a row releases
+ * every cell in it at once, which is what makes the row as tall as its tallest cell.
+ */
+function cellWantsClamp(el: HTMLElement): boolean {
+  return (
+    el.classList.contains('is-tall') &&
+    !el.classList.contains('is-focus') &&
+    !el.classList.contains('is-editing') &&
+    !el.closest('tr')?.classList.contains('is-fitted')
+  );
+}
+
+/**
+ * End every fitting in one table, which is what any reordering of its rows does.
+ *
+ * The rule: anything that changes which row is where ends every fitting in that table. A fitting is a row index, so after a sort the index names a different row, and a row standing
+ * open for no reason a person can see is worse than one that forgot. It is the same reasoning as the
+ * decision not to remember a fitting at all: if it does not survive closing the document, there is no
+ * principle under which it survives a sort, which scrambles which row is which far more thoroughly.
+ *
+ * A column operation does not call this, because columns do not change which row is which.
+ */
+function endFittingIn(key: string): void {
+  fittedRows.delete(key);
+}
+
+/**
+ * Follow a table's fitted rows when its header signature changes, and return the new key.
+ *
+ * The fittings are keyed by `tableWidthKey`, which is a *column* identity: it changes when a header is
+ * renamed and when the column count changes. The pinned widths want that, because a table with a
+ * different number of columns has no business keeping widths measured for the old ones. Row fittings do
+ * not, because a column operation does not change which row is where, which is the rule. Keyed without
+ * this, inserting or deleting a column stranded the whole set under the old key where nothing looked
+ * again, so the fittings silently ended: the right outcome for the widths and the wrong one here,
+ * reached by sharing their identity.
+ */
+function fittedKeyFollow(from: string, to: string): string {
+  if (from === to) return to;
+  const held = fittedRows.get(from);
+  if (held) {
+    fittedRows.delete(from);
+    fittedRows.set(to, held);
+  }
+  return to;
+}
+
+/** Fit row `r` or put its clamp back, and say which it now is. */
+function toggleFittedRow(key: string, rows: number, r: number): boolean {
+  const set = fittedRowsIn(key, rows);
+  if (set.has(r)) set.delete(r);
+  else set.add(r);
+  if (set.size) fittedRows.set(key, { rows, set });
+  else fittedRows.delete(key);
+  return set.has(r);
+}
+
+/**
+ * Mark the rows holding a cell taller than the clamp, so the stylesheet draws a divider only on those.
+ *
+ * From `is-tall` and not `is-clamped`: a fitted row has no clamped cell left in it and its divider has
+ * to stay there to clamp it back. Walked from the tall cells outwards rather than over every row,
+ * because this runs on every layout measurement.
+ */
+function markFittableRows(host: Element, touched: Iterable<HTMLElement>): void {
+  const haveTall = new Set<Element>();
+  for (const el of touched) {
+    if (!el.classList.contains('is-tall')) continue;
+    const tr = el.closest('tr');
+    if (tr) haveTall.add(tr);
+  }
+  host.querySelectorAll('tbody tr.has-tall-cell').forEach((tr) => {
+    if (!haveTall.has(tr)) tr.classList.remove('has-tall-cell');
+  });
+  haveTall.forEach((tr) => tr.classList.add('has-tall-cell'));
+}
+
 /** Every live grid's way to lay its columns out again when the stored widths arrive. */
 const pinListeners = new Set<() => void>();
 
@@ -1928,12 +2269,29 @@ const cellParts = (value: string): string[] => value.split(/<br\s*\/?>|\n/i).map
  * pixels wide, from its text: each column's widest line and longest word, at an
  * average character, handed to the allocator the layout itself uses.
  */
-export function estimateColumnWidths(
+/**
+ * How the columns divide the room, the room they divided, and whether the result scrolls.
+ *
+ * All three from one call, because the height estimate needs the scroll answer and the room, and
+ * working either out again would be another copy of the rule that chose the room. Three copies of
+ * that rule have been wrong in one day.
+ */
+function divideColumns(
   headers: readonly string[],
   rows: readonly (readonly string[])[],
   pane: number,
-  pinned: ReadonlyMap<number, number> | null
-): number[] {
+  pinned: ReadonlyMap<number, number> | null,
+  /**
+   * Whether this grid may wrap its cells to stay in the writing column: true for a pipe table,
+   * false for a `csv` or `tsv` block. It has to be the same answer `ColumnLayoutOptions.wrapToFit`
+   * gives for the same grid, because these two divide the same room and a disagreement between
+   * them is a height the document holds and then does not need.
+   *
+   * Defaulting to true rather than requiring it, because a caller with no view on it is
+   * estimating a pipe table: that is what the jsdom entry points and the host suite pass.
+   */
+  wrapToFit = true
+): { widths: number[]; room: number; gutter: number; overflow: number } {
   const n = Math.max(1, headers.length);
   const gutter = EST.gutterPad + String(Math.max(1, rows.length)).length * EST.digit * EST.gutterScale;
   const extents: ColumnExtent[] = [];
@@ -1951,37 +2309,75 @@ export function estimateColumnWidths(
     extents.push({ min: longest * EST.ch + EST.pad, max: widest * EST.ch + EST.pad });
   }
   /*
-   * Still the writing column, and a table that takes the pane is estimated too narrow and so
-   * too tall. That is a known gap rather than an oversight, and it was here before the frame
-   * reached the pane: `render.table-widths.e15` measures it, and it reads 15px on the old
-   * geometry against 9px on this one, so the frame reaching the pane makes it smaller.
-   *
-   * The obvious repair — the two widths this file's layout chooses between, applied here —
-   * was tried and made it worse, 13px, because the extents here are counted from characters
-   * rather than measured, so a table that fits is read as one that does not and estimated in
-   * room the drawn table never takes. The repair needs the real column, which this side does
-   * not have: `textColumn()` is itself an estimate.
-   */
-  /*
    * Which room to divide, by the rule the layout itself uses: the writing column when the
-   * table's natural width fits in it, and the pane when it does not.
+   * table can fit in it, and the pane when it cannot.
    *
-   * This was tried once before against the character-counted extents alone and made the gap
-   * worse, 9px to 13px, because those extents read a table that fits as one that does not and
-   * estimated it in room the drawn table never takes. What has changed is that the fit test
-   * now asks for the *natural* width, the sum of what every column wants, which is the same
-   * question `roomFor` asks, and `EST.line` is no longer 2px short per line and masking the
-   * error in the other direction. Either half alone is worse than neither: measured, the line
-   * height alone takes 9px to 24px.
+   * **This has to be the same question `roomFor` asks, and it is the same call.** It used to
+   * be a second copy of that rule written out here, asking the *natural* width, the sum of
+   * every column's no-wrap maximum. When `roomFor` moved to the tightest width and this copy
+   * did not, the two disagreed about the same table: the layout drew a table of prose in the
+   * 708px writing column while this divided the 900px pane, so every cell was estimated with
+   * more room than it got, one row wrapped to a line nobody had counted, and the paragraph
+   * below the table jumped a line when the table drew. `render.table-widths.e15` is what
+   * caught it.
+   *
+   * One fact, declared on both sides of a boundary, with nothing comparing the two. It is
+   * `tightestWidth` on both sides now, so changing the rule cannot move one without the other.
+   *
+   * An earlier attempt at sharing this rule made the gap worse, 9px to 13px, and the reason it
+   * does not now is worth keeping: these extents are counted from characters rather than
+   * measured, and a sum of *maxima* built that way reads a table that fits as one that does
+   * not. A sum of floors is dominated by the longest single word rather than by a whole
+   * sentence drawn on one line, so the character-counting error is a fraction of the quantity
+   * instead of the whole of it.
    */
-  const natural = gutter + extents.reduce((sum, e) => sum + e.max, 0);
-  const room = natural <= pane ? pane : (paneRoom() ?? pane);
+  const floor = COLUMN_FLOOR_CH * EST.digit + EST.pad;
+  const wants = gutter + (wrapToFit ? tightestWidth(extents, { floor, cap: Infinity, pinned }) : extents.reduce((sum, e) => sum + e.max, 0));
+  const room = wants <= pane ? pane : (paneRoom() ?? pane);
   const alloc = allocateColumnWidths(room - gutter, extents, {
-    floor: COLUMN_FLOOR_CH * EST.digit + EST.pad,
+    floor,
     cap: COLUMN_CAP_FRACTION * room,
     pinned,
   });
-  return alloc?.widths ?? extents.map(() => (room - gutter) / n);
+  const widths = alloc?.widths ?? extents.map(() => (room - gutter) / n);
+  /*
+   * How far past its room the table came out, rather than the allocator's own `scrolls`.
+   *
+   * The allocator fills its room exactly whenever the columns want more than it: a three-column
+   * table in 1600px came out at 1577 against a room of 1576.5, so a threshold of 0.01 reads half a
+   * pixel of rounding as scrolling. That is the wrong answer for a height, because a browser draws
+   * no scrollbar for a fraction of a pixel and counting one makes every table that merely fills its
+   * room a scrollbar too tall.
+   *
+   * It was the wrong answer for the frame too, and this comment used to say otherwise: that the
+   * frame "is marked as scrolling either way and loses nothing by it". It loses `overflow-x:
+   * visible`, which is the whole of its sticky header, and at a narrow pane that cost seven of the
+   * torture sample's eight tables their header row. `Allocation.scrolls` compares against a pixel
+   * now for that reason, so the two sides agree again, and they have to: one decides whether a
+   * scrollbar is drawn and this one reserves the space for it.
+   *
+   * The magnitude still travels rather than a boolean, because the caller states its own threshold
+   * at the point of use where a reader can see it.
+   */
+  return { widths, room, gutter, overflow: (alloc?.total ?? widths.reduce((a, b) => a + b, 0)) - (room - gutter) };
+}
+
+/**
+ * The widths alone, for a caller that wants nothing else.
+ *
+ * `divideColumns` returns the room it divided and whether the result scrolls, because the height
+ * estimate needs both and reconstructing either would mean a second copy of the rule that chose
+ * the room. Three copies of that rule have been wrong today, so this is the one that computes it
+ * and everything else asks.
+ */
+export function estimateColumnWidths(
+  headers: readonly string[],
+  rows: readonly (readonly string[])[],
+  pane: number,
+  pinned: ReadonlyMap<number, number> | null,
+  wrapToFit = true
+): number[] {
+  return divideColumns(headers, rows, pane, pinned, wrapToFit).widths;
 }
 
 /**
@@ -2023,14 +2419,59 @@ export function columnKeepsItsName(rects: readonly CellRect[], c: number, lastRo
   return rects.some((q) => c >= q.c1 && c <= q.c2 && q.r1 === -1 && q.r2 === lastRow);
 }
 
+/**
+ * The row a pasted block starts on, given the selection's top-left.
+ *
+ * A column picked by its header takes a block into its **body**: the header names the column and is not
+ * one of its values. Clearing a whole column already keeps its name and so does one value pasted over it,
+ * by two separate pieces of code; a block did not, because the top-left of a column selection *is* the
+ * header and nothing looked. Measured before the fix: a block whose top cell is empty, pasted over a whole
+ * column, left the header as `|       | Qty |` and the name was gone.
+ *
+ * The same guard the clear path uses, rather than a third reading of "is this column whole". The fill path
+ * still has its own, written as `colRun(c) !== null`, and the two are not provably the same predicate, so
+ * merging them is left alone rather than done on the assumption that they agree.
+ */
+export function pasteStartRow(rects: readonly CellRect[], top: number, col: number, lastRow: number): number {
+  return top === -1 && columnKeepsItsName(rects, col, lastRow) ? 0 : top;
+}
+
 export function estimateTableHeight(
   headers: readonly string[],
   rows: readonly (readonly string[])[],
   widths: readonly number[] | null,
-  { pane = EST.pane, pinned = null }: { pane?: number; pinned?: ReadonlyMap<number, number> | null } = {}
+  {
+    pane = EST.pane,
+    pinned = null,
+    /** See `estimateColumnWidths`. Must match the layout's answer for the same grid. */
+    wrapToFit = true,
+    /**
+     * How tall a horizontal scrollbar is, defaulting to this host's own.
+     *
+     * Explicit because it cannot be measured on demand: whether a scrollbar reserves room is a
+     * setting of the machine rather than of the build, and on a Mac with overlay scrollbars it is
+     * zero. So a check that renders a scrolling table on such a host reads the same number with
+     * this counted and with it ignored, and can tell nobody anything. Handed in, the arithmetic
+     * is checkable anywhere.
+     */
+    scrollbar = scrollbarHeight(),
+  }: {
+    pane?: number;
+    pinned?: ReadonlyMap<number, number> | null;
+    wrapToFit?: boolean;
+    scrollbar?: number;
+  } = {}
 ): number {
   const n = Math.max(1, headers.length);
-  const laid = widths ?? estimateColumnWidths(headers, rows, pane, pinned);
+  /*
+   * The division, kept whole rather than reduced to its widths, because whether the table will
+   * scroll is part of its height and only the division knows.
+   *
+   * When widths are handed in, they are the ones this table was last drawn at, and a total wider
+   * than the room it is being estimated in is the same statement: it scrolled then and will now.
+   */
+  const divided = widths ? null : divideColumns(headers, rows, pane, pinned, wrapToFit);
+  const laid = widths ?? divided!.widths;
   const lines = (value: string, c: number): number => {
     if (!value) return 1;
     const room = Math.max(EST.ch, (laid[c] ?? pane / n) - EST.pad);
@@ -2048,7 +2489,27 @@ export function estimateTableHeight(
     for (let c = 0; c < n && most < CLAMP_LINES; c++) most = Math.max(most, lines(cells[c] ?? '', c));
     return most * EST.line + EST.row;
   };
-  let height = EST.frame + EST.edge + row(headers);
+  /*
+   * The horizontal scrollbar, which the estimate never counted.
+   *
+   * A table too wide for the room it is laid out in gets one, and it takes real height inside the
+   * frame: measured in a VS Code window, `offsetHeight - clientHeight` on the grid is 15px with
+   * both its vertical paddings zero. So everything under a wide table was placed 15px too high
+   * until the table drew, and then dropped, which is what the 0.2.0 notes promised had stopped
+   * happening and had not.
+   *
+   * Only when it will actually scroll, and that is why `divideColumns` reports it: adding it
+   * unconditionally would push every table that fits 15px too low and trade one jump for another
+   * in the commoner direction. Zero in a browser with overlay scrollbars and in jsdom, so hosts
+   * that reserve no room for one are unaffected rather than specially handled.
+   */
+  /*
+   * A pixel of overflow rather than any, because a browser draws no scrollbar for less and the
+   * allocator routinely comes out a fraction over a room it filled exactly. The same threshold the
+   * rest of this file uses when it asks whether something really scrolls.
+   */
+  const scrolls = divided ? divided.overflow > 1 : laid.reduce((a, b) => a + b, 0) > pane + 1;
+  let height = EST.frame + EST.edge + row(headers) + (scrolls ? Math.max(0, scrollbar) : 0);
   for (const r of rows) height += row(r);
   return Math.round(height);
 }
@@ -2480,12 +2941,19 @@ class TableWidget extends WidgetType {
      * `ResizeObserver` on the drawn table records its real height against the signature
      * as soon as it differs, and that is what the lookup above then finds.
      */
-    const shape = `${key}|${this.data.rows.length}|${Math.round(textColumn())}`;
+    /*
+     * `wrapToFit` is in the key as well as in the call. Two grids with the same columns and the
+     * same row count are estimated differently when one is a pipe table and the other a data
+     * block, so leaving it out would serve one of them the other's height.
+     */
+    const wrapToFit = wrapsToFit(this.kind);
+    const shape = `${key}|${this.data.rows.length}|${Math.round(textColumn())}|${wrapToFit ? 'wrap' : 'wide'}`;
     const seen = estimatedHeights.get(shape);
     if (seen) return seen;
     this.estimate ??= estimateTableHeight(this.data.headers, this.data.rows, laidWidths.get(key) ?? null, {
       pane: textColumn(),
       pinned: pinnedWidths.get(key) ?? null,
+      wrapToFit,
     });
     remember(estimatedHeights, shape, this.estimate);
     return this.estimate;
@@ -2738,12 +3206,26 @@ class TableWidget extends WidgetType {
       columns.refresh();
       syncControls();
     };
+    // The row's divider: wiring only. Every decision, and why, is at module scope above. `fitKey`
+    // calls `pins()` for its side effect, which migrates the key when a header is renamed, so the
+    // fitted rows and the pinned widths stay on the same table.
+    let fitAt = tableWidthKey(data.headers);
+    const fitKey = (): string => (fitAt = fittedKeyFollow(fitAt, tableWidthKey(data.headers)));
+    wireRowDivider(gridHost, {
+      dragging: () => !!rowDrag || !!axisDrag,
+      key: fitKey,
+      // Both wrapped rather than passed by reference: they are declared below this call, so a bare
+      // reference reads them in their dead zone while an arrow reads them when the gesture happens.
+      rows: () => rowCount(),
+      onFit: () => applyClamps(),
+    });
     const columns = createColumnLayout(view, wrap, gridHost, {
       table: () => gridHost.querySelector(':scope > table'),
       shape: () => data,
       signature: () => sig,
       render: cellHtml,
       rank: displayWidth,
+      wrapToFit: () => wrapsToFit(kind),
       pinned: pins,
       onLayout: () => columnsLaid(),
     });
@@ -2836,13 +3318,15 @@ class TableWidget extends WidgetType {
      */
     const clampKey = {};
     const clampCell = (el: HTMLElement): void => {
-      const on = el.classList.contains('is-tall') && !el.classList.contains('is-focus') && !el.classList.contains('is-editing');
+      const on = cellWantsClamp(el);
       el.classList.toggle('is-clamped', on);
       if (on) el.title = el.querySelector(':scope > .sheaf-table-text')?.textContent ?? '';
       else el.removeAttribute('title');
     };
     const applyClamps = (): void => {
-      gridHost.querySelectorAll<HTMLElement>('.is-tall, .is-clamped').forEach(clampCell);
+      const touched = gridHost.querySelectorAll<HTMLElement>('.is-tall, .is-clamped');
+      touched.forEach(clampCell);
+      markFittableRows(gridHost, touched);
     };
     function measureClamps(): void {
       view.requestMeasure<{ tall: Set<Element>; height: number } | null>({
@@ -3849,6 +4333,7 @@ class TableWidget extends WidgetType {
     function sortRows(c: number, descending: boolean): void {
       commitCell();
       if (rowCount() < 2) return;
+      endFittingIn(fitKey());
       record();
       const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
       // Compare what the cell shows, not how it is written: a bold cell is drawn
@@ -4273,7 +4758,6 @@ class TableWidget extends WidgetType {
           : (selectionQuote() ?? '');
       return { ...lines(b.r1, b.r2), text, label };
     };
-    const gridToTSV = (g: string[][]): string => g.map((r) => r.join('\t')).join('\n');
     const gridToHTML = (g: string[][]): string =>
       '<table>' +
       g
@@ -4355,8 +4839,8 @@ class TableWidget extends WidgetType {
           render();
           return;
         }
-        // A block starts at the selection's top-left, wherever the active cell is.
-        pasteGrid(g, hasSel ? r1 : focus.r, hasSel ? c1 : focus.c);
+        // A block starts at the selection's top-left; `pasteStartRow` says when that is the body instead.
+        pasteGrid(g, hasSel ? pasteStartRow(selRects(), r1, c1, lastRow()) : focus.r, hasSel ? c1 : focus.c);
       },
     };
     installClipboard();
@@ -4700,7 +5184,12 @@ class TableWidget extends WidgetType {
         e.stopPropagation();
       };
       g.addEventListener('mousedown', stop);
-      g.addEventListener('dblclick', stop);
+      // A double-click fits the column to its content. See `widthsFittedToContent` and `columnsToFit`.
+      g.addEventListener('dblclick', (e) => {
+        stop(e);
+        const fitted = widthsFittedToContent(columns.measured(), columns.widths(), pins(), columnsToFit(c, colWhole, colCount()));
+        if (fitted) setPins(fitted, true);
+      });
       g.addEventListener('click', (e) => e.stopPropagation());
       const follow = (x: number): void => {
         if (!drag) return;
@@ -4802,16 +5291,23 @@ class TableWidget extends WidgetType {
       table.appendChild(thead);
       const tbody = document.createElement('tbody');
       tbody.setAttribute('role', 'rowgroup');
+      // Read once for the whole body rather than per row: it walks the width bookkeeping.
+      const fittedNow = fittedRowsIn(fitKey(), rowCount());
       for (let r = 0; r < rowCount(); r++) {
         const tr = document.createElement('tr');
         tr.setAttribute('role', 'row');
         if (firstRender && justChanged.size && justChanged.has(rowSources.get(wrap)?.(r).from ?? -1)) tr.classList.add('is-changed');
+        // Fitted rows come from the table's own state and not from the row element this replaces.
+        if (fittedNow.has(r)) tr.classList.add('is-fitted');
         const gut = document.createElement('td');
         gut.className = 'sheaf-table-gutter';
         gut.setAttribute('aria-hidden', 'true');
         gut.textContent = String(r + 1);
         gut.addEventListener('mousedown', (e) => {
           e.preventDefault();
+          // A press in the divider zone is aimed at the row's boundary, so it neither selects the row
+          // nor picks it up. Without this, aiming at the divider would start a row drag.
+          if (dividerUnder(e)) return;
           if (keepForMenu(e, r, 0)) return;
           // Read before the press changes the selection: a row number already
           // selected is dragged to move its row, an unselected one to select a run.
@@ -4930,6 +5426,7 @@ class TableWidget extends WidgetType {
       commitCell();
       if (lo < 0 || hi >= rowCount() || hi < lo || to < 0 || to >= rowCount()) return;
       if (to >= lo && to <= hi) return;
+      endFittingIn(fitKey());
       record();
       const count = hi - lo + 1;
       const at = landing(lo, count, to);
@@ -5326,8 +5823,10 @@ class TableWidget extends WidgetType {
         item.tabIndex = -1;
         if (action.icon) item.insertAdjacentHTML('afterbegin', tableIcon(action.icon));
         const label = document.createElement('span');
+        label.className = 'sheaf-table-menu-label';
         label.textContent = action.label;
         item.appendChild(label);
+        if (action.keyHint) drawMenuShortcut(item, action.keyHint, 'sheaf-table-menu-key');
         if (action.disabled) {
           item.classList.add('is-disabled');
           item.setAttribute('aria-disabled', 'true');
@@ -5813,8 +6312,17 @@ function buildTableDecorations(state: EditorState, prev: DecorationSet | null): 
    * head there at all, because the grid is an atomic range and CodeMirror snaps a
    * directional range's ends out of one.
    */
+  const typingOut = state.field(typingOutTable, false) ?? null;
   const isActive = (from: number, to: number): boolean => {
     if (reveal && reveal.from <= to && reveal.to >= from) return true;
+    /*
+     * The table being typed out keeps its pipes, for as long as `typingOutTable` says the run is
+     * going. That field is where the old two-line test moved to, because the test had to survive
+     * the table growing and a decoration builder cannot remember anything itself: the previous
+     * decoration set tells it whether a table was drawn, and "was source" and "did not exist"
+     * are the same absence in it.
+     */
+    if (typingOut === from) return true;
     for (const r of state.selection.ranges) {
       /*
        * A caret at the very end of a table that is still only a header and a
@@ -5838,8 +6346,7 @@ function buildTableDecorations(state: EditorState, prev: DecorationSet | null): 
        * boundary, and a drag or a Select All leaves it past the last line, and
        * neither is somebody asking to edit the pipes.
        */
-      const beingTyped = doc.lineAt(to).number - doc.lineAt(from).number === 1;
-      const inside = r.head > from && (r.head < to || (r.empty && r.head === to && beingTyped));
+      const inside = r.head > from && r.head < to;
       if (inside && (r.empty || wasSource(from, to))) return true;
     }
     return false;
@@ -6111,6 +6618,85 @@ function enterAdjacentTable(down: boolean) {
  * (so the block widgets participate in layout) and `atomicRanges` (so cursor
  * motion glides over a rendered table as one unit, like other widgets).
  */
+/*
+ * The table somebody is in the middle of typing out, by the position it starts at.
+ *
+ * A table needs a delimiter row to be a table at all, so `| a | b |` then Enter then `| - | -`
+ * becomes a table the instant that second row parses, with the caret resting at its close. From
+ * that moment the grid wants to draw, and the person has not written a single row yet. Keeping
+ * the pipes showing while they finish is the whole of what this remembers.
+ *
+ * **The run has to survive the table growing, and that is why it needs a field.** Two cheaper
+ * shapes were tried and measured out. Asking "was this not drawn as a grid a moment ago" is true
+ * both for a table that was showing its source and for one that **did not exist yet**, so an
+ * inserted or pasted table opened as pipes and eight table scenarios failed. Holding the run to a
+ * table of exactly two lines ends it mid-keystroke: the first `|` of the first row joins, the
+ * table becomes three lines, the grid snaps shut and the rest of the row is pushed below it.
+ *
+ * So the run starts where the old two-line test already pointed, which is the one state an insert
+ * cannot be in: an **empty caret at the close of a table that is only a header and a delimiter
+ * row**. `insertBlock` leaves the caret inside the block rather than at its close, and anything
+ * pasted has body rows, so neither can begin a run.
+ *
+ * It ends when the caret is neither at the table's close nor on an empty line directly after it,
+ * which is Markdown's own rule for where a table stops: press Enter on that empty line and the
+ * caret is two lines out, so the run ends and the grid draws. Type a row instead and the node
+ * takes the line, the caret is at the new close, and the run carries on for as many rows as
+ * somebody types.
+ */
+const typingOutTable = StateField.define<number | null>({
+  create: () => null,
+  update(value, tr) {
+    const at = value === null ? null : tr.changes.mapPos(value, 1);
+    const { doc, selection } = tr.state;
+    const r = selection.main;
+
+    /** The table starting at `from`, as the tree sees it now, or null. */
+    const span = (from: number): { from: number; to: number } | null => {
+      let found: { from: number; to: number } | null = null;
+      syntaxTree(tr.state).iterate({
+        from,
+        to: from,
+        enter: (node) => {
+          if (node.name === 'Table' && node.from === from) found = { from: node.from, to: node.to };
+          return undefined;
+        },
+      });
+      return found;
+    };
+
+    /** Whether an empty caret is at a table's close or on an empty line directly after it. */
+    const holding = (t: { from: number; to: number }): boolean => {
+      if (!r.empty) return false;
+      if (r.head === t.to) return true;
+      if (t.to >= doc.length) return false;
+      const after = doc.lineAt(t.to + 1);
+      return after.from === t.to + 1 && after.from === after.to && r.head === after.from;
+    };
+
+    if (at !== null) {
+      const t = span(at);
+      if (t && holding(t)) return at;
+    }
+
+    // Starting a run: the one state an insert or a paste cannot leave the caret in.
+    if (r.empty) {
+      let begun: number | null = null;
+      syntaxTree(tr.state).iterate({
+        from: r.head,
+        to: r.head,
+        enter: (node) => {
+          if (node.name !== 'Table' || node.to !== r.head) return undefined;
+          if (doc.lineAt(node.to).number - doc.lineAt(node.from).number === 1) begun = node.from;
+          return undefined;
+        },
+      });
+      if (begun !== null) return begun;
+    }
+    return null;
+  },
+});
+
 const tableField = StateField.define<DecorationSet>({
   create: (state) => buildTableDecorations(state, null),
   update(value, tr) {
@@ -6200,6 +6786,21 @@ export function tableGridCovers(state: EditorState, from: number, to: number): b
  * While the table is shown as a grid, that text starts its own paragraph one line
  * down instead, keeping the blank line that separates it from the table. Edits
  * that are not user input (the host applying a file change) pass through as is.
+ *
+ * **This is why typing on the empty line under a table appears one line lower than
+ * the caret was**, which reads as a fault and has been filed as one. It is not
+ * avoidable: the blank line has to stay between the table and the new text, and a
+ * file where the text sits on the caret's old line with a blank line above it is the
+ * same file. Only the line number differs.
+ *
+ * Measured with this filter removed, on a three-line table followed by a blank line:
+ * the typed text lands on the caret's own line, the table's range grows to include
+ * it, and **the grid stops being drawn at all**. So the visible cost of keeping it is
+ * a line number, and the cost of dropping it is the table.
+ *
+ * The asymmetry with the line *above* a table, which behaves as a person expects, is
+ * the GFM rule rather than an inconsistency: a table needs a blank line to end and
+ * needs nothing to begin, so there is nothing to protect above it.
  */
 const keepTypingOutOfTableBelow = EditorState.transactionFilter.of((tr) => {
   if (!tr.docChanged || !tr.isUserEvent('input')) return tr;
@@ -6273,6 +6874,9 @@ const arrivedRows = ViewPlugin.define(() => ({
 }));
 
 export const tables: Extension = [
+  // Before `tableField`, because its decorations read this one and a field sees only fields
+  // declared before it.
+  typingOutTable,
   tableField,
   arrivedRows,
   pasteRangeAsTable,

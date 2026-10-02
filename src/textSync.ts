@@ -426,6 +426,45 @@ function advance(documentText: string, from: number, count: number): number {
   return at;
 }
 
+/** Every line ending in `text`, in order, each as the characters it is written with. */
+function endingsIn(text: string): string[] {
+  return text.match(/\r\n|\n|\r/g) ?? [];
+}
+
+/**
+ * The replacement with its newlines written as the document writes them there.
+ *
+ * The webview holds every ending as a single `\n`, so a replacement has to be converted
+ * on the way back into the file. Converting it by one file-wide answer is what rewrote
+ * endings nobody had touched: **a line ending has three forms and the answer has two.**
+ * A file holding both CRLF and LF had no right answer available to it, and which way the
+ * span went depended on which kind happened to be on the first line. A file written
+ * entirely in lone carriage returns is perfectly consistent and still cannot be
+ * described, because CR is not one of the boolean's states.
+ *
+ * The endings inside the span being replaced are the right answer and are already here.
+ * Taking the i-th of them for the i-th newline is exact whenever the edit does not change
+ * how many endings the span holds, which covers every replacement of equal line count,
+ * and that includes a span whose own endings are mixed. It is a choice rather than a
+ * deduction only where the edit adds or removes lines inside the span, since the
+ * surviving boundaries no longer line up with their old positions; the last kind seen
+ * fills in beyond the list.
+ *
+ * `crlf` is still the answer for a span that holds no ending at all, which is a pure
+ * insertion: a line that did not exist has no original ending to copy, and the ending it
+ * should get is the one the host itself writes. That is the one thing a file-wide answer
+ * is genuinely about. It leaves one case short of right, a line added to a lone-CR file,
+ * which arrives as LF because the boolean cannot say CR. Smaller than what it replaces,
+ * and only fixable by giving the hosts a third state to send.
+ */
+function endingsLike(replaced: string, replacement: string, crlf: boolean): string {
+  if (!/[\r\n]/.test(replacement)) return replacement;
+  const found = endingsIn(replaced);
+  if (!found.length) return replacement.replace(/\r\n|\n|\r/g, crlf ? '\r\n' : '\n');
+  let i = 0;
+  return replacement.replace(/\r\n|\n|\r/g, () => found[i++] ?? found[found.length - 1]);
+}
+
 /**
  * The edit that brings the document's text to the webview's, with `text` the
  * document's full text afterwards, or null when the two already match.
@@ -443,10 +482,11 @@ export function planEdit(
   const edit = minimalEdit(shown, webviewText);
   const start = carriageReturns ? advance(documentText, 0, edit.start) : edit.start;
   const end = carriageReturns ? advance(documentText, start, edit.end - edit.start) : edit.end;
-  // `\r?\n`, not `\n`: a replacement that already carries a carriage return would otherwise
-  // come out as `\r\r\n`, one doubled return per line, and the conversion has to be safe to
-  // run over text that is already in the document's endings.
-  const replacement = crlf ? edit.replacement.replace(/\r?\n/g, '\r\n') : edit.replacement;
+  // Each ending taken from the span it is replacing, falling back to the host's answer only
+  // where the span has none to give. The patterns match `\r\n` as one unit before a lone
+  // `\n` or `\r`, so running this over text already in the document's endings is safe: a
+  // replacement carrying a carriage return would otherwise come out as `\r\r\n`.
+  const replacement = endingsLike(documentText.slice(start, end), edit.replacement, crlf);
   return {
     start,
     end,

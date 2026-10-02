@@ -55,8 +55,31 @@ export const scenarios = [
   {
     id: 'host.outside-change.race.r01',
     feature: 'host.outside-change',
-    name: 'A write that replaces a letter the auto-save had already written says so, and names the letter',
+    name: 'A write that replaces a letter the auto-save had already written gives the letter back, and says nothing',
     run: async (S) => {
+      /*
+       * Rewritten on 2026-09-30 to match a design decided on 2026-09-26: when a write is merely
+       * behind on the line you typed, your text stands. This asserted the design that decision
+       * reversed, and the release run at `81cad61` shows the product doing the decided thing while
+       * this scenario called it a failure:
+       *
+       *   the file held "ZMiddle line here." before the write;
+       *   after 0ms "Middle line here." -> 800ms "ZMiddle line here.";
+       *   screen "ZMiddle line here."; notices []
+       *
+       * So the letter goes for a moment as the reload lands and the merge puts it back, and nothing
+       * is announced because nothing was lost. Both halves are asserted below: the letter standing
+       * at the end, and the silence, which under the old design were opposites and under this one
+       * are the same fact.
+       *
+       * The `after` trail is kept and printed rather than asserted. That the letter is briefly
+       * absent at 0ms is how the merge works rather than something a person can see, and pinning a
+       * moment inside it would make this a timing scenario instead of a behaviour one.
+       *
+       * `r02` below stays exactly as it was and is still the control: with nobody having typed, the
+       * same write must also say nothing. Together they say the silence here is because nothing was
+       * taken, not because notices never appear.
+       */
       const path = await S.fresh('race-after-save', THREE_LINES);
       await S.caret('Middle', 0);
       await S.type('Z');
@@ -66,16 +89,20 @@ export const scenarios = [
       const savedFirst = middleOf(path);
       writeFileSync(path, AGENT_CHANGED_THE_TOP);
       const after = await trail(S, path);
+      await S.sleep(800);
       const shown = (await S.state()).doc.split('\n')[2];
       const said = (await toasts(S)).filter((t) => t.startsWith('Sheaf:'));
       const ok =
         // The letter did reach the file on its own, which is what makes this the third ordering.
         savedFirst === 'ZMiddle line here.' &&
-        // And the write took it back, from the file and from the screen alike.
-        middleOf(path) === 'Middle line here.' &&
-        shown === 'Middle line here.' &&
-        // Which is the part that must not be silent.
-        said.some((t) => t.includes('your last change is gone: "Z"'));
+        // And it is still there afterwards, on the screen and in the file alike.
+        middleOf(path) === 'ZMiddle line here.' &&
+        shown === 'ZMiddle line here.' &&
+        // The write's own change to the top of the file has to have arrived as well, or a merge
+        // that simply dropped the write would read as a pass.
+        readFileSync(path, 'utf8').includes('Top line changed') &&
+        // Nothing was taken, so there is nothing to say.
+        said.length === 0;
       return {
         ok,
         detail: `the file held ${j(savedFirst)} before the write; after ${after}; screen ${j(shown)}; notices ${j(said)}`,

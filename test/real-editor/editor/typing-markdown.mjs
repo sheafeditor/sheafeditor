@@ -134,9 +134,48 @@ export const scenarios = [
       const disk = await S.disk(file);
       const seen = await lines(S);
       const drawn = seen.filter((l) => l.text.includes('five') || l.text.includes('six')).map((l) => l.text);
+      /*
+       * The drawn text reads "5.five", with no space, and that is right. A list marker is separated
+       * from its words by CSS, not by a character, so `textContent` never holds that space: a bullet
+       * reads "\u2022a bullet item" the same way, which is why e03 does not ask for one. Asserting
+       * `'5. five'` here failed against a build drawing the list correctly.
+       *
+       * What the scenario means is that the words do not run into the marker, so that is measured.
+       * The gap is read between the marker character and the first letter, and against a bullet in
+       * the same document, which is the control: both are 8px at `81cad61`, so a numbered list is
+       * spaced exactly as a bulleted one is.
+       */
+      const gaps = await S.eval(() => {
+        const at = (needle, ch) => {
+          const l = [...document.querySelectorAll('.cm-content > .cm-line')].find((x) => x.textContent.includes(needle));
+          if (!l) return null;
+          const w = document.createTreeWalker(l, NodeFilter.SHOW_TEXT);
+          for (let n; (n = w.nextNode()); ) {
+            const i = n.data.indexOf(ch);
+            if (i < 0) continue;
+            const r = document.createRange();
+            r.setStart(n, i);
+            r.setEnd(n, i + 1);
+            const b = r.getBoundingClientRect();
+            if (b.width === 0) continue;
+            return b;
+          }
+          return null;
+        };
+        const gap = (needle, marker, first) => {
+          const m = at(needle, marker);
+          const f = at(needle, first);
+          return m && f ? Math.round(f.left - m.right) : null;
+        };
+        return { five: gap('five', '.', 'f'), six: gap('six', '.', 's') };
+      });
       // The document began with a blank line after "Start.", and it is still there at the end.
-      const ok = disk === 'Start.\n\n5. five\n6. six\n\n' && j(drawn) === j(['5. five', '6. six']);
-      return { ok, detail: `file ${j(disk)}; the items read ${j(drawn)}` };
+      const ok =
+        disk === 'Start.\n\n5. five\n6. six\n\n' &&
+        j(drawn) === j(['5.five', '6.six']) &&
+        gaps.five > 2 &&
+        gaps.six > 2;
+      return { ok, detail: `file ${j(disk)}; the items read ${j(drawn)}; the gap after the marker is ${gaps.five}px and ${gaps.six}px` };
     },
   },
   {
@@ -163,7 +202,7 @@ export const scenarios = [
   {
     id: 'prose.typing-markdown.e06',
     feature: 'prose.typing-markdown',
-    name: 'Typing a fence, a language and code draws a code block with the language named, and the file holds both fences',
+    name: 'Typing a fence, a language and code draws a code block, and the file holds both fences',
     run: async (S) => {
       const file = await S.fresh('typing-fence', 'Start.\n\nAfter the code.\n');
       await S.caret('Start', 5);
@@ -180,10 +219,32 @@ export const scenarios = [
       const seen = await lines(S);
       const code = seen.find((l) => l.text.includes('const a = 1;'));
       const backticks = seen.filter((l) => l.text.includes('```')).map((l) => l.text);
-      const lang = await S.eval(() => document.querySelector('.sheaf-code-lang, .cm-code-lang, [data-code-lang]')?.textContent ?? null);
+      /*
+       * There is no language label, and its absence is the design rather than a gap. A change
+       * removed it on 2026-09-27, on the instruction that a block's options belong on the left
+       * like every other block's, and `render.code-blocks` R2 was rewritten with it.
+       *
+       * This scenario asked for one twice, wrongly each time. It first read `.sheaf-code-lang`,
+       * `.cm-code-lang` and `[data-code-lang]`, none of which has ever existed, and the value never
+       * reached `ok`, so it passed for days while printing `language chip null` to nobody. I then
+       * "fixed" the selector to `.md-code-lang`, which is the class the label used to carry, and
+       * turned a silent pass into a confident failure against a feature deliberately deleted three
+       * days earlier. Correcting an instrument is not the same as checking what it should assert.
+       *
+       * So the absence is asserted, because that is what somebody decided, and a label coming back
+       * should fail here rather than pass quietly.
+       */
+      const lang = await S.eval(() => document.querySelector('.md-code-lang, .sheaf-code-lang, [data-code-lang]')?.textContent ?? null);
       const ok =
-        disk === 'Start.\n```js\nconst a = 1;\n```\n\nAfter the code.\n' && !!code && /tok-code-block/.test(code.cls) && backticks.length === 0;
-      return { ok, detail: `file ${j(disk)}; the code line ${j(code)}; lines still showing backticks ${j(backticks)}; language chip ${j(lang)}` };
+        disk === 'Start.\n```js\nconst a = 1;\n```\n\nAfter the code.\n' &&
+        !!code &&
+        /tok-code-block/.test(code.cls) &&
+        backticks.length === 0 &&
+        lang === null;
+      return {
+        ok,
+        detail: `file ${j(disk)}; the code line ${j(code)}; lines still showing backticks ${j(backticks)}; language label, removed on purpose ${j(lang)}`,
+      };
     },
   },
   {

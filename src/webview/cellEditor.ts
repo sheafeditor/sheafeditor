@@ -32,8 +32,8 @@
 import { EditorState, Extension, Facet } from '@codemirror/state';
 import { EditorView, KeyBinding, keymap } from '@codemirror/view';
 import { defaultKeymap, history, redo, undo } from '@codemirror/commands';
-import { markdown, commonmarkLanguage } from '@codemirror/lang-markdown';
-import { markdownDialect } from './markdownDialect';
+import { commonmarkLanguage } from '@codemirror/lang-markdown';
+import { markdownDialect, sheafMarkdown } from './markdownDialect';
 import { livePreview, revealField } from './livePreview';
 import { toggleWholeReveal } from './revealBlock';
 import { selectionToolbar } from './selectionToolbar';
@@ -186,13 +186,12 @@ const CELL_BLOCKS = [
   'Table',
 ];
 
-const cellLanguage = markdown({
+// `sheafMarkdown` installs no paste handler of its own, which is what a cell wants: the document's
+// own rules answer a pasted address, through installLinkPaste below, so a cell and a paragraph a few
+// pixels apart do the same thing.
+const cellLanguage = sheafMarkdown({
   base: commonmarkLanguage,
   extensions: [markdownDialect, { remove: CELL_BLOCKS }],
-  addKeymap: false,
-  // The document's own rules answer a pasted address, through installLinkPaste
-  // below, so a cell and a paragraph a few pixels apart do the same thing.
-  pasteURLAsLink: false,
 });
 
 /**

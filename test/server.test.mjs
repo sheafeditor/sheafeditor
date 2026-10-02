@@ -683,8 +683,21 @@ const cases = [
    * TypeScript lets a subscriber declare fewer parameters than its signature, so the flag can be
    * dropped on the floor and still compile, which is the shape of the defect being fixed.
    */
-  ['a write that takes what the tab just typed is named as having taken it', () =>
+  ['a write made from a copy taken before the typing leaves the typing standing, and says nothing', () =>
     serving({ 'a.md': 'Line one.\n' }, async ({ origin, root, get, post }) => {
+      /*
+       * Rewritten for the design decided 2026-09-26, whose reverse this asserted: when a write is
+       * merely behind on the line you typed, your text stands. The window was changed then and this
+       * host was not, and this check described that gap as correct.
+       *
+       * The write carries the pre-typing version of line one and adds a line of its own, so it never
+       * touched the line the person typed on. There is nothing to choose between: both changes
+       * survive, and nothing is said because nothing was taken.
+       *
+       * The file is asserted as well as the frame, because the whole of the defect was that the
+       * screen and the file could part company, and a check on the frame alone would pass a host that
+       * showed the merge and wrote the write.
+       */
       await get('/api/doc?path=a.md');
       // The tab types, which is what puts anything on record to lose.
       await post('/api/doc', { path: 'a.md', text: 'Line one. and a bit typed just now\n' });
@@ -693,7 +706,10 @@ const cases = [
         // A tool writing the file from a copy it read before the typing landed.
         await writeFile(join(root, 'a.md'), 'Line one.\nSomething else entirely.\n', 'utf8');
       });
-      return frame?.event === 'contentTookTypedText' && frame.text === 'Line one.\nSomething else entirely.\n';
+      const both = 'Line one. and a bit typed just now\nSomething else entirely.\n';
+      await new Promise((r) => setTimeout(r, 300));
+      const onDisk = await readFile(join(root, 'a.md'), 'utf8');
+      return frame?.event === 'setContent' && frame.text === both && onDisk === both;
     })],
 
   /* And the words to say, quoting what was taken.
@@ -710,10 +726,23 @@ const cases = [
   ['the notice naming what a write took quotes the text and reaches the tab', () =>
     serving({ 'a.md': 'Line one.\n' }, async ({ origin, root, get, post }) => {
       await get('/api/doc?path=a.md');
+      /*
+       * The write has to **conflict** rather than merely be behind, and that is the whole of the
+       * change here. It used to carry the pre-typing line one and append a line, which the host now
+       * merges, so it takes nothing and reaches no notice.
+       *
+       * This one changes the very line that was typed in, to something else. There is no answer to
+       * what the two together would say, the person at the keyboard keeps theirs, and that is the case
+       * the notice exists for.
+       *
+       * It is also the control the merge most needed: keeping the typing must not silence the conflict
+       * that matters. A check that only proved the merge works would pass on a host that had stopped
+       * reporting anything at all.
+       */
       await post('/api/doc', { path: 'a.md', text: 'Line one. and a distinctive phrase\n' });
       const frames = await documentFrames(origin, 'a.md', 2, async () => {
         await new Promise((r) => setTimeout(r, 120));
-        await writeFile(join(root, 'a.md'), 'Line one.\nSomething else entirely.\n', 'utf8');
+        await writeFile(join(root, 'a.md'), 'Line one. and something the tool wrote instead\n', 'utf8');
       });
       const notice = frames.find((f) => f.event === 'notice');
       return (

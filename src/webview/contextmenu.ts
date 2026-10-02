@@ -27,7 +27,7 @@ import { EditorState, StateEffect, Text } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
 import { syntaxTree } from '@codemirror/language';
 import { BlockKind, blockKindOf, clearFormatting, insertLink, MARK_NODE, marksAreLiteral, toggleWrap, turnInto } from './toolbar';
-import { COPY_REF_KEY, SEND_REF_KEY, drawKeyHint } from './shortcuts';
+import { COPY_REF_KEY, SEND_REF_KEY, drawKeyHint, keyShortcuts } from './shortcuts';
 import { tableRowSourceAt, tableRowRefAt, tableActionsAt } from './tables';
 import { TableIcon, tableIcon } from './tableIcons';
 import { formatStateAt } from './formatState';
@@ -641,6 +641,24 @@ export function mountContextMenu(root: HTMLElement, deps: ContextMenuDeps): void
         const keys = document.createElement('span');
         keys.className = 'sheaf-ctx-key';
         drawKeyHint(keys, item.keyHint);
+        /*
+         * The hint is drawn for the eye and announced through `aria-keyshortcuts` instead.
+         *
+         * A row is a `<button>` with no `aria-label`, so its accessible name is computed from its
+         * contents, and the hint's spans were plain text inside it. The name was therefore the label
+         * followed by the key text run together, which a screen reader read as "Move up↑": neither the
+         * label alone, which is what the requirement promises, nor a usable announcement of the
+         * shortcut.
+         *
+         * Hiding the hint without replacing it would make the requirement true and the product worse,
+         * because a native menu announces its shortcut and somebody who cannot learn it here has to
+         * find it elsewhere. `aria-keyshortcuts` is the attribute for exactly this: it does not enter
+         * the accessible name, and assistive technology announces it in its own way at the point its
+         * user expects. It also decouples the two concerns, leaving the visible hint free to show `⌥↑`
+         * while the attribute carries `Alt+ArrowUp`.
+         */
+        keys.setAttribute('aria-hidden', 'true');
+        btn.setAttribute('aria-keyshortcuts', keyShortcuts(item.keyHint));
         btn.appendChild(keys);
       }
       if (item.checked !== undefined) {

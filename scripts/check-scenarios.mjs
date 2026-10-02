@@ -91,6 +91,17 @@ function unitScenarios(text) {
   return out;
 }
 
+/*
+ * Every window area and how many scenarios it holds, kept so the distribution can be printed
+ * rather than typed somewhere and read later.
+ *
+ * `CLAUDE.md` justifies running only the affected areas per landing on the shape of this
+ * distribution, and those numbers have drifted twice from being written by hand: once by about
+ * 4% and again by about 6%. This check already imports every area, so it is the one place that
+ * knows the answer on every landing.
+ */
+const perArea = [];
+
 for (const name of readdirSync(EDITOR).sort()) {
   if (!name.endsWith('.mjs')) continue;
   const file = join(EDITOR, name);
@@ -100,6 +111,7 @@ for (const name of readdirSync(EDITOR).sort()) {
     process.exitCode = 1;
     continue;
   }
+  perArea.push([name.replace(/\.mjs$/, ''), scenarios.length]);
   scenarios.forEach((sc, i) => note(sc.id, `${relative(REPO, file)}[${i}]`, sc.name));
 }
 
@@ -202,3 +214,26 @@ if (clashes.length) {
   process.exit(1);
 }
 process.stdout.write(`${seen.size} scenario ids, each used once\n`);
+
+/*
+ * The window suite's distribution, printed because `CLAUDE.md` reasons from it.
+ *
+ * The per-area sum and the number of distinct ids are the same figure here, and the clash check
+ * above is what makes that true: an id used in two areas exits 1, so a re-export like
+ * `reveal-source.mjs` cannot add to the total. Both numbers being one number is worth saying,
+ * because "how many scenarios are there" and "how many run if you run every area" look like
+ * different questions and are not.
+ */
+if (perArea.length) {
+  const ranked = [...perArea].sort((a, b) => b[1] - a[1]);
+  const total = ranked.reduce((n, [, count]) => n + count, 0);
+  const top = ranked.slice(0, 8);
+  const held = top.reduce((n, [, count]) => n + count, 0);
+  process.stdout.write(
+    `\nWindow areas: ${total} scenarios across ${ranked.length} areas, and the per-area sum is the ` +
+      `distinct count because no id may be used twice.\n` +
+      `  the eight largest hold ${held}: ${top.map(([a, n]) => `${a} ${n}`).join(', ')}\n` +
+      `  the other ${ranked.length - 8} hold ${total - held}, ${ranked.filter(([, n]) => n < 8).length} of them under eight each\n` +
+      `  CLAUDE.md reasons from these; read them here rather than from that paragraph.\n`
+  );
+}

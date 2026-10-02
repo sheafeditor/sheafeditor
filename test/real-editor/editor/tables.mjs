@@ -531,6 +531,143 @@ export const scenarios = [
     },
   },
   {
+    /*
+     * The byte half of the key commands, which `e01` cannot answer: it checks a line count and two
+     * substrings, so a build that also repadded an untouched row would pass it.
+     *
+     * The control is built into the fixture rather than run beside it. `|kiwi|12|` is padded by
+     * nobody, so a row operation that rewrote the whole table would normalise that line and the
+     * reading would fail. A table that was already uniform cannot tell the two apart.
+     */
+    id: 'tables.keys.e02',
+    feature: 'tables.keys',
+    name: 'Cmd+Alt+= puts one line in and leaves every other line of the file byte-identical, an unpadded row included',
+    run: async (S) => {
+      const ragged = INTRO + '| Fruit | Qty |\n| ----- | --- |\n| apple | 3   |\n|kiwi|12|\n| fig   | 100 |' + OUTRO;
+      const path = await open(S, 'keys-row-bytes', ragged);
+      await S.click(gutter(0));
+      await S.sleep(300);
+      await S.press('Meta+Alt+Equal');
+      await S.sleep(600);
+      await clickOut(S);
+      const after = await S.disk(path);
+      const was = ragged.split('\n');
+      const now = after.split('\n');
+      // Take the first line that differs, lift it out, and ask whether what is left is the original
+      // file. That is a quotation of the bytes rather than a prediction of the shape they take.
+      const at = now.findIndex((l, i) => l !== was[i]);
+      const added = at >= 0 ? now[at] : null;
+      const without = at >= 0 ? now.slice(0, at).concat(now.slice(at + 1)) : now;
+      const onlyInsert = now.length === was.length + 1 && without.join('\n') === was.join('\n');
+      const below = at > 0 && was[at - 1] === '| apple | 3   |';
+      const cols = added ? added.split('|').length - 2 : 0;
+      const raggedKept = now.includes('|kiwi|12|');
+      return res(onlyInsert && below && cols === 2 && raggedKept, { insertedAt: at, added, below, cols, onlyInsert, raggedKept, after: show(after) });
+    },
+  },
+  {
+    /*
+     * A column removed has to come out of the delimiter row as well, or the table stops being a
+     * table. `e01` reads that `Qty` is gone and the `Fruit` header is still there, and both hold
+     * whether or not the delimiter row was fixed, which is what leaves R5 uncovered.
+     *
+     * Three readings instead of a substring: the cell count of every pipe line including the
+     * delimiter row, the values that are left, and the line count. The delimiter row is checked by
+     * counting its dash runs rather than by comparing it to itself, which would pass on anything.
+     */
+    id: 'tables.keys.e03',
+    feature: 'tables.keys',
+    name: 'Cmd+Alt+- on a picked column takes that column out of the delimiter row too, and leaves the others value for value',
+    run: async (S) => {
+      const three = INTRO + '| Fruit | Qty | Note |\n| ----- | --- | ---- |\n| apple | 3   | ripe |\n| kiwi  | 12  | firm |' + OUTRO;
+      const path = await open(S, 'keys-col-delimiter', three);
+      await S.click(cell(-1, 1));
+      await S.sleep(300);
+      await S.press('Meta+Alt+Minus');
+      await S.sleep(600);
+      await clickOut(S);
+      const after = await S.disk(path);
+      const cells = (l) => l.split('|').slice(1, -1).map((s) => s.trim());
+      const lines = after.split('\n').filter((l) => l.startsWith('|'));
+      const widths = lines.map((l) => cells(l).length);
+      const kept = lines.map((l) => cells(l).join('/'));
+      const dashRuns = lines[1] ? cells(lines[1]).filter((s) => /^-+$/.test(s)).length : 0;
+      const ok =
+        lines.length === 4 &&
+        widths.every((w) => w === 2) &&
+        dashRuns === 2 &&
+        kept[0] === 'Fruit/Note' &&
+        kept.slice(2).join(' ') === 'apple/ripe kiwi/firm' &&
+        after.split('\n').length === three.split('\n').length;
+      return res(ok, { widths, dashRuns, kept, after: show(after) });
+    },
+  },
+  {
+    /*
+     * The keys take their axis from what is picked, so with nothing picked there is no axis to take
+     * and guessing one would add a row to a table the person was only reading. `keyAxis` refuses for
+     * two reasons and both are driven here: a selection that is neither a whole row nor a whole
+     * column, and a whole row with a Cmd-clicked cell beside it.
+     *
+     * The control is the third reading rather than a separate run, and it is the one that makes the
+     * other two mean anything: the same two keys with the row picked alone do change the document,
+     * so "nothing happened" is a refusal and not a keystroke that never arrived. Every reading is
+     * taken from the editor's own document, because a table is written to disk when focus leaves it
+     * and a disk read taken too early reports no change for the wrong reason.
+     */
+    id: 'tables.keys.e04',
+    feature: 'tables.keys',
+    name: 'With no row or column picked, both keys do nothing; with the row picked alone they do not',
+    run: async (S) => {
+      const path = await open(S, 'keys-nothing-picked', N);
+      const doc = async () => (await S.state()).doc;
+      const both = async () => {
+        await S.press('Meta+Alt+Equal');
+        await S.sleep(500);
+        await S.press('Meta+Alt+Minus');
+        await S.sleep(500);
+      };
+      const before = await doc();
+      await S.click(cell(0, 1));
+      await S.sleep(300);
+      const oneCell = (await grid(S)).sel;
+      await both();
+      const afterCell = await doc();
+      await S.click(gutter(0));
+      await S.sleep(300);
+      const rowPicked = (await grid(S)).sel;
+      await S.click(cell(1, 1), { modifiers: ['Meta'] });
+      await S.sleep(300);
+      const rowPlusExtra = (await grid(S)).sel;
+      await both();
+      const afterExtra = await doc();
+      await S.click(gutter(0));
+      await S.sleep(300);
+      await S.press('Meta+Alt+Equal');
+      await S.sleep(600);
+      const afterRow = await doc();
+      await clickOut(S);
+      const d = await S.disk(path);
+      const ok =
+        oneCell === 1 &&
+        rowPicked > 1 &&
+        rowPlusExtra > rowPicked &&
+        afterCell === before &&
+        afterExtra === before &&
+        afterRow !== before &&
+        afterRow.split('\n').length === before.split('\n').length + 1;
+      return res(ok, {
+        oneCell,
+        rowPicked,
+        rowPlusExtra,
+        cellChanged: afterCell !== before,
+        extraChanged: afterExtra !== before,
+        controlChanged: afterRow !== before,
+        d: show(d),
+      });
+    },
+  },
+  {
     id: 'tables.cell-edit.e11',
     feature: 'tables.cell-edit',
     name: 'A value ending in a backslash typed into an unpadded table keeps the row its two cells',

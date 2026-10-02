@@ -36,7 +36,18 @@ import { emojiFor } from './emoji';
 import { editableProps, imageSelection, imageWidgetFor, matchHtmlImage } from './images';
 import { inlineHtmlPairAt } from './inlineHtml';
 import { BlockRange, blockRangeAt } from './blockModel';
-import { blockMath, blockMathError, blockMathRanges, inlineMath, inlineMathError, mathError } from './maths';
+import {
+  blockMath,
+  blockMathError,
+  blockMathRanges,
+  inlineMath,
+  inlineMathError,
+  loadMaths,
+  mathError,
+  mathsLoaded,
+  mathsReady,
+  requestMaths,
+} from './maths';
 import { MermaidRange, mermaidDiagram, mermaidThemeChanged, mermaidThemeWatch, openingFenceLang } from './mermaid';
 import { coveredEnd } from './selectionExtent';
 import { footnoteClicks, footnoteDefDecoration, footnoteDefLine, footnoteIndex, footnoteKey, footnoteRefDecoration } from './footnotes';
@@ -46,7 +57,17 @@ export interface LivePreviewConfig {
   revealSyntaxOnLine: boolean;
 }
 
-let currentConfig: LivePreviewConfig = { revealSyntaxOnLine: true };
+/*
+ * The value before a host has sent one, which must be the manifest's default.
+ *
+ * A host sends the config at `init`, so in the product this is overwritten before anybody
+ * sees a document and the value here never shows. Nothing sends one in a test, so it is the
+ * value every scenario inherits, and it used to be `true` while `sheaf.revealSyntaxOnLine`
+ * defaults to `false`. A scenario that said nothing was therefore written for a state a
+ * person has to turn on deliberately. `test/host.test.mjs` now pins the two together,
+ * because nothing compared them and that is how they came apart.
+ */
+let currentConfig: LivePreviewConfig = { revealSyntaxOnLine: false };
 
 /**
  * Bumped whenever the config changes. The view plugin compares it on every
@@ -702,6 +723,41 @@ interface FenceLine {
 }
 
 /**
+ * What may sit between the start of a line and the backtick run that opens a fence.
+ *
+ * Only a quote or list marker; anything else means the backticks are part of the code. Shared with
+ * `isFenceLine` below, because a second copy of this is a second answer to "is this line a fence" and
+ * they would stop agreeing.
+ */
+const ONLY_MARKERS_BEFORE = /^[\s>]*(?:[-*+]|\d+[.)])?\s*$/;
+
+/**
+ * Whether `pos` is on a line that opens or closes a fenced block.
+ *
+ * Needed outside the drawing, because a command acting on "a code block" has to tell the fence lines
+ * from the code between them. `formatStateAt(...).codeBlock` is true on all three, which is right for
+ * deciding whether the caret is in a block and wrong for deciding what to write: indenting a fence by
+ * four spaces stops it being a fence, and the closing one then opens a new block that swallows the
+ * rest of the document.
+ */
+export function isFenceLine(state: EditorState, pos: number): boolean {
+  const line = state.doc.lineAt(pos);
+  let found = false;
+  syntaxTree(state).iterate({
+    from: line.from,
+    to: line.to,
+    enter: (node) => {
+      if (found || node.name !== 'CodeMark') return;
+      if (node.node.parent?.name !== 'FencedCode') return;
+      if (state.doc.lineAt(node.from).number !== line.number) return;
+      if (!ONLY_MARKERS_BEFORE.test(line.text.slice(0, node.from - line.from))) return;
+      found = true;
+    },
+  });
+  return found;
+}
+
+/**
  * The opening and closing fence lines of a fenced block.
  *
  * Only the backtick run that opens its line counts: inside the code, a run of
@@ -714,8 +770,7 @@ function fenceLinesOf(doc: Text, node: SyntaxNode, first: number, last: number):
     const line = doc.lineAt(mark.from);
     if (line.number !== first && line.number !== last) continue;
     if (out.some((f) => f.number === line.number)) continue;
-    // Only a quote or list marker may sit ahead of a fence; anything else is code.
-    if (!/^[\s>]*(?:[-*+]|\d+[.)])?\s*$/.test(line.text.slice(0, mark.from - line.from))) continue;
+    if (!ONLY_MARKERS_BEFORE.test(line.text.slice(0, mark.from - line.from))) continue;
     out.push({
       number: line.number,
       at: mark.from,
@@ -849,6 +904,14 @@ function buildDecorations(view: EditorView): BuiltDecorations {
         // --- Inline maths -------------------------------------------------
         if (name === 'InlineMath') {
           const source = doc.sliceString(node.from + 1, node.to - 1);
+          // KaTeX arrives on demand, so until it does there is no answer about this source and
+          // the raw `$…$` stays, which is what a person sees while typing one anyway. Asking
+          // `mathError` here would be a contract breach rather than a question with a third
+          // answer: see `mathsReady` for why that distinction keeps its cache honest.
+          if (!mathsReady()) {
+            requestMaths();
+            return;
+          }
           const failed = mathError(source, false);
           if (failed) {
             // Half-typed maths is the normal state while someone is writing it,
@@ -1486,6 +1549,11 @@ function buildBlockMathDecorations(state: EditorState): DecorationSet {
     let shown = false;
     for (let n = first; n <= last; n++) if (active.has(n)) shown = true;
     if (shown) continue;
+    // As inline: nothing is drawn until KaTeX is here, and the `$$` block stays as its source.
+    if (!mathsReady()) {
+      requestMaths();
+      continue;
+    }
     const failed = mathError(math.source, true);
     if (failed) {
       // As with inline maths: the source stays, with the message on it.
@@ -1509,7 +1577,7 @@ const blockMathField = StateField.define<BlockMathDecorations>({
     if (
       tr.docChanged ||
       tr.selection ||
-      tr.effects.some((e) => e.is(setReveal)) ||
+      tr.effects.some((e) => e.is(setReveal) || e.is(mathsLoaded)) ||
       value.configVersion !== configVersion ||
       syntaxTree(tr.state) !== syntaxTree(tr.startState)
     ) {
@@ -1608,20 +1676,26 @@ const livePreviewPlugin = ViewPlugin.fromClass(
       const built = buildDecorations(view);
       this.decorations = built.decorations;
       this.atomicRanges = built.atomicRanges;
+      // Built first, so the builders have had their chance to say the document holds maths. This
+      // is the view half of that: a `StateField` may not dispatch, and the load resolving does.
+      loadMaths(view);
     }
     update(update: ViewUpdate): void {
       const revealChanged =
         update.startState.field(revealField, false) !== update.state.field(revealField, false);
+      // KaTeX landed, so every equation now has an answer where a moment ago it had none.
+      const mathsArrived = update.transactions.some((tr) => tr.effects.some((e) => e.is(mathsLoaded)));
       // A background parse that finishes later can reveal a reference
       // definition, which turns brackets elsewhere into links.
       const treeChanged = syntaxTree(update.startState) !== syntaxTree(update.state);
       const configChanged = this.configVersion !== configVersion;
-      if (update.docChanged || update.selectionSet || update.viewportChanged || revealChanged || treeChanged || configChanged) {
+      if (update.docChanged || update.selectionSet || update.viewportChanged || revealChanged || treeChanged || configChanged || mathsArrived) {
         this.configVersion = configVersion;
         const built = buildDecorations(update.view);
         this.decorations = built.decorations;
         this.atomicRanges = built.atomicRanges;
       }
+      loadMaths(update.view);
     }
   },
   {

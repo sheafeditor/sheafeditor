@@ -176,6 +176,9 @@ export const scenarios: Scenario[] = [
   {
     name: 'the raw HTML of a multi-line figure comes back when the caret is inside it',
     run: () => {
+      // The caret on the line is what this reads, so it needs reveal-on-line rather than
+      // inheriting whatever ran before it. The runner resets the setting for each scenario.
+      setLivePreviewConfig({ revealSyntaxOnLine: true });
       const doc =
         'Intro.\n\n<p align="center">\n  <img src="assets/loaf.png" alt="Centred" width="400">\n</p>\n\nAfter.\n';
       const p = mount(doc);

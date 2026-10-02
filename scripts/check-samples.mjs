@@ -49,6 +49,10 @@ const SHOWN_IN = {
   'maths.md': ['edge/dialects.md'],
   'table-of-contents.md': ['docs/rfc-0148-scheduling.md'],
   'tables.md': ['tables.md'],
+  // Formatting inside a cell is marks the file holds: `sample/tables.md` carries a bold cell, an
+  // inline-code cell and a link cell. The page's other half, revealing a cell's or a table's
+  // Markdown, is an interaction, and the file it reveals is this same one.
+  'table-markdown.md': ['tables.md'],
   'views.md': ['views.md', 'edge/views.md'],
 };
 
@@ -68,6 +72,7 @@ const NOT_A_DOCUMENT = {
   'sharing.md': 'copying a reference to a block and sending it to a terminal',
   'slash-menu.md': 'what typing a slash offers and what choosing an item writes',
   'table-commands.md': 'the commands on a table: insert, delete, move, align, sort',
+  'table-navigation.md': 'moving the caret between cells and into and out of a table: keys pressed, not marks a file can hold',
   'table-selection.md': 'picking cells, rows and columns with the pointer and the keyboard',
   'toolbar.md': 'the formatting toolbar over a selection',
   'typing-markdown.md': 'what Markdown typed into the editor turns into as you type',

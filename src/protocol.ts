@@ -14,9 +14,9 @@
  *
  * Almost nothing here has a runtime part. The settings types are imported for their shapes
  * alone and erased, which is what lets the browser's own bundle read this file without
- * pulling the extension host in behind it. The one value, `ANSWERS`, is a plain object of
- * message names and imports nothing, so it erases to a few bytes in every bundle and
- * reaches neither `vscode` nor a Node builtin, which is what a host check requires of this
+ * pulling the extension host in behind it. The two values, `DUTIES` and `ANSWERS`, are plain
+ * objects of message names and import nothing, so they erase to a few bytes in every bundle and
+ * reach neither `vscode` nor a Node builtin, which is what a host check requires of this
  * file.
  */
 
@@ -137,6 +137,14 @@ export type ToWebview =
    * document should name it, or why nothing was written.
    */
   | { type: 'dataFileCreated'; id: string; path?: string; error?: string }
+  /**
+   * The answer to `dataFileEdit`: nothing when the file took the edit, a reason when it did not.
+   *
+   * A host that cannot write files beside the document answers with the reason rather than staying
+   * silent, which is what lets the editor say so instead of leaving the grid showing a value the
+   * file does not hold.
+   */
+  | { type: 'dataFileEdited'; id: string; error?: string }
   | { type: 'getSelection'; id: string }
   | { type: 'toggleSourceMode' };
 
@@ -176,7 +184,17 @@ export type FromWebview =
    * `step` marks the undo or redo of an earlier such edit, sent as its inverse,
    * which only changes what a refusal says.
    */
-  | { type: 'dataFileEdit'; path: string; base: string; text: string; step?: 'undo' | 'redo' }
+  /**
+   * An edit to a data file, with the text it was based on so a host can refuse one made
+   * against a version it no longer holds. Answered with `dataFileEdited`.
+   *
+   * The `id` is why this is answered at all. Without it there was nothing for the editor to wait
+   * for and nothing for it to report, so a host that dropped the write was indistinguishable from
+   * one that made it: a person edited a cell, the grid agreed with them, and the file did not
+   * change. `dataFileCreate` beside it has carried an id from the start, which is what made the
+   * difference visible.
+   */
+  | { type: 'dataFileEdit'; id: string; path: string; base: string; text: string; step?: 'undo' | 'redo' }
   /**
    * A new .csv or .tsv file, relative to the document, holding `text` in the
    * webview's line endings. Never written over an existing file: with `nextFree`
@@ -215,6 +233,86 @@ export type ToWebviewType = ToWebview['type'];
  * Only the one-for-one pairs. `configChanged` answers three different settings messages and
  * `setContent` is pushed whenever the file moves, so neither belongs here.
  */
+/**
+ * The duty each message belongs to, which is what a host actually has to be able to do.
+ *
+ * It exists because the plan for a host contract named seven duties and they cover 5 of these 27
+ * messages. Grouping them turned up three families nobody had listed, and each one is something a
+ * consumer embedding the editor cannot do without: keeping a document's arrangement, reading and
+ * writing a file the document names, and remembering a setting. An editor implementing the seven as
+ * written would render and type and forget everything.
+ *
+ * `satisfies Record<FromWebviewType, Duty>` is the whole mechanism. A message added to the wire with
+ * no duty is a compile error here, which is the same trick the browser host's decision record uses
+ * and is better than a check: it fails at the moment somebody writes the message rather than the next
+ * time somebody runs something.
+ *
+ * These are families rather than method names. What a consumer's interface is called, and whether the
+ * ten `kept` entries collapse into one pair keyed by kind, is a question about a published API and is
+ * deliberately not settled here.
+ */
+export type Duty =
+  /** The document's text, which arrives in `init` and is asked for by `ready`. */
+  | 'value'
+  /** A change to the document. */
+  | 'edit'
+  /** This document's arrangement: widths, boards, folds, and which panels are open. */
+  | 'kept'
+  /** A `.csv` or `.tsv` file the document names, read and written. */
+  | 'file'
+  /** A setting the person changed, which outlives the document. */
+  | 'setting'
+  /** A path to a title, or a folder to the files in it. */
+  | 'resolve'
+  /** A pasted or dropped picture, saved, with its path handed back. */
+  | 'image'
+  /** An address the person followed. */
+  | 'link'
+  /** The system clipboard. */
+  | 'clipboard'
+  /**
+   * Something only a particular host can do, and which the editor already treats as optional: show
+   * the source another way, run one of the host's own commands, hear about focus leaving, or be told
+   * the selection it never asked for. A host without these is not a host missing something.
+   */
+  | 'host-action';
+
+export const DUTIES = {
+  ready: 'value',
+  edit: 'edit',
+
+  tableWidthsRead: 'kept',
+  tableWidthsWrite: 'kept',
+  tableBoardsRead: 'kept',
+  tableBoardsWrite: 'kept',
+  commentFoldsRead: 'kept',
+  commentFoldsWrite: 'kept',
+  frontMatterStateRead: 'kept',
+  frontMatterStateWrite: 'kept',
+  outlineStateRead: 'kept',
+  outlineStateWrite: 'kept',
+
+  dataFileRead: 'file',
+  dataFileEdit: 'file',
+  dataFileCreate: 'file',
+
+  setLineNumbers: 'setting',
+  setTableOfContents: 'setting',
+  setFrontMatter: 'setting',
+
+  docTitleRead: 'resolve',
+  workspaceFilesRead: 'resolve',
+
+  saveImage: 'image',
+  openLink: 'link',
+  clipboardWrite: 'clipboard',
+
+  openAsText: 'host-action',
+  runCommand: 'host-action',
+  selection: 'host-action',
+  blur: 'host-action',
+} as const satisfies Record<FromWebviewType, Duty>;
+
 export const ANSWERS = {
   imageSaved: 'saveImage',
   workspaceFiles: 'workspaceFilesRead',
@@ -226,4 +324,75 @@ export const ANSWERS = {
   outlineState: 'outlineStateRead',
   dataFile: 'dataFileRead',
   dataFileCreated: 'dataFileCreate',
+  dataFileEdited: 'dataFileEdit',
 } as const satisfies Partial<Record<ToWebviewType, FromWebviewType>>;
+
+/*
+ * The arrangement a document carries, by kind: the one family of the host contract that is a store
+ * rather than an action.
+ *
+ * **Five kinds times two directions, which is why the contract has a pair here and not ten methods.**
+ * The wire spells all ten out, `tableWidthsRead` through `outlineStateWrite`, and it is right to: a
+ * message is a message. A consumer implementing the contract sees one getter and one setter, because
+ * the read-and-write split is a getter-and-setter distinction rather than a kind distinction, and ten
+ * named methods encode one axis twice.
+ *
+ * **The value type comes from the kind, and that condition is the whole of why the pair is better.**
+ * A setter taking `TableWidths | TableBoards | CommentFolds | FrontMatterSetting | null` would let
+ * `keep('commentFolds', 'collapsed')` compile, and every implementation would narrow by hand at
+ * exactly the boundary the type was there for. Through `KeptState` the pairing is checked, adding a
+ * kind is one entry, and a consumer cannot get a pairing wrong.
+ *
+ * **Nothing here says where an arrangement is kept or for how long, deliberately.** The two hosts
+ * disagree about that today: a VS Code window keeps it in `workspaceState`, and whether a browser tab
+ * keeps it past a reload is an open product question. `kept` and `keep` survive either answer, which
+ * `persist`, `save` or `session` would not. How long it lasts is the host's business and belongs in
+ * the host's own documentation.
+ */
+export type KeptKind = 'tableWidths' | 'tableBoards' | 'commentFolds' | 'frontMatterState' | 'outlineState';
+
+/**
+ * What each kind's value is.
+ *
+ * A kind added to `KeptKind` is a compile error in three places until it is entered here and in
+ * `KEPT_WIRE`: the `satisfies` below, and both signatures of `KeptStore`, which index this.
+ */
+export interface KeptState {
+  tableWidths: TableWidths;
+  tableBoards: TableBoards;
+  commentFolds: CommentFolds;
+  frontMatterState: FrontMatterSetting | null;
+  outlineState: OutlineSetting | null;
+}
+
+/*
+ * Each kind's three wire names and the field its value travels in.
+ *
+ * The field differs per kind, `widths`, `boards`, `folds`, `state`, `state`, so an adapter turning the
+ * pair into messages needs this rather than a naming convention. Held exhaustive the way the three
+ * records above are held: a kind with no entry, or an entry naming a message that does not exist, is
+ * a compile error rather than something a check has to notice.
+ */
+export const KEPT_WIRE = {
+  tableWidths: { read: 'tableWidthsRead', write: 'tableWidthsWrite', answer: 'tableWidths', field: 'widths' },
+  tableBoards: { read: 'tableBoardsRead', write: 'tableBoardsWrite', answer: 'tableBoards', field: 'boards' },
+  commentFolds: { read: 'commentFoldsRead', write: 'commentFoldsWrite', answer: 'commentFolds', field: 'folds' },
+  frontMatterState: { read: 'frontMatterStateRead', write: 'frontMatterStateWrite', answer: 'frontMatterState', field: 'state' },
+  outlineState: { read: 'outlineStateRead', write: 'outlineStateWrite', answer: 'outlineState', field: 'state' },
+} as const satisfies Record<
+  KeptKind,
+  { read: FromWebviewType; write: FromWebviewType; answer: ToWebviewType; field: string }
+>;
+
+/**
+ * The two methods a host implements for that family.
+ *
+ * `kept` is a promise because all five reads carry an `id` and all five answers carry it back, checked
+ * rather than assumed: the correlation is uniform across the five, so the promise shape has no
+ * exception in it. The five writes carry no id and nothing answers them, which is why `keep` returns
+ * nothing.
+ */
+export interface KeptStore {
+  kept<K extends KeptKind>(kind: K): Promise<KeptState[K] | null>;
+  keep<K extends KeptKind>(kind: K, value: KeptState[K]): void;
+}

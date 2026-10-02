@@ -41,13 +41,138 @@
  * is source shown rather than something drawn wrongly.
  */
 
-import { Decoration, WidgetType } from '@codemirror/view';
-import { EditorState } from '@codemirror/state';
+import { Decoration, EditorView, WidgetType } from '@codemirror/view';
+import { EditorState, StateEffect } from '@codemirror/state';
 import { syntaxTree } from '@codemirror/language';
 import { MarkdownConfig } from '@lezer/markdown';
 import { SyntaxNode, Tree } from '@lezer/common';
 import { tags } from '@lezer/highlight';
-import katex, { KatexOptions } from 'katex';
+import type { KatexOptions } from 'katex';
+
+/**
+ * KaTeX is fetched when a document first shows an equation, not when the editor loads.
+ *
+ * It was imported at module scope, and `markdownDialect.ts` imports this file for the `Maths`
+ * parser extension, so every document in every host paid 77 KB gzipped for maths rendering
+ * whether it held an equation or not. The parser needs none of it: only `mathError` and
+ * `typeset` do, and both are reached only once something looks like maths.
+ *
+ * `await import('katex')` rather than a URL, deliberately. It keeps KaTeX inside the dependency
+ * graph, so esbuild splits it into a chunk that `scripts/check-bundle-size.mjs` still counts.
+ * Fetching it by URL from the media folder, which is how Mermaid does it because it ships as a
+ * separate asset, would move the bytes out of the closure the gate measures and read as a win
+ * of 77 KB that is only a change in where they are recorded.
+ */
+type Katex = typeof import('katex').default;
+
+let katex: Katex | null = null;
+let pending: Promise<void> | null = null;
+let wanted = false;
+let load: () => Promise<Katex> = async () => (await import('katex')).default;
+
+/**
+ * Hand KaTeX over directly, already loaded. For an offline check that mounts the editor and
+ * asserts in the same breath.
+ *
+ * Making maths lazy turned "is KaTeX here" into a question every *synchronous* observer has to
+ * answer, and the jsdom suites are synchronous observers: they mount, assert, and a dynamic
+ * import has not resolved. Three prose scenarios failed on exactly that, correctly.
+ *
+ * `setMathsLoader` cannot serve them, because a loader still resolves on a later tick, so every
+ * such check would gain an await and a tick of its own. This hands the module over with no
+ * promise in the path, so a suite says "maths is available here" in one line and the shipping
+ * path stays lazy.
+ */
+export function provideMaths(api: Katex): void {
+  katex = api;
+  pending = null;
+}
+
+/** Replace the loader. For tests; forgets anything already loaded or remembered. */
+export function setMathsLoader(loader: () => Promise<Katex>): void {
+  load = loader;
+  katex = null;
+  pending = null;
+  // `wanted` stays as it is. It records that this document has maths in it, which replacing the
+  // loader does not change, and clearing it would leave a test that swapped the loader waiting
+  // for a request the builders have already made.
+  errors.clear();
+}
+
+/**
+ * Whether maths can be drawn yet.
+ *
+ * **Callers ask this before `mathError` or before building a widget**, and that order is what
+ * keeps `errors` a cache of permanent facts. Whether a source typesets is a property of the
+ * source; whether KaTeX has arrived is a property of the clock. Folding the second into
+ * `mathError`'s answer stores a fact about the clock in a map that is never revisited.
+ *
+ * The damage lands on a source KaTeX rejects, which is why the separation is worth a function of
+ * its own. Measured by introducing a third answer and asking in that order: `\frac{1}` asked
+ * before the library arrives caches as having no error, so it renders as a valid equation for the
+ * rest of the session, while the same source asked a moment later is correctly reported as
+ * "Unexpected end of input in a macro argument". Two identical equations then disagree according
+ * to which was first looked at, and the one that is wrong never corrects itself. That is worse
+ * than maths failing to draw, because nothing about it looks like a failure.
+ *
+ * The shipping path throws instead, from `api()` placed outside `mathError`'s try block, so
+ * breaking this contract is loud rather than caught and stored as KaTeX's opinion of the source.
+ */
+export function mathsReady(): boolean {
+  return katex !== null;
+}
+
+/** Dispatched once KaTeX has arrived, so the fields that draw maths rebuild. */
+export const mathsLoaded = StateEffect.define<null>();
+
+/**
+ * Start fetching KaTeX, and redraw when it lands. Safe to call on every pass: the fetch happens
+ * once and later calls fall straight through.
+ *
+ * A failed load leaves `katex` null for ever rather than retrying per pass, so a document full of
+ * equations does not become a document full of requests. What a person sees then is every
+ * equation as its own source, which is what they see while typing one and is the same fallback
+ * `typeset` already uses.
+ */
+/**
+ * Say that this document holds maths, so it is worth fetching KaTeX.
+ *
+ * Separate from `loadMaths` because the two halves sit on different sides of CodeMirror's own
+ * boundary. The block builder is a `StateField`, which is given a state and may not dispatch;
+ * the inline builder is given a view and may. So the state side records the need and the view
+ * side acts on it, and neither has to pretend to be the other.
+ *
+ * Costs a redraw at worst: if a document holds only block maths, the field sets this and the
+ * view plugin picks it up on the following update, which the dispatch on load then follows with
+ * a rebuild anyway.
+ */
+export function requestMaths(): void {
+  wanted = true;
+}
+
+export function loadMaths(view: EditorView): void {
+  if (!wanted || katex || pending) return;
+  pending = load().then(
+    (loaded) => {
+      katex = loaded;
+      view.dispatch({ effects: mathsLoaded.of(null) });
+    },
+    () => undefined
+  );
+}
+
+/**
+ * KaTeX, for the two functions that need it.
+ *
+ * Throws rather than returning anything, because every value it could return is a lie a caller
+ * would act on: null reads as "this equation is fine" and a widget gets built that cannot draw.
+ * **Called outside `mathError`'s try block on purpose**, so a contract breach propagates instead
+ * of being caught and cached as KaTeX's opinion of the equation.
+ */
+function api(): Katex {
+  if (!katex) throw new Error('maths: KaTeX is not loaded. Ask mathsReady() before mathError() or before building a widget.');
+  return katex;
+}
 
 const DOLLAR = 36;
 const BACKSLASH = 92;
@@ -144,9 +269,12 @@ export function mathError(source: string, display: boolean): string | null {
   const key = (display ? 'd' : 'i') + source;
   let message = errors.get(key);
   if (message === undefined) {
+    // Outside the try, so a caller that skipped `mathsReady` is a loud bug rather than an
+    // equation remembered for ever as broken.
+    const k = api();
     message = null;
     try {
-      katex.renderToString(source, options(display));
+      k.renderToString(source, options(display));
     } catch (err) {
       message = messageOf(err);
     }
@@ -159,7 +287,7 @@ export function mathError(source: string, display: boolean): string | null {
 /** Typeset `source` into `host`, falling back to the source itself. */
 function typeset(host: HTMLElement, source: string, display: boolean): void {
   try {
-    katex.render(source, host, options(display));
+    api().render(source, host, options(display));
   } catch (err) {
     // The decoration layer only builds a widget for a source that typeset a
     // moment ago, so this is the belt to that braces. Either way the source is

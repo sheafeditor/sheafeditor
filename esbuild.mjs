@@ -3,6 +3,7 @@ import { copyFileSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSy
 import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { embeddedHtmlPlugin } from './scripts/esbuild-plugins.mjs';
 
 const production = process.argv.includes('--production');
 const watch = process.argv.includes('--watch');
@@ -150,6 +151,26 @@ const extensionCtx = await esbuild.context({
  * a question the host it is embedded in can already answer.
  */
 rmSync(join(REPO, 'media', 'editor'), { recursive: true, force: true });
+
+/**
+ * Where the webview's metafile goes: gitignored, and `.claude/**` is excluded from the package.
+ *
+ * Written from a plugin rather than from the build's result, because a watch build never returns one
+ * and a check reading a metafile from the last one-shot build would be measuring an older tree while
+ * saying nothing about it.
+ */
+const METAFILE = join(REPO, '.claude', 'scratch', 'webview-metafile.json');
+const writeMetafilePlugin = {
+  name: 'write-metafile',
+  setup(build) {
+    build.onEnd((result) => {
+      if (!result.metafile) return;
+      mkdirSync(dirname(METAFILE), { recursive: true });
+      writeFileSync(METAFILE, JSON.stringify(result.metafile));
+    });
+  },
+};
+
 const webviewCtx = await esbuild.context({
   ...common,
   entryPoints: ['src/webview/main.ts'],
@@ -160,6 +181,20 @@ const webviewCtx = await esbuild.context({
   format: 'esm',
   platform: 'browser',
   target: 'es2020',
+  /*
+   * Which input went into which output, with byte counts, for `check-bundle-size.mjs`.
+   *
+   * Written by the build that ships rather than by a second build the check runs itself, which is
+   * the point: a second build is a different build unless every option matches, and nothing would
+   * say when they stopped matching. This way the check reads the bundle a consumer gets.
+   *
+   * The alternative that does not work is searching the output for a library's name. The entry holds
+   * the string `mermaid` three times, in a dynamic import and two class names, with none of the
+   * library in it; it holds `katex` three times, and all of KaTeX. A name tells you a library was
+   * mentioned, and the question is whose bytes are in there.
+   */
+  metafile: true,
+  plugins: [writeMetafilePlugin, embeddedHtmlPlugin],
 });
 
 /**

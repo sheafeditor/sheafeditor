@@ -31,7 +31,7 @@
 
 import { FSWatcher, watch } from 'node:fs';
 import { readFile, writeFile } from 'node:fs/promises';
-import { DocumentSync, SyncHost, toWebviewText } from '../textSync';
+import { DocumentSync, SyncHost, mergeOutsideChange, planEdit, toWebviewText } from '../textSync';
 import { RecentTyping, noticeAboutLostText, noticeAboutRestoredText } from '../recentTyping';
 
 /** A byte-order mark, which VS Code keeps out of a document's text and back in its file. */
@@ -182,10 +182,11 @@ export class OpenDocument implements SyncHost {
 
   /** The whole text a tab posted after an edit of its own. */
   edit(text: string): Promise<void> {
-    // Recorded before the text is taken, because what `RecentTyping` keeps is the text that came
-    // *before* each edit: the oldest one still inside its window is the baseline, and everything
-    // between it and what the tab holds now is what the person put there.
-    this.typing.record(this.webview);
+    // Both sides of the edit, because the span of an edit can only be known while it is happening.
+    // Working it out later from the oldest baseline cannot tell the person's edits from a change
+    // that arrived from outside, and attributing somebody else's paragraphs to the person is what
+    // the notice then reads back to them.
+    this.typing.record(this.webview, text);
     this.webview = text;
     return this.sync.edit(text);
   }
@@ -247,6 +248,49 @@ export class OpenDocument implements SyncHost {
      * edit undone as surely as a lost sentence.
      */
     const arriving = toWebviewText(text);
+    /*
+     * The write is read in and put together with what the person has, which is what a window does in
+     * `keepOutsideChange` and what this host had no equivalent of. Without it a write merely behind
+     * on the line being typed took that line back, even with the typing already on disk and the write
+     * changing a different line. The page promises otherwise in so many words: "when the file has
+     * changed underneath an edit you are part-way through, your text is what gets written. This is
+     * the same rule your editor follows."
+     *
+     * Three things, and each one is a guard the window already had:
+     *
+     * **The base is what the person started from, not what the file last held.** `mergeOutsideChange`
+     * returns `theirs` when `mine === base`, so told the saved text it concludes nothing is pending
+     * and takes the write whole. Measured: the saved base loses the letter, the pre-typing base keeps
+     * the letter and the writer's own change together, and a write into the very line typed in still
+     * comes back `dropped`, so the real conflict is still reported.
+     *
+     * **Applied only when it is a genuine combination of the two**, never when it resolves to one
+     * side, which is the window's `if (together === mine || together === theirs) return arriving`.
+     * A refusing merge returns the person's text *whole*, so a looser condition takes this branch on
+     * every conflict and throws the other program's work away.
+     *
+     * **Planned against the document and applied through `applyEdit`**, not handed to `sync.edit`.
+     * `sync.edit` means the webview made an edit, so it plans and replans against the webview's own
+     * state; given a merge it produced a plan against a text that had already moved and left the
+     * write's line in the file twice, which is the one outcome `multipliesALine` exists to refuse.
+     * `applyEdit` is the document path, and it already holds `writing` across the write so the
+     * watcher does not read this host's own write back as news and merge against itself.
+     */
+    const base = this.typing.baseline();
+    const together = base === undefined ? null : mergeOutsideChange(base, this.webview, arriving);
+    if (together && together.text !== arriving && together.text !== this.webview) {
+      const plan = planEdit(this.text, together.text, this.crlfEol);
+      if (plan) {
+        // Both changes survived, so nothing was taken and nothing is said. `dropped` cannot be true
+        // here: a refusing merge returns the person's text whole, which the guard above excludes.
+        this.typing.forget();
+        // The tab first, so it is holding the result before the file is written and there is no
+        // moment where the two disagree in the direction a person would notice.
+        this.sync.documentChanged(plan.text, false);
+        void this.applyEdit(plan.start, plan.end, plan.replacement);
+        return;
+      }
+    }
     const lost = this.typing.dropped(this.webview, arriving);
     const back = lost === undefined ? this.typing.restored(this.webview, arriving) : undefined;
     const reached = this.sync.documentChanged(text, lost !== undefined || back !== undefined);

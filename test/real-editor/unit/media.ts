@@ -4,13 +4,12 @@
 import { EditorState } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
 import { history, undo } from '@codemirror/commands';
-import { markdown } from '@codemirror/lang-markdown';
 import { ensureSyntaxTree } from '@codemirror/language';
 import { livePreview, revealField, setLivePreviewConfig } from '../../../src/webview/livePreview';
 import { tables } from '../../../src/webview/tables';
 import { notionTheme } from '../../../src/webview/theme';
 import { planEdit } from '../../../src/textSync';
-import { sheafMarkdownLanguage } from '../../../src/webview/markdownDialect';
+import { sheafMarkdown, sheafMarkdownLanguage } from '../../../src/webview/markdownDialect';
 import {
   parseMarkdownImage,
   parseHtmlImage,
@@ -64,7 +63,7 @@ function mount(doc: string, caret = 0): Mounted {
     state: EditorState.create({
       doc,
       selection: { anchor: caret },
-      extensions: [history(), markdown({ base: sheafMarkdownLanguage }), revealField, livePreview, tables, notionTheme, EditorView.lineWrapping],
+      extensions: [history(), sheafMarkdown({ base: sheafMarkdownLanguage }), revealField, livePreview, tables, notionTheme, EditorView.lineWrapping],
     }),
     parent,
   });
@@ -820,6 +819,36 @@ export const scenarios: Scenario[] = [
       const text = m.view.contentDOM.textContent ?? '';
       m.destroy();
       return { ok: n === 0 && text.includes('![dot](../assets/dot.png)'), detail: `images ${n} text ${j(text)}` };
+    },
+  },
+  {
+    /*
+     * The control for the runner's config reset, and it only works from here.
+     *
+     * u14 above turns `revealSyntaxOnLine` on and does not turn it back, because the setting is a
+     * module-level variable shared by every scenario in the process. This one declares nothing and
+     * asserts the product default, so it reads whatever state it inherits: with the reset in
+     * `run-unit.mjs` it gets `false` and passes, and without it, it gets u14's `true` and fails.
+     *
+     * It is here rather than in the harness suite because its position is the whole of it. Moved
+     * above u14, or into a file of its own, it would pass either way and prove nothing.
+     */
+    id: 'images.render.u18',
+    feature: 'images.render',
+    name: 'CONTROL: a scenario that declares no reveal setting gets the product default, not what the scenario before it left',
+    run: () => {
+      const doc = P + '![dot](../assets/dot.png)\n';
+      const m = mount(doc, P.length + 2);
+      const n = imgs(m).length;
+      const text = m.view.contentDOM.textContent ?? '';
+      m.destroy();
+      return {
+        ok: n === 1 && !text.includes('![dot]'),
+        detail:
+          n === 1 && !text.includes('![dot]')
+            ? 'inherited the default, so the reset is doing its job'
+            : `images ${n}, text ${j(text)}: this scenario declares nothing, so it has inherited reveal-on-line from the one before it`,
+      };
     },
   },
   {

@@ -53,12 +53,84 @@ export interface AllocateOptions {
   pinned?: ReadonlyMap<number, number> | null;
 }
 
+/**
+ * One column's narrowest drawable width: its content minimum, lifted to the floor, but never
+ * past its own maximum, since a column narrower than the floor to begin with has nothing to
+ * gain from being widened to it.
+ *
+ * Exported because two callers need it and must not disagree. The allocator divides space
+ * upward from here, and the layout decides whether a table fits the writing column by asking
+ * whether these sum inside it. Written twice, that is one fact on both sides of a boundary
+ * with nothing comparing the two, which is how one side gets changed and the other goes on
+ * quietly returning the old answer.
+ *
+ * Sanitising here rather than trusting the caller, for the same reason the allocator does it:
+ * a measurement taken while a font or an image was still loading comes back as zero, or with
+ * a minimum wider than the maximum, and that has to be made consistent rather than carried
+ * into the arithmetic.
+ */
+export function columnFloor(c: ColumnExtent, floor: number): number {
+  const min = Number.isFinite(c.min) && c.min > 0 ? c.min : 0;
+  const max = Number.isFinite(c.max) && c.max > min ? c.max : min;
+  const f = Number.isFinite(floor) && floor > 0 ? floor : 0;
+  return Math.min(max, Math.max(min, f));
+}
+
+/**
+ * The narrowest the columns can be drawn all together, which is what "cannot fit" means.
+ *
+ * Every free column at its floor, and every pinned column at the width it is pinned to,
+ * because a pinned column is not squeezable: the user set it, and the allocator takes it out
+ * of the division rather than shrinking it. A test that summed only the free columns' floors
+ * would call a table with one wide pinned column fittable, lay it out in the writing column,
+ * and then overflow it.
+ *
+ * Nothing here reads the container, which is the property the layout's decision depends on:
+ * `min` and `max` come from content, the floor is in `ch`, and a pinned width is whatever the
+ * user dragged it to. So asking whether a table fits cannot be answered differently by asking
+ * it inside a wider box.
+ */
+export function tightestWidth(columns: readonly ColumnExtent[], opts: AllocateOptions): number {
+  const held = new Map<number, number>();
+  for (const [i, w] of opts.pinned ?? []) {
+    if (Number.isInteger(i) && i >= 0 && i < columns.length && Number.isFinite(w) && w > 0) held.set(i, w);
+  }
+  let total = 0;
+  for (let i = 0; i < columns.length; i++) {
+    const pinned = held.get(i);
+    total += pinned === undefined ? columnFloor(columns[i], opts.floor) : pinned;
+  }
+  return total;
+}
+
 export interface Allocation {
   /** One pixel width per column, in column order, whole numbers. */
   widths: number[];
   /** Their sum, which is the width the table is laid out at. */
   total: number;
-  /** True when the table is wider than the pane, so its frame has to scroll. */
+  /**
+   * True when the table is far enough past its room that the frame has to scroll.
+   *
+   * **Far enough to draw a scrollbar, not far enough to measure.** The allocator fills its room
+   * exactly whenever the columns want more than it, so a table that merely fits comes out within a
+   * fraction of a pixel of the number it was handed, and which side of that number it lands on is
+   * decided by rounding whole column widths up to a room that is not whole. A browser draws no
+   * scrollbar for a fraction of a pixel, so a threshold of `EPS` answers a question nobody asked.
+   *
+   * This mattered because the class it sets is not cosmetic. `is-scroll-x` is what takes
+   * `overflow-x: visible` away from a fitting table, and an element that scrolls on one axis is a
+   * scroll container on both, so a table wrongly marked has its header row stick to its own frame
+   * instead of to the editor. At a 640px pane the writing column came to 538, a three-column table
+   * was laid out to 538 and measured 539 because `border-collapse` puts half a border outside the
+   * box on each side, and seven of the eight tables in the torture sample were marked at that pane
+   * from that one pixel.
+   *
+   * It is particular widths rather than one, and a coarse sweep hides that: at five-pixel steps the
+   * same table is marked at 645, 640 and 620 and clear at 650, 635, 630 and 600, every one of them a
+   * single pixel. Which side of its room a table lands on is decided by rounding whole column widths
+   * up to a room that is not whole, so the widths that fail are wherever that rounding goes the
+   * wrong way. Hence a threshold rather than a case: there is no width to special-case.
+   */
   scrolls: boolean;
   /** Which of the four rules decided this, for tests and for reading a layout back. */
   rule: 1 | 2 | 3 | 4;
@@ -174,10 +246,9 @@ export function allocateColumnWidths(
   let room = width;
   for (const w of held.values()) room -= w;
 
-  // Every column's own minimum: its content's minimum, lifted to the floor, but
-  // never past its maximum, since a column narrower than the floor to begin with
-  // has nothing to gain from being widened to it.
-  const base = free.map((i) => Math.min(MAX[i], Math.max(MIN[i], floor)));
+  // Every column's own minimum, through the shared helper, so the layout's "can this table
+  // fit the writing column" question and this division cannot answer it differently.
+  const base = free.map((i) => columnFloor({ min: MIN[i], max: MAX[i] }, floor));
   const sum = (xs: readonly number[]): number => xs.reduce((a, b) => a + b, 0);
 
   const max = free.map((i) => MAX[i]);
@@ -279,5 +350,8 @@ export function allocateColumnWidths(
 
   const widths = whole(used);
   const total = sum(widths);
-  return { widths, total, scrolls: total > width + EPS, rule };
+  // A pixel rather than `EPS`, for the reason on `Allocation.scrolls`. The height estimate in
+  // `tables.ts` compares the same overflow against the same pixel, and the two have to agree:
+  // one decides whether a scrollbar is drawn and the other reserves the space for it.
+  return { widths, total, scrolls: total > width + 1, rule };
 }

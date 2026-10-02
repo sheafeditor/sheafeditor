@@ -37,7 +37,7 @@ import {
 import { fence, blockRefHost } from './refs';
 import { openSlashMenuAtCaret } from './slashMenu';
 import { revealRange } from './revealBlock';
-import { drawKeyHint } from './shortcuts';
+import { drawKeyHint, keyShortcuts } from './shortcuts';
 
 // ---- Copy ref -----------------------------------------------------------------
 
@@ -171,6 +171,65 @@ const dragSourceField = StateField.define<{ from: number; to: number } | null>({
 
 /** The grip's own height, which is what it has to be lifted by to clear a row. */
 const GRIP_HEIGHT = 24;
+
+/*
+ * The four things that scroll sideways under the grip, and what to ask each of them.
+ *
+ * A block whose content can slide into the grip's margin needs the grip lifted clear of it, and
+ * until now only a pipe table got that. The other three were written out of it by the selectors
+ * rather than by a decision: a board has no `tr`, no `th` and no `td`, so both reads came back
+ * undefined, the lift never engaged, and the grip drew on top of a card. Measured on a board
+ * scrolled fully right, the grip's rectangle at 199..240 over a card at 220..448.
+ *
+ * `kind` is the cheap guard that keeps a paragraph from searching the DOM on every hover, and it
+ * has to admit `code`: a view, a board and a `csv` block are all fenced blocks, so a view's board
+ * was unreachable twice over. A `code` block that is really code matches no wrapper and falls
+ * through to the ordinary line placement, as it did before.
+ */
+const SCROLLS_SIDEWAYS: ReadonlySet<string> = new Set(['table', 'code']);
+/**
+ * The scroller inside a grid or a board, whichever wrapper drew it.
+ *
+ * Three, and the third was missed on the first pass. A pipe table shown as a board puts its cards
+ * in `.sheaf-table-board`, and that element is the scroller: `overflow-x: auto`, measured at 1990
+ * against a client width of 1200. It is neither of the two grids, so the listener was attached to
+ * nothing and a table-backed board scrolling under a still grip would not have moved it, even with
+ * the placement above corrected. Found by measuring the second board site rather than by reading,
+ * and the probe that first said "nothing scrolls" had the same blind spot as the code.
+ */
+const SCROLLER = '.sheaf-table-grid, .sheaf-view-grid, .sheaf-table-board';
+/**
+ * The strip the grip lines up with: a table's header row, a board's column heads.
+ *
+ * Both are the block's own chrome rather than its content, which is what makes the space above
+ * them the one place with nothing in it at any scroll position.
+ */
+const HEADER_STRIP = 'tr, .sheaf-board-col-head';
+/**
+ * The leftmost thing that can arrive under the grip, which is what says content has scrolled into
+ * its column. One rect answers it, because if the first one has passed the grip's right edge then
+ * something is in the way; asking every cell would be a read per cell on every hover, and the
+ * corpus has a 200-column table in it.
+ */
+const LEFTMOST_CONTENT = 'th, td, .sheaf-board-col-head, .sheaf-board-card';
+
+/**
+ * The first match that is actually drawn, rather than the first match.
+ *
+ * A pipe table shown as a board keeps its `<table>` in the DOM and hides it, putting the cards in a
+ * `.sheaf-table-board` beside it. So `querySelector` on either selector above finds the hidden
+ * `tr` first, whose rectangle is all zeros, and a zero height reads as "this block has no header
+ * row" and takes the ordinary line placement. The lift would have gone on never engaging for the
+ * one of the two board sites that is backed by a table, which is the half of this fault that
+ * looks fixed from the other half.
+ */
+function firstDrawn(root: Element, selector: string): DOMRect | undefined {
+  for (const el of root.querySelectorAll(selector)) {
+    const b = el.getBoundingClientRect();
+    if (b.width > 0 && b.height > 0) return b;
+  }
+  return undefined;
+}
 
 const GRIP_ICON =
   '<svg viewBox="0 0 10 16" width="10" height="16" aria-hidden="true" fill="currentColor">' +
@@ -367,8 +426,8 @@ class BlockHandleView {
    */
   followTableScroll(range: BlockRange): void {
     this.unfollowTableScroll();
-    if (range.kind !== 'table') return;
-    const grid = this.tableAt(range.from)?.querySelector('.sheaf-table-grid');
+    if (!SCROLLS_SIDEWAYS.has(range.kind)) return;
+    const grid = this.gridAt(range.from)?.querySelector(SCROLLER);
     if (!grid) return;
     const onScroll = (): void => {
       if (this.range === range && !this.handle.hidden) this.placeHandle(range);
@@ -395,8 +454,8 @@ class BlockHandleView {
         const indent = view.coordsAtPos(range.from);
         const lineHeight = Math.min(line.height, view.defaultLineHeight * 1.6);
         // Beside a table the grip lines up with the header row, below the table's controls bar.
-        const table = range.kind === 'table' ? this.tableAt(range.from) : undefined;
-        const header = table?.querySelector('tr')?.getBoundingClientRect();
+        const table = SCROLLS_SIDEWAYS.has(range.kind) ? this.gridAt(range.from) : undefined;
+        const header = table ? firstDrawn(table, HEADER_STRIP) : undefined;
         /*
          * Unless that row has been scrolled under the grip, and then it goes up a line.
          *
@@ -417,7 +476,7 @@ class BlockHandleView {
          * hover and the corpus has a 200-column table in it. One rect answers it: if the first
          * cell has passed the grip's right edge, content is in the grip's column.
          */
-        const firstCell = table?.querySelector('th, td')?.getBoundingClientRect();
+        const firstCell = table ? firstDrawn(table, LEFTMOST_CONTENT) : undefined;
         const gripRight = Math.max(content.left + padLeft, indent ? indent.left : 0) - 6;
         const scrolledUnder = !!firstCell && firstCell.width > 0 && firstCell.left < gripRight;
         /*
@@ -466,9 +525,16 @@ class BlockHandleView {
     });
   }
 
-  /** The rendered grid of the table whose source starts at `from`, if it is drawn. */
-  tableAt(from: number): Element | undefined {
-    return Array.from(this.view.contentDOM.querySelectorAll('.sheaf-table')).find((el) => {
+  /**
+   * The rendered grid or board whose source starts at `from`, if it is drawn.
+   *
+   * Both wrappers, because four things draw a scrolling grid and the grip has to clear the content
+   * of all of them: a pipe table and a `csv` block are `.sheaf-table`, a view and a board are
+   * `.sheaf-view`. Asking only for `.sheaf-table` found the first two and left a view's board
+   * drawing the grip on top of a card.
+   */
+  gridAt(from: number): Element | undefined {
+    return Array.from(this.view.contentDOM.querySelectorAll('.sheaf-table, .sheaf-view')).find((el) => {
       try {
         return this.view.posAtDOM(el) === from;
       } catch {
@@ -667,8 +733,14 @@ class BlockHandleView {
       btn.appendChild(label);
       const side = document.createElement('span');
       side.className = 'sheaf-block-menu-key';
+      // Drawn for the eye, announced through `aria-keyshortcuts`. The submenu chevron is hidden for
+      // the same reason and has nothing to announce. See the note in `contextmenu.ts`.
+      side.setAttribute('aria-hidden', 'true');
       if (item.children) side.textContent = '›';
-      else if (item.keyHint) drawKeyHint(side, item.keyHint);
+      else if (item.keyHint) {
+        drawKeyHint(side, item.keyHint);
+        btn.setAttribute('aria-keyshortcuts', keyShortcuts(item.keyHint));
+      }
       btn.appendChild(side);
       btn.addEventListener('mousedown', (e) => e.preventDefault());
       if (item.children) {

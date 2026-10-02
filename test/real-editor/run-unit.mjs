@@ -47,6 +47,10 @@ const entry = join(out, 'entry.ts');
 writeFileSync(
   entry,
   areas.map((a, i) => `import { scenarios as s${i} } from ${JSON.stringify(join(UNIT, a))};`).join('\n') +
+    `\nimport { setLivePreviewConfig } from ${JSON.stringify(join(REPO, 'src', 'webview', 'livePreview'))};\n` +
+    // Re-exported so the loop below can put the live-preview config back to the product default
+    // before each scenario. See the call site for why.
+    `export const resetConfig = () => setLivePreviewConfig({ revealSyntaxOnLine: false });\n` +
     `\nexport const all = [${areas.map((a, i) => `...s${i}.map((s: any) => ({ ...s, area: '${a}' }))`).join(', ')}];\n`
 );
 const bundle = join(out, 'bundle.cjs');
@@ -86,9 +90,19 @@ Object.defineProperty(globalThis, 'navigator', { value: window.navigator, config
 globalThis.requestAnimationFrame = (cb) => setTimeout(() => cb(Date.now()), 0);
 globalThis.cancelAnimationFrame = (id) => clearTimeout(id);
 
-const { all } = createRequire(import.meta.url)(bundle);
+const { all, resetConfig } = createRequire(import.meta.url)(bundle);
 const results = [];
 for (const s of all) {
+  /*
+   * The live-preview config is a module-level variable shared by every scenario in this process,
+   * so one that turns `revealSyntaxOnLine` on and does not turn it back decides what the next one
+   * runs in. `media.ts`'s u14 does exactly that, and nothing between it and u17 declares its own.
+   *
+   * Reset before each, so a scenario that says nothing gets what a person has and the leak stops
+   * being possible rather than being discouraged. The prose runner was given the same reset for
+   * the same reason, where it surfaced sixteen scenarios relying on a neighbour for their state.
+   */
+  resetConfig();
   let ok = false;
   let detail = '';
   try {

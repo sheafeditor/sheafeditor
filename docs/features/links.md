@@ -21,7 +21,7 @@ An address with parentheses or spaces in it opens whole.
 
 The same everywhere a link is drawn: in your text, in a table cell whether or not you are editing it, in a view, and on a board's cards.
 
-**A drag that starts on a link selects instead of opening.** A click is a press and a release with nothing moving in between, so dragging through a link, or selecting a paragraph that contains one, works as it always did. What you cannot do with the mouse is pick out a link's words and nothing else; to change them, right-click the link and edit the text field.
+**A drag that starts on a link selects instead of opening.** A click is a press and a release with nothing moving in between, so dragging through a link, or selecting a paragraph that contains one, works as it always did. Selecting a link's words with the mouse to retype them is fiddly, so to change them, right-click the link and edit the text field.
 
 ## Change a link
 

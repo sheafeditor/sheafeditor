@@ -52,6 +52,7 @@ import {
   COLUMN_CAP_FRACTION,
   COLUMN_FLOOR_CH,
   allocateColumnWidths,
+  tightestWidth,
 } from './columnWidths';
 
 /** The table as the grid holds it, which is all the measuring needs. */
@@ -71,6 +72,19 @@ export interface ColumnLayoutOptions {
   render: (value: string) => string;
   /** How wide a string reads, for choosing which cells are worth drawing. */
   rank: (value: string) => number;
+  /**
+   * Whether this grid may wrap its cells in order to stay in the writing column.
+   *
+   * True for a pipe table, which is usually prose: a column of sentences wrapping to two or
+   * three lines is what a table of prose looks like, and holding it to the writing column keeps
+   * the page's measure. False for a `csv` or `tsv` block and for a data file's own grid, which
+   * are tabular data: the value of a row is reading across it, and squeezing six columns of
+   * short values into the writing column so every row wraps to two lines makes it unreadable
+   * for the sake of a margin it never had.
+   *
+   * It decides which width the fit test asks for, and the two differ by a lot. See `roomFor`.
+   */
+  wrapToFit?: () => boolean;
   /**
    * Columns held at a width someone set by hand, by index. Read every time the
    * columns are laid out, so a change to them takes effect on the next `refresh`.
@@ -103,6 +117,20 @@ const PROBE_LONGEST_WORD = 2;
 
 /** How many tables' measurements are kept. Beyond this the oldest is dropped. */
 const CACHE_LIMIT = 48;
+
+/**
+ * The two widths a table's room is decided from, each read where it is defined.
+ *
+ * Deliberately not derived from the scroller's own padding. A table that takes the pane is drawn with
+ * no gap before it, so the padding depends on which room was chosen; deriving the room from the
+ * padding as well is a cycle, and two attempts at this change failed on exactly that.
+ */
+interface PaneRoom {
+  /** The writing column: `.cm-content`'s content box, which is what a table that fits is laid out to. */
+  column: number;
+  /** `--md-gutter`, which is the space left after a table that takes the pane. */
+  gutter: number;
+}
 
 interface Measured {
   /** The row-number gutter's width, which is fixed rather than allocated. */
@@ -251,6 +279,8 @@ export function createColumnLayout(
    * this, which is what keeps a narrow window unchanged.
    */
   let frameInset = 0;
+  /** The last reading of the two widths a room is chosen from. See `PaneRoom`. */
+  let paneRoom: PaneRoom = { column: 0, gutter: 0 };
   let lastSig = '';
   let cacheKey = '';
   let applied = '';
@@ -317,6 +347,25 @@ export function createColumnLayout(
       tr.appendChild(gut);
       for (let c = 0; c < shape.headers.length; c++) {
         const td = document.createElement('td');
+        /*
+         * Drawn the way the cell it measures is drawn.
+         *
+         * `tables.ts` puts `is-numeric` on a column whose values are all numbers, and the stylesheet gives
+         * that class `font-variant-numeric: tabular-nums`, so every digit takes the widest digit's
+         * advance. That is the feature which makes a column of figures line up. This probe built a plain
+         * cell, so a numeric column was **measured with proportional digits and drawn with tabular ones**,
+         * the measurement came in short of what the cell needs, and the allocator handed the column that
+         * short number. Measured on the corpus's 800-row table: `"477"` needs 27.89px proportional and
+         * 29.30px tabular in a 29px content box, so it fitted the measurement and wrapped on the screen,
+         * and every row from 100 onward stood 61px tall instead of 37.
+         *
+         * Copied off the real cell rather than re-derived from the values, so the probe cannot come to a
+         * different answer from the thing it stands in for. The shortfall is not per digit: tabular pays
+         * for the widest advance, so a column of ones loses a great deal and a column of eights almost
+         * nothing, which is why no rule about digit counts would have caught this.
+         */
+        const real = grid.querySelector(`tbody td[data-c="${c}"]`);
+        if (real) td.className = real.className;
         td.innerHTML = opts.render(rows[r]?.[c] ?? '');
         tr.appendChild(td);
       }
@@ -375,12 +424,34 @@ export function createColumnLayout(
    * worse, it is circular: a table only reaches past the column because it did not fit, and
    * a wider container is one it fits.
    *
-   * It comes apart by asking the table's **natural** width, which does not depend on the
-   * container. Fits the column, lay it out in the column, exactly as before any of this.
-   * Does not fit, lay it out in the pane, so the room becomes visible table rather than more
-   * scrolling. Stable in both directions, because the question never reads the answer.
+   * It comes apart by asking a width of the table that does not depend on the container.
+   * Fits the column, lay it out in the column, exactly as before any of this. Does not fit,
+   * lay it out in the pane, so the room becomes visible table rather than more scrolling.
+   * Stable in both directions, because the question never reads the answer.
+   *
+   * **Which width, though.** This used to ask the table's *natural* width, the sum of the
+   * columns' no-wrap maxima, and that made wrapping the trigger instead of overflow. One long
+   * sentence sets its column's maximum to that sentence on a single line, so a table of prose
+   * essentially never fits, and it took the pane every time however comfortably it would have
+   * sat in the column with two-line cells. The common table was the one that lost the
+   * document's measure, with the heading above it starting at the text's left edge and the
+   * table running a long way past where that paragraph ends.
+   *
+   * So for a table that may wrap it asks the *tightest* width instead: every column at its
+   * floor, every pinned column at its pinned width. That is exactly the case where the frame has
+   * to scroll sideways, which is what breaking out of the column is for. Both sums are equally
+   * independent of the container, so the circularity above still resolves. Expect fewer tables in
+   * the pane, and the ones that are there to be the ones that need it.
+   *
+   * **A data grid asks the natural width, and that is the older rule kept on purpose.** A `csv`
+   * or `tsv` block is tabular data: the value of a row is reading across it, and a column of
+   * short values has nothing to gain from wrapping. Asking the tightest width for one squeezed a
+   * six-column TSV of `sku / description / warehouse / on_hand / reserved / reorder_at` into the
+   * writing column and wrapped all three hundred of its rows to two lines, doubling its height,
+   * to earn a right margin it never had. Wrapping is what a table of prose does and what a
+   * spreadsheet does not, so which width the fit test asks for follows that and nothing else.
    */
-  const roomFor = (m: Measured, width: number, inset: number): number => {
+  const roomFor = (m: Measured, width: number, inset: number, env: PaneRoom): { width: number; tookPane: boolean } => {
     /*
      * A pixel of the room goes to the table's own border. `border-collapse: collapse` puts
      * half a border outside the table's box on each side, so a table laid out to exactly the
@@ -395,19 +466,53 @@ export function createColumnLayout(
      * always was, its overshoot still lands in a gutter, and taking a pixel off it would move
      * every existing table for a problem it does not have.
      */
-    const pane = width - inset - (inset > 0 ? 1 : 0);
-    const column = width - 2 * inset;
-    if (column <= 0) return pane;
-    const natural = m.gutter + m.columns.reduce((sum, c) => sum + c.max, 0);
-    return natural <= column ? column : pane;
+    /*
+     * **The pane is the whole frame, less the gutter left after the last column and the border
+     * pixel.** It used to be the frame less one inset, which left a table that overflows resting an
+     * inset in from its frame's left edge: measured at a 1200px pane, frame `0..1200` with the first
+     * cell at `246`, so 246px of empty scroller padding before a table too wide to fit. That is the
+     * dead space, and a table filling the frame is what removes it.
+     *
+     * The writing column comes from `.cm-content` rather than from `width - 2 * inset`. Those agree
+     * while the padding is the inset on both sides and stop agreeing the moment an overflowing table
+     * has its left padding taken away, which is this change. One value cannot be both the room a
+     * table is laid out to and the space held before its content.
+     *
+     * A table that fits still gets the writing column, so it still lines up with the prose and is
+     * still centred by the two equal insets around it.
+     */
+    const usesPane = wrap.classList.contains('can-use-pane');
+    const pane = width - (usesPane ? env.gutter : inset) - (inset > 0 || usesPane ? 1 : 0);
+    /*
+     * The writing column only for a frame that reached the pane. A table in a quote, under a list
+     * item, or in a frame that never grew has its own frame as its room, and that frame is narrower
+     * than the writing column: reading the column for one of those laid a 709px table into a 688px
+     * frame and then called it fitting, because it was compared against a room it never had.
+     */
+    const column = usesPane && env.column > 0 ? env.column : width - 2 * inset;
+    if (column <= 0) return { width: pane, tookPane: true };
+    const wants =
+      m.gutter +
+      (opts.wrapToFit?.() === false
+        ? m.columns.reduce((sum, c) => sum + c.max, 0)
+        : tightestWidth(m.columns, { floor: m.floor, cap: Infinity, pinned: opts.pinned?.() }));
+    /*
+     * Which room was chosen travels with the width, because the drawing depends on it and working it
+     * out again beside this would be the same fact in two places. A table that took the pane is drawn
+     * with no gap before it and a gutter after it; one that fits its column keeps a gap on both sides.
+     */
+    return wants <= column ? { width: column, tookPane: false } : { width: pane, tookPane: true };
   };
 
   /** Write the decided widths into the table as a `<colgroup>` of pixel lengths. */
-  const lay = (m: Measured, frame: number, inset: number): void => {
+  const lay = (m: Measured, frame: number, inset: number, env: PaneRoom): void => {
     const table = opts.table();
     if (!table) return;
     if (cellIsOpen() && lastWidths?.length) return;
-    const width = roomFor(m, frame, inset);
+    const { width, tookPane } = roomFor(m, frame, inset, env);
+    // The class the stylesheet draws the gaps from. "Took the pane" rather than "scrolls": a table can
+    // take the pane and still fit it, and what decides where its gaps go is which room it was given.
+    wrap.classList.toggle('is-pane-wide', tookPane);
     const alloc: Allocation | null = allocateColumnWidths(Math.max(0, width - m.gutter), m.columns, {
       floor: m.floor,
       cap: COLUMN_CAP_FRACTION * width,
@@ -431,6 +536,21 @@ export function createColumnLayout(
     // and the colgroup would be a suggestion the browser is free to ignore.
     table.style.tableLayout = 'fixed';
     table.style.width = `${m.gutter + alloc.total}px`;
+    /*
+     * Where the table's right edge is inside the frame, so the chrome above it can align to the table
+     * rather than to the frame.
+     *
+     * `.can-use-pane` puts negative margins on the wrap so its box reaches both pane edges, and the
+     * controls bar is `left: 0; right: 0` inside that box with its buttons pushed right. So the buttons
+     * right-aligned to the **pane**: measured in a VS Code window, a table drawn 192..901 had its bar
+     * ending at 1091, which is 190px past the table and one pixel short of the pane. A closed issue says
+     * the bar "floats over the table's top-right", and for a table that fits its column it did not.
+     *
+     * Published from the two numbers already in hand rather than measured back off the DOM, because this
+     * runs in a write phase and reading a rectangle here would force a layout. The inset is the frame's
+     * own left padding, which is where the table starts, and the rest is the width just set.
+     */
+    wrap.style.setProperty('--md-table-edge', `${inset + m.gutter + alloc.total}px`);
     wrap.classList.toggle('is-scroll-x', alloc.scrolls);
     describe(alloc.scrolls);
     edges();
@@ -447,7 +567,7 @@ export function createColumnLayout(
 
   type Reading =
     | { kind: 'stop' }
-    | { kind: 'start'; width: number; inset: number; env: string }
+    | { kind: 'start'; width: number; inset: number; room: PaneRoom; env: string }
     | { kind: 'probe'; widths: number[] };
 
   const request = (): void => {
@@ -457,10 +577,43 @@ export function createColumnLayout(
       read: () => {
         if (dead || !wrap.isConnected) return { kind: 'stop' };
         if (phase === 'idle') {
-          // The scroller's own left padding is the inset, and it has no right padding, so this
-          // one number says how far the frame reaches past the column on each side.
-          const pad = parseFloat(getComputedStyle(grid).paddingLeft);
-          return { kind: 'start', width: grid.clientWidth, inset: Number.isFinite(pad) ? pad : 0, env: environment(grid) };
+          /*
+           * The scroller's own left padding is the inset, and `roomFor` treats it as the same
+           * on both sides, which is what `width - 2 * inset` says.
+           *
+           * That is true of a frame reaching the pane, where the stylesheet sets both paddings
+           * to the inset. It is read from the left alone because the right one is not always
+           * the inset: a table that cannot use the pane has no inset and takes a gutter of
+           * right padding once it scrolls, purely so the end of the table is visible, and that
+           * gap must not be taken out of the room the columns divide. `clientWidth` is the
+           * padding box, so it is the room either way and neither padding changes it.
+           *
+           * This comment used to say the scroller had no right padding at all. That stopped
+           * being true when a scrolled table gained its end gap, and a reader went on to
+           * reason from it.
+           */
+          const style = getComputedStyle(grid);
+          const pad = parseFloat(style.paddingLeft);
+          /*
+           * The writing column from the element that defines it, and the page gutter from its own
+           * custom property, because `roomFor` may not read either off this scroller's padding any
+           * more. The fallbacks are the old arithmetic, so a page with neither behaves as it did.
+           */
+          const content = grid.closest('.cm-content') ?? document.querySelector('.cm-content');
+          const cs = content ? getComputedStyle(content) : null;
+          const column =
+            content && cs
+              ? Math.max(0, content.clientWidth - (parseFloat(cs.paddingLeft) || 0) - (parseFloat(cs.paddingRight) || 0))
+              : 0;
+          const gutter = parseFloat(style.getPropertyValue('--md-gutter'));
+          const inset = Number.isFinite(pad) ? pad : 0;
+          return {
+            kind: 'start',
+            width: grid.clientWidth,
+            inset,
+            room: { column, gutter: Number.isFinite(gutter) && gutter > 0 ? gutter : inset },
+            env: environment(grid),
+          };
         }
         return { kind: 'probe', widths: readProbe() };
       },
@@ -482,13 +635,14 @@ export function createColumnLayout(
           }
           paneWidth = reading.width;
           frameInset = reading.inset;
+          paneRoom = reading.room;
           const k = measureKey();
           const stamp = `${k}@${reading.width}#${pinStamp()}`;
           const known = cache.get(k);
           if (known) {
             if (stamp === applied && opts.table()?.querySelector(':scope > colgroup')) return;
             applied = stamp;
-            return lay(known, reading.width, reading.inset);
+            return lay(known, reading.width, reading.inset, reading.room);
           }
           applied = '';
           buildProbe();
@@ -523,7 +677,7 @@ export function createColumnLayout(
         const k = measureKey();
         store(k, m);
         applied = `${k}@${paneWidth}#${pinStamp()}`;
-        lay(m, paneWidth, frameInset);
+        lay(m, paneWidth, frameInset, paneRoom);
         // The frame was resized, or the text changed, while the copy was being
         // drawn. What just landed is the answer to the old question.
         if (again) {
@@ -616,7 +770,26 @@ export function createColumnLayout(
       seen = w;
       refresh();
     });
-    observer.observe(grid);
+    /*
+     * The border box, not the default content box, and the difference is a whole class of bug.
+     *
+     * The frame's inset is padding on both sides, so its content box is the writing column and
+     * stays exactly that at every pane wide enough for the inset to be at its ceiling: 708px at a
+     * pane of 1400 and 708px at a pane of 3000, while `clientWidth` goes 1400 and 3000. Watching
+     * the content box, this observer therefore **never fired on a widening**, and only fired once
+     * the pane was narrow enough to squeeze the column itself.
+     *
+     * So a table kept the widths it had been given in a narrower pane until something else forced
+     * a re-layout. Measured: the same pane of 925px laid out at 1491px total when reached from
+     * 1400 and at 1516px when reached from 700, both stable, because in the first case the last
+     * layout had run at a frame of 1000 and never run again. That is the jump a person sees when
+     * they drag the editor's edge, and it is why it looked like more than the pane had moved: it
+     * is the accumulated difference catching up, not a step.
+     *
+     * The callback already compares `clientWidth` against the last value it acted on, so a box
+     * that reports more often costs nothing.
+     */
+    observer.observe(grid, { box: 'border-box' });
   }
 
   const layout: ColumnLayout = {

@@ -11,13 +11,13 @@ You select cells in a table the way you do in a spreadsheet, then clear, fill, c
 ## Select a block of cells
 
 - Click, Shift-click or drag to mark a rectangular block.
-- Click a column header to take the column, or a row number to take the row.
+- Click a column header to take the column, or a row's selector column down the left of the grid to take the row. The selector column carries row numbers when line numbers are on.
 - Click the corner cell, or press Cmd+A inside the grid, to take the whole table. On Windows and Linux, use Ctrl in place of Cmd everywhere on this page.
 - Hold Shift with the arrow keys to extend the selection.
 
 As in a spreadsheet, the cell a drag or Shift-click starts from stays the active cell, the one typing replaces, and Shift with the arrow keys moves the far corner of the block.
 
-Every marked cell is drawn in the selection colour. The row numbers and column headers stay as they are, so they never look like links or like more cells selected.
+Every marked cell is drawn in the selection colour. The selector column and column headers stay as they are, so they never look like links or like more cells selected.
 
 Press Escape to clear the selection and leave the keyboard in the grid. Clicking out into the text leaves no highlight or focus ring behind on the table.
 
@@ -64,5 +64,5 @@ A single column of lines is pasted as text, since one column is a list.
 
 ## Good to know
 
-- **Selecting never writes the file.** Selecting by any of these gestures never moves a row or a column. Dragging a row number or header that is already selected moves it: see [Table rows and columns](table-commands.md#move-rows-and-columns).
+- **Selecting never writes the file.** Selecting by any of these gestures never moves a row or a column. Dragging a selector column or header that is already selected moves it: see [Table rows and columns](table-commands.md#move-rows-and-columns).
 - **One action, one undo.** Undo puts back everything a clear or a fill across several cells changed, in a single step, scattered picks included. See [Tables](tables.md#undo-a-change) for how undo moves through a table.

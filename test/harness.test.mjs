@@ -13,6 +13,7 @@ import { tmpdir, homedir } from 'node:os';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
 import { complaintFor, readVerdict } from '../scripts/lib/gateOutput.mjs';
+import { runGates } from '../scripts/lib/gateRun.mjs';
 import {
   ago,
   holderProgress,
@@ -647,6 +648,133 @@ check('a step that prints nothing is not failed, because the type check prints n
    */
   const v = readVerdict('');
   return { ok: complaintFor('Type check', v) === null, detail: `${j(complaintFor('Type check', v))}` };
+});
+
+/*
+ * Which gates a run reaches, which is the question the runner's two modes exist to answer.
+ *
+ * Driven here rather than by running the real gates, because those take ten minutes and cannot be
+ * asked to fail at positions 2 and 21 on demand. That is why the loop was separated from the list:
+ * the steps and the thing that runs one are both arguments, so a fake `run` can fail wherever the
+ * check needs it to, and what is asserted is which labels were reached.
+ *
+ * Twenty-three steps, matching the real count, with the two failures at the positions the fault
+ * was measured at: an early gate and a late one in the same run.
+ */
+const fakeSteps = (n = 23) => Array.from({ length: n }, (_, i) => [`Gate ${i + 1}`, 'noop', []]);
+/** A `run` that fails at the given 1-based positions and otherwise reports a real-looking count. */
+const runnerFailingAt = (...positions) => {
+  const reached = [];
+  const run = async () => {
+    const at = reached.length + 1;
+    reached.push(at);
+    return positions.includes(at) ? { status: 1, seen: 'something went wrong\n' } : { status: 0, seen: '7/7 checks passed\n' };
+  };
+  return { run, reached };
+};
+
+check('--all reaches every gate, and reports an early failure and a late one together', async () => {
+  const { run, reached } = runnerFailingAt(2, 21);
+  let errs = '';
+  const r = await runGates({ steps: fakeSteps(), run, all: true, err: (s) => (errs += s) });
+  const named = r.failures.map((f) => f.label);
+  return {
+    ok:
+      r.ran === 23 &&
+      reached.length === 23 &&
+      named.length === 2 &&
+      named[0] === 'Gate 2' &&
+      named[1] === 'Gate 21' &&
+      r.status !== 0 &&
+      errs.includes('23 of 23 gates ran, 2 failed'),
+    detail: `reached ${reached.length}, ran ${r.ran}, failures ${j(named)}, status ${r.status}, tally ${j(/\d+ of \d+ gates ran, \d+ failed/.exec(errs)?.[0] ?? null)}`,
+  };
+});
+
+check('the default stops at the first failure, and says how many gates never ran', async () => {
+  /*
+   * The control for the check above. Without it, "every gate ran" would also be true of a runner
+   * that had simply lost the ability to stop, and the terminal behaviour the issue asks to keep
+   * would be gone with nothing reporting it.
+   */
+  const { run, reached } = runnerFailingAt(2, 21);
+  let errs = '';
+  const r = await runGates({ steps: fakeSteps(), run, all: false, err: (s) => (errs += s) });
+  return {
+    ok:
+      r.ran === 2 &&
+      reached.length === 2 &&
+      r.failures.length === 1 &&
+      r.failures[0].label === 'Gate 2' &&
+      r.status === 1 &&
+      errs.includes('2 of 23 gates ran, 1 failed') &&
+      errs.includes('21 gates never ran') &&
+      errs.includes('Gate 21'),
+    detail: `reached ${reached.length}, failures ${j(r.failures.map((f) => f.label))}, tally ${j(/\d+ of \d+ gates ran, \d+ failed/.exec(errs)?.[0] ?? null)}`,
+  };
+});
+
+check('a gate that cannot run is a failure under --all too, unless its label is forgiven', async () => {
+  const steps = [
+    ['Private terms', 'noop', []],
+    ['Touch layout', 'noop', []],
+  ];
+  const run = async (_cmd, _args) => ({ status: 0, seen: 'skipped: no private list beside this checkout\n' });
+  const strict = await runGates({ steps, run, all: true });
+  const lenient = await runGates({ steps, run, all: true, forgiven: (l) => l === 'Private terms' });
+  return {
+    // Both skip; forgiving one leaves the other still failing, which is the distinction the
+    // label-list exists for. Forgiving every skip to get past one would put back the hole where
+    // a missing browser took out the whole layout half of the bar and the run said it passed.
+    ok:
+      strict.failures.length === 2 &&
+      strict.status !== 0 &&
+      lenient.failures.length === 1 &&
+      lenient.failures[0].label === 'Touch layout' &&
+      lenient.status !== 0,
+    detail: `strict ${j(strict.failures.map((f) => f.label))}; forgiving Private terms ${j(lenient.failures.map((f) => f.label))}`,
+  };
+});
+
+check('a green run says how many gates it passed, so a shrinking number is visible', async () => {
+  let outs = '';
+  const r = await runGates({ steps: fakeSteps(23), run: async () => ({ status: 0, seen: '7/7 checks passed\n' }), all: true, out: (s) => (outs += s) });
+  const short = await runGates({ steps: fakeSteps(9), run: async () => ({ status: 0, seen: '7/7 checks passed\n' }), all: true });
+  return {
+    // The second run is the control: the same sentence with a different number in it. "All gates
+    // passed" with no count reads identically whether twenty-three ran or nine, which is the
+    // shape of the fault this whole change is about.
+    ok: r.status === 0 && outs.includes('All 23 of 23 gates passed') && short.ran === 9,
+    detail: `${j(outs.trim())}; the nine-gate run reported ran ${short.ran} of ${short.total}`,
+  };
+});
+
+check('a suite the kernel killed says so, rather than reading as a check that failed', async () => {
+  /*
+   * Two halves, because the live one alone proves nothing about this repository.
+   *
+   * What Node reports for a killed child: `code` is null and the signal arrives as the second
+   * argument. `run-tests.mjs` used to take only the first and resolve `code ?? 1`, which turned every
+   * kill into an ordinary failure. `gateRun.mjs` already names a signal for a step it spawned itself,
+   * so the information was being lost at exactly one layer, and a red CI run said "Tests failed" with a
+   * suite's output stopping partway and no way to tell whether it was pushed or fell.
+   */
+  const seen = await new Promise((resolve) => {
+    const c = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 1000); process.kill(process.pid, "SIGKILL")'], { stdio: 'ignore' });
+    c.on('exit', (code, signal) => resolve({ code, signal }));
+  });
+  // And that this repository's runner takes that argument and says it out loud. A source check rather
+  // than a behavioural one because `run` is internal to the script, and the thing that regressed is
+  // the shape of one handler.
+  const src = readFileSync(join(import.meta.dirname, '..', 'scripts', 'run-tests.mjs'), 'utf8');
+  const takes = /child\.on\('exit', \(code, signal\)/.test(src);
+  const names = /was killed by \$\{signal\}/.test(src);
+  return {
+    ok: seen.code === null && seen.signal === 'SIGKILL' && takes && names,
+    detail:
+      `a killed child reports code ${seen.code} and signal ${seen.signal}, so \`code ?? 1\` gives ` +
+      `${seen.code ?? 1}; run-tests takes the signal ${takes} and names it ${names}`,
+  };
 });
 
 let pass = 0;

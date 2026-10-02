@@ -1,7 +1,7 @@
 ---
 title: Getting started
 summary: Install Sheaf, open a Markdown file, and learn the three controls that matter.
-order: 10
+order: 0.5
 ---
 
 # Getting started

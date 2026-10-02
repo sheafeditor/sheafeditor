@@ -66,7 +66,7 @@ const marked = (p: Prose, kind = 'changed'): number[] =>
     .filter((m) => m.kind === kind)
     .map((m) => p.view.state.doc.lineAt(m.pos).number);
 
-const same = (a: number[], b: number[]): boolean => a.length === b.length && a.every((x, i) => x === b[i]);
+const same = <T,>(a: readonly T[], b: readonly T[]): boolean => a.length === b.length && a.every((x, i) => x === b[i]);
 
 /** The text of every rendered line carrying `cls`. */
 const shownWith = (p: Prose, cls: string): string[] =>

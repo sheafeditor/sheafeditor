@@ -169,4 +169,78 @@ export const scenarios = [
       return { ok: after.grids === 1 && after.rawPipeLines === 0 && back.grids === 1 && d === DOC, detail: `after the double-click ${j(after)}; after clicking into the text ${j(back)}; file unchanged ${d === DOC}` };
     },
   },
+  {
+    id: 'tables.stays-grid.typed-out-by-hand',
+    feature: 'tables.stays-grid',
+    name: 'Typing a table out by hand: after the delimiter row the two lines stay source, so the next pipe lands on that row and not under a grid',
+    run: async (S) => {
+      /*
+       * R8's third door, which had no scenario at all and whose requirement described it wrongly
+       * for a fortnight. It said "a caret moved inside the table", and a caret cannot be put inside
+       * a table drawn as a grid: `tables.ts` registers the table field in `EditorView.atomicRanges`,
+       * so a click cannot land inside one and an arrow steps over it.
+       *
+       * The real door is at the other end. A table needs a delimiter row to be a table, so the
+       * moment `| - | -` parses the block becomes one, and a person typing it out by hand is left
+       * with their caret at its close with the last ` |` still to type. If the grid were drawn
+       * there, that ` |` would land after the widget as a line of its own and they would have a
+       * delimiter row missing its pipe with a stray ` |` under the table.
+       *
+       * So this types a table the way a person does and reads the file, which is where the
+       * consequence lands. The screen is read too, because R8's own subject is what shows its
+       * Markdown and the file alone cannot distinguish "stayed source" from "drew a grid and the
+       * keystroke happened to go to the right place".
+       */
+      const seen = (S) =>
+        S.eval(() => {
+          const v = document.querySelector('.cm-content').cmTile.root.view;
+          return {
+            grids: document.querySelectorAll('.sheaf-table').length,
+            pipeLines: [...document.querySelectorAll('.cm-line')].filter((l) => /\|/.test(l.textContent)).length,
+            doc: v.state.doc.toString(),
+          };
+        });
+
+      await S.fresh('stays-grid-typed', 'Intro line.\n');
+      await S.sleep(500);
+      await S.caret('Intro line', 11);
+      await S.press('Enter');
+      await S.press('Enter');
+      await S.type('| a | b |');
+      await S.press('Enter');
+      // Stops one character short of a finished delimiter row on purpose: this is the state the
+      // door exists for, and the next keystroke is what it protects.
+      await S.type('| - | -');
+      await S.sleep(700);
+      const atTheDoor = await seen(S);
+
+      await S.type(' |');
+      await S.sleep(700);
+      const afterThePipe = await seen(S);
+
+      // And once there is a body row it is an ordinary table, which is the control: without it,
+      // "stayed source" could be a table that never draws rather than this one case.
+      await S.press('Enter');
+      await S.type('| 1 | 2 |');
+      await S.sleep(900);
+      await S.caret('Intro line', 3);
+      await S.sleep(700);
+      const withABody = await seen(S);
+      const d = await S.disk();
+
+      const delimiterWhole = /\n\| - \| - \|\n/.test(d);
+      const noStrayPipe = !/\n ?\|\n/.test(d);
+      const ok = atTheDoor.grids === 0 && delimiterWhole && noStrayPipe && withABody.grids === 1;
+      return {
+        ok,
+        detail:
+          `at the door ${j(atTheDoor.grids)} grid(s), ${atTheDoor.pipeLines} line(s) showing a pipe; ` +
+          `after typing the last pipe ${j(afterThePipe.grids)} grid(s); ` +
+          `${delimiterWhole ? 'the delimiter row is whole' : 'THE DELIMITER ROW IS NOT WHOLE'}; ` +
+          `${noStrayPipe ? 'no stray pipe line' : 'A STRAY PIPE LINE IS IN THE FILE'}; ` +
+          `control: with a body row ${j(withABody.grids)} grid(s) and ${withABody.pipeLines} pipe line(s); ` +
+          `file ${j(d)}`,
+      };
+    },
+  },
 ];

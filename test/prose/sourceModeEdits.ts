@@ -22,7 +22,7 @@
 
 import { Scenario, mountProse, Prose } from '../harness';
 import { EditorView } from '@codemirror/view';
-import { setDocumentSourceMode } from '../../src/webview/livePreview';
+import { setDocumentSourceMode, setLivePreviewConfig } from '../../src/webview/livePreview';
 
 /** Type `text` the way CodeMirror's own input path does, input handlers included. */
 function type(p: Prose, text: string): void {
@@ -34,16 +34,26 @@ function type(p: Prose, text: string): void {
   p.view.dispatch(state.update({ changes: { from, to, insert: text }, selection: { anchor: from + text.length }, userEvent: 'input.type' }));
 }
 
-/** Run `act` at `at` with source mode on or off, and return the file afterwards. */
-function after(doc: string, at: number, source: boolean, act: (p: Prose) => void): string {
+/**
+ * Run `act` at `at` and return the file afterwards, in one of the three states a line can be
+ * in: drawn, whole-document source mode, or reveal-on-line.
+ *
+ * The third is the one that was missing, and its absence is why a guard that could not see
+ * reveal-on-line went unnoticed for as long as it did. With the setting on, the caret's block
+ * shows its markers, so the person is looking at exactly what source mode shows them and every
+ * repair here should stand down for the same reason.
+ */
+function after(doc: string, at: number, how: 'drawn' | 'source' | 'reveal', act: (p: Prose) => void): string {
+  if (how === 'reveal') setLivePreviewConfig({ revealSyntaxOnLine: true });
   const p = mountProse(doc);
   try {
-    if (source) setDocumentSourceMode(p.view, p.view.dom, true);
+    if (how === 'source') setDocumentSourceMode(p.view, p.view.dom, true);
     p.select(at);
     act(p);
     return p.doc();
   } finally {
     p.destroy();
+    if (how === 'reveal') setLivePreviewConfig({ revealSyntaxOnLine: false });
   }
 }
 
@@ -99,17 +109,26 @@ const PAIRS: Pair[] = [
 export const scenarios: Scenario[] = PAIRS.map((pair) => ({
   name: `${pair.name} is left alone on a line showing its Markdown`,
   run: () => {
-    const inSource = after(pair.doc, pair.at, true, pair.act);
-    const inDrawn = after(pair.doc, pair.at, false, pair.act);
+    const inSource = after(pair.doc, pair.at, 'source', pair.act);
+    const inDrawn = after(pair.doc, pair.at, 'drawn', pair.act);
+    /*
+     * Reveal-on-line wants the same answer as source mode, because the person is looking at
+     * the same characters. It is asked separately because the guards used to ask a predicate
+     * that could not see this setting, so all eleven of them repaired a construct whose
+     * markers were on the screen. Without this third reading the fix for that is unprovable:
+     * every suite in the repository was green both before it and after it.
+     */
+    const inReveal = after(pair.doc, pair.at, 'reveal', pair.act);
     const sourceOk = inSource === pair.sourceWants;
     const drawnOk = inDrawn === pair.drawnWants;
+    const revealOk = inReveal === pair.sourceWants;
     return {
-      // The two answers differing is part of the check: if a guard switched the
-      // repair off everywhere, both halves would be the source-mode answer and
-      // only this comparison would notice.
-      ok: sourceOk && drawnOk && pair.sourceWants !== pair.drawnWants,
+      // The drawn answer differing from the other two is part of the check: if a guard
+      // switched the repair off everywhere, all three would agree and only this would notice.
+      ok: sourceOk && drawnOk && revealOk && pair.sourceWants !== pair.drawnWants,
       detail:
         `showing source ${sourceOk ? 'left it alone' : `gave ${JSON.stringify(inSource)} rather than ${JSON.stringify(pair.sourceWants)}`}; ` +
+        `reveal-on-line ${revealOk ? 'left it alone' : `gave ${JSON.stringify(inReveal)} rather than ${JSON.stringify(pair.sourceWants)}`}; ` +
         `drawn ${drawnOk ? 'repaired it' : `gave ${JSON.stringify(inDrawn)} rather than ${JSON.stringify(pair.drawnWants)}`}`,
     };
   },

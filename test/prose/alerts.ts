@@ -13,6 +13,7 @@
  * appearance is a real-window check.
  */
 
+import { setLivePreviewConfig } from '../../src/webview/livePreview';
 import { Scenario, mountProse } from '../harness';
 import { EditorView } from '@codemirror/view';
 import { ensureSyntaxTree } from '@codemirror/language';
@@ -88,7 +89,7 @@ export const scenarios: Scenario[] = [
         labels(p).join(',') === 'Note,Tip,Important,Warning,Caution' &&
         count(p, '.md-alert-icon') === 5 &&
         // The marker line reads as the label alone: no `[!NOTE]` is left on it.
-        kinds.every((kind, i) => line(p, 2 + i * 3) === ['Note', 'Tip', 'Important', 'Warning', 'Caution'][i]) &&
+        kinds.every((_kind, i) => line(p, 2 + i * 3) === ['Note', 'Tip', 'Important', 'Warning', 'Caution'][i]) &&
         // Marker line and body both carry the quote rule and the type's colour.
         kinds.every(
           (kind, i) =>
@@ -203,6 +204,9 @@ export const scenarios: Scenario[] = [
   {
     name: 'the caret on a titled or folded marker line shows it as source, byte for byte',
     run: () => {
+      // The caret on the line is what this reads, so it needs reveal-on-line rather than
+      // inheriting whatever ran before it. The runner resets the setting for each scenario.
+      setLivePreviewConfig({ revealSyntaxOnLine: true });
       const doc = 'Intro.\n\n> [!question]- Why this way?\n> Body text.';
       const p = mountProse(doc);
       p.select(2);
@@ -241,6 +245,9 @@ export const scenarios: Scenario[] = [
   {
     name: 'the caret in an alert shows the marker line as source, and leaving it draws the callout again',
     run: () => {
+      // The caret on the line is what this reads, so it needs reveal-on-line rather than
+      // inheriting whatever ran before it. The runner resets the setting for each scenario.
+      setLivePreviewConfig({ revealSyntaxOnLine: true });
       const doc = 'Intro.\n\n> [!WARNING]\n> Body text.';
       const p = mountProse(doc);
       p.select(2);

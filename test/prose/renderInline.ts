@@ -4,6 +4,7 @@
  * the default caret (position 0) leaves the lines under test inactive.
  */
 
+import { setLivePreviewConfig } from '../../src/webview/livePreview';
 import { Scenario, mountProse } from '../harness';
 
 type P = ReturnType<typeof mountProse>;
@@ -32,6 +33,9 @@ export const scenarios: Scenario[] = [
   {
     name: 'an autolink in angle brackets shows its address without the brackets',
     run: () => {
+      // The caret on the line is what this reads, so it needs reveal-on-line rather than
+      // inheriting whatever ran before it. The runner resets the setting for each scenario.
+      setLivePreviewConfig({ revealSyntaxOnLine: true });
       const doc = P0 + 'Mail <someone@example.com> or visit <https://example.com/path>.';
       const p = mountProse(doc);
       const rendered = line(p, 2) === 'Mail someone@example.com or visit https://example.com/path.';
@@ -113,6 +117,9 @@ export const scenarios: Scenario[] = [
   {
     name: 'a reference link shows only its text, and its definition line shows the address',
     run: () => {
+      // The caret on the line is what this reads, so it needs reveal-on-line rather than
+      // inheriting whatever ran before it. The runner resets the setting for each scenario.
+      setLivePreviewConfig({ revealSyntaxOnLine: true });
       const doc = P0 + 'Read the [reference][ref] here.\n\n[ref]: https://example.com';
       const p = mountProse(doc);
       const rendered =
@@ -138,6 +145,9 @@ export const scenarios: Scenario[] = [
   {
     name: 'inline code hides its backticks in prose and in headings',
     run: () => {
+      // The caret on the line is what this reads, so it needs reveal-on-line rather than
+      // inheriting whatever ran before it. The runner resets the setting for each scenario.
+      setLivePreviewConfig({ revealSyntaxOnLine: true });
       const doc = P0 + 'Run `npm test` before you push.\n\n## Run `npm test` first';
       const p = mountProse(doc);
       const rendered =
@@ -168,6 +178,9 @@ export const scenarios: Scenario[] = [
   {
     name: 'a backslash escape shows the character without its backslash',
     run: () => {
+      // The caret on the line is what this reads, so it needs reveal-on-line rather than
+      // inheriting whatever ran before it. The runner resets the setting for each scenario.
+      setLivePreviewConfig({ revealSyntaxOnLine: true });
       const doc = P0 + '\\*not italic\\* and plain.';
       const p = mountProse(doc);
       const rendered = line(p, 2) === '*not italic* and plain.' && texts(p, '.tok-em').length === 0;
@@ -181,6 +194,9 @@ export const scenarios: Scenario[] = [
   {
     name: 'HTML entities show as their characters, while unknown entities and code stay as written',
     run: () => {
+      // The caret on the line is what this reads, so it needs reveal-on-line rather than
+      // inheriting whatever ran before it. The runner resets the setting for each scenario.
+      setLivePreviewConfig({ revealSyntaxOnLine: true });
       const doc = P0 + 'AT&amp;T &copy; 2044 &mdash; done. &#169; &#x2014; &bogus;\n\nUse `&amp; \\*` here.';
       const p = mountProse(doc);
       const rendered =
@@ -196,6 +212,9 @@ export const scenarios: Scenario[] = [
   {
     name: 'a link with a title shows its text with no trailing space in the link',
     run: () => {
+      // The caret on the line is what this reads, so it needs reveal-on-line rather than
+      // inheriting whatever ran before it. The runner resets the setting for each scenario.
+      setLivePreviewConfig({ revealSyntaxOnLine: true });
       const doc = P0 + 'See [the site](https://example.com "Title") today.';
       const p = mountProse(doc);
       const rendered = line(p, 2) === 'See the site today.' && same(texts(p, '.tok-link'), ['the site']);
@@ -209,6 +228,9 @@ export const scenarios: Scenario[] = [
   {
     name: 'a link with empty text shows its address as the link',
     run: () => {
+      // The caret on the line is what this reads, so it needs reveal-on-line rather than
+      // inheriting whatever ran before it. The runner resets the setting for each scenario.
+      setLivePreviewConfig({ revealSyntaxOnLine: true });
       const doc = P0 + 'Empty text: [](https://example.com) and [](<a b.md>) end.';
       const p = mountProse(doc);
       const rendered =
@@ -224,6 +246,9 @@ export const scenarios: Scenario[] = [
   {
     name: 'emoji shortcodes show as their characters, and the source comes back on the caret line',
     run: () => {
+      // The caret on the line is what this reads, so it needs reveal-on-line rather than
+      // inheriting whatever ran before it. The runner resets the setting for each scenario.
+      setLivePreviewConfig({ revealSyntaxOnLine: true });
       const doc = P0 + 'Build passed :white_check_mark: and the deploy is :rocket: queued.';
       const p = mountProse(doc);
       const rendered =

@@ -601,7 +601,10 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
             break;
           }
           this.caretLine = lineAfterEdit(this.webviewText, text);
-          this.typing.record(this.webviewText);
+          // Both sides of the edit: an edit's span is only knowable while it happens, and working
+          // it out later from a baseline attributes anything that arrived from outside to the
+          // person as well.
+          this.typing.record(this.webviewText, text);
           this.webviewText = text;
           void this.sync?.edit(text);
           break;
@@ -704,7 +707,21 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
         case 'dataFileEdit':
           if (typeof message.path === 'string' && typeof message.base === 'string' && typeof message.text === 'string') {
             const step = message.step === 'undo' || message.step === 'redo' ? message.step : undefined;
-            void this.editDataFile(document.uri, docDir, message.path, message.base, message.text, step);
+            const { id, path } = message;
+            /*
+             * Answered when the work is done, with no error, because this host says what went wrong
+             * through `dataFile` instead: a path it cannot resolve, a file it cannot open, and an
+             * edit against a version the file no longer holds each send the view the file as it is
+             * with a sentence attached. The acknowledgement's job here is to stop the editor's timer,
+             * which otherwise fires on every successful edit and tells the person their edit may not
+             * have landed when it did.
+             *
+             * An error on this message is for a host that has no other way to say so, which is what
+             * a browser tab now uses it for.
+             */
+            void this.editDataFile(document.uri, docDir, path, message.base, message.text, step).then(() => {
+              this.postMessage({ type: 'dataFileEdited', id });
+            });
           }
           break;
         case 'dataFileCreate':

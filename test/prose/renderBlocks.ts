@@ -436,6 +436,9 @@ export const scenarios: Scenario[] = [
   {
     name: 'with reveal syntax on line, the caret reveals every line of its quote or list item and nothing outside it',
     run: () => {
+      // Named in the scenario's own title, so it asks for the setting rather than inheriting
+      // whatever ran before it. The runner resets it for each scenario.
+      setLivePreviewConfig({ revealSyntaxOnLine: true });
       const doc = '.\n\n> first **line** here\n> second **line** here\n\n- item one\n  continued **here**\n- item two **x**\n\nPara **one**.';
       const p = mountProse(doc);
       p.select(doc.indexOf('first') + 2);
