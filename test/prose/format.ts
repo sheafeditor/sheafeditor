@@ -1,9 +1,9 @@
 import { searchPanelOpen, findNext, getSearchQuery } from '@codemirror/search';
 import { Scenario, mountProse, Prose } from '../harness';
-import { revealField, setLivePreviewConfig } from '../../src/webview/livePreview';
+import { revealField, setLivePreviewConfig } from '../../src/webview/revealState';
 import { mountToolbar, refreshToolbar } from '../../src/webview/toolbar';
 import { mountContextMenu, ContextMenuDeps } from '../../src/webview/contextmenu';
-import { setupImageIngestion, handleImageSaved, insertImageFiles } from '../../src/webview/images';
+import { setupImageIngestion, handleImageSaved, insertImageFiles } from '../../src/webview/imageIngest';
 
 const G: any = globalThis;
 const tick = (): Promise<void> => new Promise((r) => setTimeout(r, 0));

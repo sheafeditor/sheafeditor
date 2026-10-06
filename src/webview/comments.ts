@@ -40,7 +40,7 @@ import { Decoration, DecorationSet, EditorView, ViewPlugin, WidgetType } from '@
 import { EditorSelection, EditorState, Extension, Range, StateField } from '@codemirror/state';
 import { syntaxTree } from '@codemirror/language';
 import { digest } from './columnLayout';
-import { activeLines, setReveal, sourceModeOn } from './livePreview';
+import { activeLines, setReveal, sourceModeOn } from './revealState';
 import { revealRange } from './revealBlock';
 
 /** Whether comments are drawn in full or shrunk to a marker. */

@@ -60,6 +60,14 @@ const STEPS = [
   // `.cm-line`, loses to CodeMirror's own rule and never reaches the screen. One had been losing
   // silently, so a reader of the stylesheet believed a number the product ignored.
   ['Line padding', process.execPath, [join(REPO, 'scripts', 'check-css-line-padding.mjs')]],
+  /*
+   * The dialect may not reach an editor. Cheap, static, and ahead of the type check because it is
+   * about what a module is allowed to import rather than about whether it compiles: a grammar that
+   * pulls `@codemirror/view` type-checks perfectly and costs every consumer 70 KB.
+   */
+  ['Dialect imports', process.execPath, [join(REPO, 'scripts', 'check-dialect-imports.mjs')]],
+  ['Field imports', process.execPath, [join(REPO, 'scripts', 'check-field-imports.mjs')]],
+  ['Render safety', process.execPath, [join(REPO, 'scripts', 'check-render-safety.mjs')]],
   ['Type check', bin('tsc'), ['--noEmit']],
   /*
    * The suites' own TypeScript, which until 2026-10-02 nothing compiled: `tsconfig.json` includes
@@ -157,6 +165,18 @@ const STEPS = [
   // it. Every frame of a flicker is individually correct and only the sequence is wrong, so
   // this reads a run of states rather than a state.
   ['Sticky header', process.execPath, [join(REPO, 'scripts', 'check-sticky-header.mjs')]],
+  // And whether every child of a table's frame lines up with the table inside it. A frame wide
+  // enough to use the pane escapes the writing column by negative margins, so each of its children
+  // starts at the pane's edge unless it takes that inset back. Four findings in one week were four
+  // children that did not, each found by somebody noticing it looked wrong, and a fifth was in the
+  // tree throughout. The obligation is stated nowhere in the stylesheet, so it is stated here.
+  ['Frame children', process.execPath, [join(REPO, 'scripts', 'check-wrap-children.mjs')]],
+  // And whether a resource fetched after the editor is running recovers from one failure. Both the
+  // emoji table and KaTeX discarded the rejection and left `pending` holding a settled promise, so
+  // a single flake meant that editor never drew an emoji or an equation again, silently. The
+  // obvious check for it cannot fail — a blocked fetch drawing nothing is correct — so this drives a
+  // loader that fails once and then succeeds, and asserts on the second attempt.
+  ['Lazy retry', process.execPath, [join(REPO, 'scripts', 'check-lazy-retry.mjs')]],
 ];
 
 /**

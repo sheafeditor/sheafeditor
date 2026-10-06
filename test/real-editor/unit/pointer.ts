@@ -8,7 +8,7 @@ import { EditorState, EditorSelection } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
 import { syntaxTree, ensureSyntaxTree } from '@codemirror/language';
 import { editorExtensions } from '../../../src/webview/editorExtensions';
-import { setReveal, setLivePreviewConfig } from '../../../src/webview/livePreview';
+import { setReveal, setLivePreviewConfig } from '../../../src/webview/revealState';
 
 type Result = boolean | { ok: boolean; detail?: string };
 interface Scenario {

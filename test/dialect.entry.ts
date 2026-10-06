@@ -13,7 +13,7 @@
  */
 
 import { EditorState } from '@codemirror/state';
-import { sheafMarkdownLanguage } from '../src/webview/markdownDialect';
+import { sheafMarkdownLanguage } from '../src/webview/markdownLanguage';
 import { blockMathRanges } from '../src/webview/maths';
 
 export interface Found {

@@ -5,7 +5,7 @@
 
 import { Scenario, mountProse } from './harness';
 import { findClusterBreak } from '@codemirror/state';
-import { setLivePreviewConfig } from '../src/webview/livePreview';
+import { setLivePreviewConfig } from '../src/webview/revealState';
 import { scenarios as highlight } from './prose/highlight';
 import { scenarios as commands } from './prose/commands';
 import { scenarios as format } from './prose/format';

@@ -37,8 +37,8 @@ import { syntaxTree } from '@codemirror/language';
 import type { SyntaxNode } from '@lezer/common';
 import { undo as undoDocument, redo as redoDocument, undoDepth, redoDepth, isolateHistory, invertedEffects } from '@codemirror/commands';
 import type { SearchQuery } from '@codemirror/search';
-import { revealField, setReveal } from './livePreview';
-import { resolveImageSrc } from './images';
+import { revealField, setReveal } from './revealState';
+import { resolveImageSrc } from './imageMarkup';
 import { openLink } from './linkTarget';
 import { CellEditor, createCellEditor } from './cellEditor';
 import { ColumnLayout, createColumnLayout, digest } from './columnLayout';
@@ -2431,6 +2431,18 @@ export function columnKeepsItsName(rects: readonly CellRect[], c: number, lastRo
  * The same guard the clear path uses, rather than a third reading of "is this column whole". The fill path
  * still has its own, written as `colRun(c) !== null`, and the two are not provably the same predicate, so
  * merging them is left alone rather than done on the assumption that they agree.
+ *
+ * **Typing asks this too, and it was the input still getting it wrong.** The branch that opens an editor
+ * on a printable key edits whatever cell has the focus, and both gestures that pick a column whole leave
+ * the focus on the header: a press on a column's name, and Select All. So the first thing a person does
+ * to replace a table — click a cell, Cmd+A, type — renamed a column to that one character and changed
+ * none of the cells they had selected, with auto-save writing it as the key landed. Three inputs to one
+ * selection now give one answer, which is what makes it a rule rather than three behaviours.
+ *
+ * A header selected on its own still takes the keystroke, because the question asked here is whether the
+ * selection runs from the header to the last row. Renaming a column by selecting its name and typing is
+ * unaffected, and a case holds that half down: without it, refusing to type into any header at all would
+ * satisfy the other cases.
  */
 export function pasteStartRow(rects: readonly CellRect[], top: number, col: number, lastRow: number): number {
   return top === -1 && columnKeepsItsName(rects, col, lastRow) ? 0 : top;
@@ -4951,6 +4963,9 @@ class TableWidget extends WidgetType {
       } else if (k.length === 1 && !e.metaKey && !e.ctrlKey && !e.altKey) {
         // The key that opens the editor is its first keystroke, so it is written too.
         if (hasSel) {
+          // A column picked whole takes the keystroke into its body; see `pasteStartRow`.
+          const start = pasteStartRow(selRects(), focus.r, focus.c, lastRow());
+          if (start !== focus.r) focus = { r: start, c: focus.c };
           edit(k);
           writeTyped();
         }
@@ -5232,6 +5247,8 @@ class TableWidget extends WidgetType {
           // Already released.
         }
         saveWidths();
+        // Removing `is-resizing` ends the pane-wide freeze; this recomputes what was frozen.
+        columns.remeasure();
         syncControls();
       };
       g.addEventListener('pointerup', (e) => end(e, false));

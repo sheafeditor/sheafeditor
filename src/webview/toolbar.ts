@@ -9,18 +9,18 @@
  * the buttons.
  */
 
-import { EditorSelection, EditorState, ChangeSpec, Line } from '@codemirror/state';
+import { EditorSelection, EditorState, ChangeSpec, Line, StateEffect, StateField, Transaction } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
 import { syntaxTree } from '@codemirror/language';
 import { undo, redo, undoDepth, redoDepth, insertNewlineAndIndent } from '@codemirror/commands';
 import { insertNewlineContinueMarkup } from '@codemirror/lang-markdown';
 import { formatStateAt, FormatState } from './formatState';
 import { drawKeyHint, hint, keyShortcuts } from './shortcuts';
-import { insertPipeTable, insertCsvTable } from './tables';
-import { inlineOnlyEditor } from './cellEditor';
+
+import { inlineOnlyEditor } from './inlineOnly';
 import { alertMarkerOnText } from './alerts';
 import { breakOnAlertMarker } from './typedIntoChrome';
-import { pickImage } from './images';
+import { pickImage } from './imageIngest';
 import { inlineLinkAt, inlineLinksIn, InlineLink } from './floatingState';
 import { editLinkInPopover, openNewLinkPopover, removeLinks } from './linkPopover';
 import { linkAddressAt, openLink } from './linkTarget';
@@ -871,6 +871,13 @@ export function insertHardBreak(view: EditorView): boolean {
   // asked before it on Enter.
   if (breakOnAlertMarker(view)) return true;
   if (splitKeepingRuns(view)) return true;
+  /*
+   * Where this gesture owes a backslash, set by the one branch below that writes a break needing one.
+   * Code carries no hard breaks and a heading's is a new block, so neither owes anything, and a break
+   * with no text in front of it is a plain newline. Taken from the branch rather than recomputed
+   * afterwards, because the conditions are already decided there and a second copy would drift.
+   */
+  let owed: number | null = null;
   view.dispatch(
     state.changeByRange((range) => {
       if (formatStateAt(state, range.head).codeBlock || inHeading(range.head)) {
@@ -917,13 +924,124 @@ export function insertHardBreak(view: EditorView): boolean {
        */
       if (range.empty && range.from === line.to && /\\$| {2,}$/.test(line.text)) return { range };
       const noTextBefore = range.from === line.from && textStart === line.from;
-      const insert = noTextBefore ? '\n' : '\\\n' + cont;
+      /*
+       * **The newline now and the backslash when there is something to break.**
+       *
+       * A trailing backslash is a hard break only when a line with content follows it. Written
+       * immediately, as this used to, it sits in the file as a literal backslash for as long as the
+       * person has not typed the second line yet — which is the normal case, because the key is
+       * pressed *before* the sentence that follows it exists. Pause, change your mind, or click away,
+       * and the document keeps a character nobody wrote, drawn here and shown by every other Markdown
+       * reader. Pressing a key and then not typing should leave the document as it was.
+       *
+       * So the break is made in two steps. What is left meanwhile is a soft line break, which renders
+       * as a space and changes nothing about what the paragraph says; `completeHardBreak` below adds
+       * the backslash the moment content arrives on the new line.
+       */
+      /*
+       * **A break with text after it is earned at once; one at the end of a line waits.**
+       *
+       * `A plai|n line.` breaks into two lines that both have content, so the backslash means what it
+       * says the moment it is written. `A plain line.|` opens a line with nothing on it, and a
+       * trailing backslash there is not a hard break at all: it is a literal backslash, which is what
+       * CommonMark renders and what every other reader shows. That is the one this waits on, and it
+       * is the common case, because the key is pressed before the line that follows it exists.
+       */
+      const earnedNow = range.to < line.to;
+      if (!noTextBefore && !earnedNow && state.selection.ranges.length === 1) owed = range.from;
+      const mark = noTextBefore || !earnedNow ? '' : '\\';
+      const insert = mark + '\n' + cont;
       return { changes: { from: range.from, to: range.to, insert }, range: EditorSelection.cursor(range.from + insert.length) };
     }),
-    state.update({ scrollIntoView: true })
+    { scrollIntoView: true, effects: breakPending.of(owed) }
   );
   return true;
 }
+
+/** Where a hard break is waiting for something to break: the end of the line the caret left. */
+const breakPending = StateEffect.define<number | null>();
+
+/**
+ * The line a pending break opened: the one after the owed position, in the state it is read from.
+ *
+ * The owed position sits at the end of the line the caret left, so the line that is waiting for
+ * content is the next one. Both halves below locate it this way rather than comparing against the
+ * bare position, because "after the break" also means every later line in the document.
+ */
+function openedLine(state: EditorState, at: number) {
+  const n = state.doc.lineAt(at).number + 1;
+  return n <= state.doc.lines ? state.doc.line(n) : null;
+}
+
+/**
+ * The position a backslash is owed, or null.
+ *
+ * Held for exactly as long as the gesture is unfinished, which is one keystroke in the normal case.
+ *
+ * **Both ways out of that state are explicit, and leaving either implicit is a bug that writes into
+ * the person's file.** Mapping the position through every change and never dropping it, as this did,
+ * meant the completion fired again on each later keystroke: a second line of forty characters left
+ * forty backslashes, and from the second one the run read as an escaped backslash rather than a hard
+ * break, so it destroyed the break it had just made. So the filter below says `null` as part of the
+ * transaction that writes the backslash, and a change that lands anywhere other than the opened line
+ * clears it here, because a break nobody went on to make is not owed anything and a stale position
+ * would put a backslash where the key was never pressed.
+ */
+const breakOwedAt = StateField.define<number | null>({
+  create: () => null,
+  update(value, tr) {
+    for (const e of tr.effects) if (e.is(breakPending)) return e.value;
+    if (value === null || !tr.docChanged) return value;
+    const opened = openedLine(tr.startState, value);
+    let elsewhere = false;
+    tr.changes.iterChanges((fromA, toA) => {
+      if (!opened || toA < opened.from || fromA > opened.to) elsewhere = true;
+    });
+    // Mapped through, so the position still means the same place after the change that kept it.
+    return elsewhere ? null : tr.changes.mapPos(value, -1);
+  },
+});
+
+/**
+ * Finish a hard break the moment the line it opened gets content.
+ *
+ * A transaction filter rather than a listener, so the backslash and the character that earns it land
+ * as one change: one undo takes back one gesture, and nothing in between ever sees a document with a
+ * break half made.
+ */
+export const hardBreakCompletion = [
+  breakOwedAt,
+  EditorState.transactionFilter.of((tr) => {
+    const at = tr.startState.field(breakOwedAt, false);
+    if (at === null || at === undefined || !tr.docChanged) return tr;
+    if (tr.effects.some((e) => e.is(breakPending))) return tr;
+    const opened = openedLine(tr.startState, at);
+    if (!opened) return tr;
+    let earns = false;
+    tr.changes.iterChanges((fromA, _ta, _fb, _tb, inserted) => {
+      /*
+       * Content arriving on the line the break opened, located in the state this was read from.
+       *
+       * The test used to be `fromB > at`, which is every position after the break rather than the
+       * one line waiting on it, so typing further down the document completed a break the person
+       * had abandoned higher up.
+       */
+      if (inserted.length > 0 && fromA >= opened.from && fromA <= opened.to && inserted.sliceString(0).trim() !== '') earns = true;
+    });
+    if (!earns) return tr;
+    return [
+      tr,
+      {
+        changes: { from: at, insert: '\\' },
+        // Said rather than left to the field's own clearing rule: this change lands on the line
+        // *before* the opened one, which that rule would read as a reason to keep waiting.
+        effects: breakPending.of(null),
+        sequential: true,
+        annotations: Transaction.addToHistory.of(false),
+      },
+    ];
+  }),
+];
 
 /**
  * Ask for a link: open the popover over the link the selection is already in, or over the
@@ -1321,8 +1439,24 @@ const ITEMS: Item[] = [
     // in a cell too. Nothing here is an inline insertion; Link is a button of its own.
     enabled: blocksApply,
     options: [
-      { label: 'Markdown table', run: insertPipeTable },
-      { label: 'CSV data table', run: insertCsvTable },
+      /*
+       * The two table insertions are fetched when one is chosen, rather than imported here.
+       *
+       * They are two commands, and importing them brought the whole grid with them: `tables.ts` is
+       * 82 KB raw and carries the kanban view and both column-measuring modules behind it. That
+       * made every surface holding this toolbar pay for the grid, which for the `field` profile,
+       * the cell editor, was 100 KB of the 132 KB it was over its budget by. The editor it lives
+       * inside had already loaded all of it, so nothing was gained anywhere.
+       *
+       * This changes what a profile downloads and not what anybody sees. The dropdown keeps both
+       * entries and keeps `blocksApply`, so they are still offered and still drawn unavailable in a
+       * cell, which is what the comment above asks for. In a document the grid is loaded already,
+       * so the import resolves from a chunk the page holds and the insertion is as immediate as it
+       * was. Only a surface that has never drawn a table waits, once, and such a surface could not
+       * have offered this button at all before.
+       */
+      { label: 'Markdown table', run: (view) => void import('./tables.js').then((m) => m.insertPipeTable(view)) },
+      { label: 'CSV data table', run: (view) => void import('./tables.js').then((m) => m.insertCsvTable(view)) },
       { label: 'Code block', run: insertCodeBlock },
       { label: 'Divider', run: insertDivider },
       { label: 'Image', run: pickImage },

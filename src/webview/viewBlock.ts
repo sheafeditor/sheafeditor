@@ -32,7 +32,7 @@ import type { FromWebview } from '../protocol';
 import { StateField, StateEffect, EditorState, Range, Extension, Prec, Transaction } from '@codemirror/state';
 import { Decoration, DecorationSet, EditorView, ViewPlugin, WidgetType } from '@codemirror/view';
 import { syntaxTree } from '@codemirror/language';
-import { revealField } from './livePreview';
+import { revealField } from './revealState';
 import {
   BareTable,
   bareTable,

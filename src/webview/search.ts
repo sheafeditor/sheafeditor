@@ -36,7 +36,7 @@ import {
   replaceNext,
   replaceAll,
 } from '@codemirror/search';
-import { setReveal } from './livePreview';
+import { setReveal } from './revealState';
 import { tableGridCovers, markTableMatches, followTableMatch } from './tables';
 import { hint, registerShortcutGroup } from './shortcuts';
 

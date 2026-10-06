@@ -9,6 +9,8 @@ import { EditorState } from '@codemirror/state';
 import { editorExtensions } from '../src/webview/editorExtensions';
 import katex from 'katex';
 import { provideMaths } from '../src/webview/maths';
+import { provideEmoji } from '../src/webview/emoji';
+import { EMOJI_PAIRS } from '../src/webview/emojiTable';
 
 export interface ScenarioResult {
   ok: boolean;
@@ -34,11 +36,12 @@ export interface Prose {
 const G: any = globalThis;
 
 export function mountProse(doc: string, extra: Extension[] = []): Prose {
-  // KaTeX is fetched on demand in a real host, and these checks mount and assert in the same
-  // breath, so a dynamic import has not resolved by the time a scenario looks at an equation.
-  // Handing it over here says "maths is available in this check" once, for every suite that
-  // mounts through this, and leaves the shipping path lazy.
+  // KaTeX and the emoji table are both fetched on demand in a real host, and these checks mount
+  // and assert in the same breath, so a dynamic import has not resolved by the time a scenario
+  // looks at an equation or a shortcode. Handing them over here says "these are available in this
+  // check" once, for every suite that mounts through this, and leaves the shipping path lazy.
   provideMaths(katex);
+  provideEmoji(EMOJI_PAIRS);
   const parent = document.createElement('div');
   document.body.appendChild(parent);
   const view = new EditorView({

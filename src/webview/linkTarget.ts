@@ -7,7 +7,7 @@
 import type { FromWebview } from '../protocol';
 import { EditorState } from '@codemirror/state';
 import { syntaxTree } from '@codemirror/language';
-import { parseHtmlImage } from './images';
+import { parseHtmlImage } from './imageMarkup';
 
 type TreeNode = ReturnType<ReturnType<typeof syntaxTree>['resolveInner']>;
 

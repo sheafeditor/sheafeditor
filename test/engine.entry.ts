@@ -1,8 +1,11 @@
 import { EditorState } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
 import { languages } from '@codemirror/language-data';
-import { sheafMarkdown, sheafMarkdownLanguage } from '../src/webview/markdownDialect';
-import { revealField,livePreview, setLivePreviewConfig } from '../src/webview/livePreview';
+import { forceParsing } from '@codemirror/language';
+import { sheafMarkdown } from '../src/webview/markdownDialect';
+import { sheafMarkdownLanguage } from '../src/webview/markdownLanguage';
+import { livePreview } from '../src/webview/livePreview';
+import { revealField, setLivePreviewConfig } from '../src/webview/revealState';
 import { notionTheme } from '../src/webview/theme';
 
 /**
@@ -80,7 +83,7 @@ export function run(text: string, { reveal = false }: { reveal?: boolean } = {})
  * available: once a widget has eaten some lines, nothing pairs the rest back up by index.
  */
 import { toggleBlockReveal } from '../src/webview/revealBlock';
-import { setResourceBaseUri } from '../src/webview/images';
+import { setResourceBaseUri } from '../src/webview/imageMarkup';
 
 export type LineShows = 'source' | 'drawn' | 'widget';
 
@@ -261,6 +264,34 @@ export function drawMap(text: string): { line: number; source: string; drawn: st
     }),
     parent,
   });
+  /*
+   * Draw the whole document rather than the first screenful.
+   *
+   * jsdom lays nothing out, so CodeMirror cannot tell how much is on screen and draws one screen's
+   * worth; and the parser works to the viewport and then on idle time a script never gives it. Both
+   * leave every line below the first screen with no tree under it, drawn as raw source. A caller
+   * reading that sees a product that renders the top of a file and gives up, which is what the first
+   * run of `check-render-agrees.mjs` reported over all 85 corpus documents.
+   *
+   * The same two steps `scripts/check-render.mjs` takes, and for the same reason. The caller supplies
+   * the tall viewport, since that is a property of the window rather than of this function; what is
+   * here is the parse and the measure pass, which belong to the view this builds.
+   */
+  forceParsing(view, view.state.doc.length, 10000);
+  /*
+   * `measure()` rather than `requestMeasure()`: the public one schedules the pass on an animation
+   * frame, and a script that never yields one gets a different answer on every run depending on what
+   * happened to have been measured already. This is the same call `scripts/check-render.mjs` makes,
+   * from JavaScript where no cast is needed.
+   */
+  const sync = view as unknown as { measure(): void };
+  for (let i = 0, last = -1; i < 100; i++) {
+    sync.measure();
+    const to = view.viewport.to;
+    if (to >= view.state.doc.length || to === last) break;
+    last = to;
+  }
+
   let rest = 0;
   for (let n = 1; n <= view.state.doc.lines; n++) {
     if (view.state.doc.line(n).text.trim() === '') {
@@ -271,11 +302,34 @@ export function drawMap(text: string): { line: number; source: string; drawn: st
   if (!rest) throw new Error('drawMap needs a blank line to rest the caret on, and this text has none.');
   view.dispatch({ selection: { anchor: view.state.doc.line(rest).from } });
 
+  /*
+   * Line elements mapped to line numbers by asking the view where each one is, rather than by
+   * assuming there is one element per line.
+   *
+   * The assumption was `els.length === doc.lines ? els[n - 1] : undefined`, which is **all or
+   * nothing**: a document holding any block widget has fewer elements than lines, so every line in it
+   * reported "(no line element)". That is not a rare shape. `sample/wild/files/mermaid-flowchart-syntax.md`
+   * holds 114 diagrams, so all 1,494 of its lines came back unreadable, and four other corpus
+   * documents went the same way for an image or a table between them. A caller comparing against this
+   * sees 1,379 lines of the renderer disagreeing with the editor, when it is the instrument declining
+   * to answer.
+   *
+   * `posAtDOM` is the view's own answer and rests on nothing. A line the view did not draw has no
+   * entry, which is the honest result and is still distinguishable from a line drawn as empty.
+   */
   const els = [...view.dom.querySelectorAll('.cm-content > .cm-line')];
+  const byLine = new Map<number, Element>();
+  for (const el of els) {
+    try {
+      byLine.set(view.state.doc.lineAt(view.posAtDOM(el)).number, el);
+    } catch {
+      // An element the view cannot place is one this cannot report on, which the map says by omission.
+    }
+  }
   const out: { line: number; source: string; drawn: string; widgets: string[] }[] = [];
   for (let n = 1; n <= view.state.doc.lines; n++) {
     const source = view.state.doc.line(n).text;
-    const el = els.length === view.state.doc.lines ? els[n - 1] : undefined;
+    const el = byLine.get(n);
     /*
      * Content that was never in the file, which is what distinguishes a replacement from a hidden
      * marker. Found by asking whether an element's own text appears in the source line rather than by

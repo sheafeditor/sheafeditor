@@ -64,21 +64,33 @@ export const scenarios: Scenario[] = [
     },
   },
   {
-    name: 'Shift-Enter writes a backslash line break that stays in the list item, quote or code',
+    /*
+     * Shift+Enter opens the line and keeps the marker, and the backslash arrives with the words.
+     *
+     * The second half is the point. Written on the keystroke, as it was until 2026-10-05, a trailing
+     * backslash sits in the file as a literal character for as long as nobody has typed the line it
+     * was meant to break — which is most of the time, since the key is pressed before that line
+     * exists. So this checks both steps: what the key leaves, and what the first character earns.
+     */
+    name: 'Shift-Enter opens a line that keeps its marker, and the backslash arrives when something is typed',
     run: () => {
-      const cases: [string, number, string][] = [
-        ['- item', 6, '- item\\\n  '],
-        ['> q', 3, '> q\\\n> '],
-        ['p', 1, 'p\\\n'],
-        ['```\nx\n```', 5, '```\nx\n\n```'],
+      const cases: [string, number, string, string][] = [
+        ['- item', 6, '- item\n  ', '- item\\\n  x'],
+        ['> q', 3, '> q\n> ', '> q\\\n> x'],
+        ['p', 1, 'p\n', 'p\\\nx'],
+        // Code carries no hard break, so the line opens and the first character earns nothing.
+        ['```\nx\n```', 5, '```\nx\n\n```', '```\nx\nx\n```'],
       ];
-      return cases.every(([doc, at, want]) => {
+      return cases.every(([doc, at, afterKey, afterTyping]) => {
         const p = mountProse(doc);
         p.select(at);
         const handled = p.press('Shift-Enter');
-        const got = p.doc();
+        const opened = p.doc();
+        const caret = p.view.state.selection.main.head;
+        p.view.dispatch({ changes: { from: caret, insert: 'x' }, selection: { anchor: caret + 1 }, userEvent: 'input.type' });
+        const typed = p.doc();
         p.destroy();
-        return handled && got === want;
+        return handled && opened === afterKey && typed === afterTyping;
       });
     },
   },

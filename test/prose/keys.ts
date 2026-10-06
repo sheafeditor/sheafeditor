@@ -1,6 +1,6 @@
 import { Scenario, mountProse } from '../harness';
 import { lineTextStart, markerLength } from '../../src/webview/lineStart';
-import { setDocumentSourceMode } from '../../src/webview/livePreview';
+import { setDocumentSourceMode } from '../../src/webview/revealState';
 import { revealRange } from '../../src/webview/revealBlock';
 import { blockRangeAt } from '../../src/webview/blockModel';
 import { turnInto, BlockKind } from '../../src/webview/toolbar';

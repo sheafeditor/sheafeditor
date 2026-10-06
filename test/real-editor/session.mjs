@@ -604,14 +604,36 @@ export async function session(area, { settings = {} } = {}) {
       return p;
     },
 
-    async drag(from, to, { steps = 12 } = {}) {
+    /*
+     * A press, a move and a release, with `onDrag` run while the button is still down.
+     *
+     * The seam exists because without it a mid-gesture reading is impossible from this helper, and 42
+     * of the 65 scenarios that drag reach for it, so they had given up such readings by construction.
+     * What that cost: a table that sits in one place for the whole of a column drag and jumps a third
+     * of the screen on release was invisible to a suite where every drag assertion is taken after the
+     * button comes up. One scenario in 873 read a position both during and after a gesture.
+     *
+     * Driving the press by hand instead is not an alternative here. Four attempts to start a column
+     * resize with raw pointer events never set `is-resizing`, while every landed scenario that
+     * resizes a column does so through this helper and works. So the gesture and the question could
+     * not be asked together at all until this argument existed.
+     *
+     * `onDrag` is awaited, so a reading that needs a frame can take one, and anything it throws
+     * propagates with the button still down rather than leaving a drag stuck: the release below runs
+     * in a `finally`.
+     */
+    async drag(from, to, { steps = 12, onDrag } = {}) {
       const a = await pointAt(from);
       const b = await locate(to);
       await page.mouse.move(a.x, a.y);
       await page.mouse.down();
-      await page.mouse.move(b.x, b.y, { steps });
-      await sleep(150);
-      await page.mouse.up();
+      try {
+        await page.mouse.move(b.x, b.y, { steps });
+        await sleep(150);
+        if (onDrag) await onDrag();
+      } finally {
+        await page.mouse.up();
+      }
       await sleep(400);
     },
 

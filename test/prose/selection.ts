@@ -1,7 +1,7 @@
 import { Scenario, mountProse, Prose } from '../harness';
 import { setClipboardHost } from '../../src/webview/hostClipboard';
 import { setBlockRefHost } from '../../src/webview/refs';
-import { revealField } from '../../src/webview/livePreview';
+import { revealField } from '../../src/webview/revealState';
 import { hint } from '../../src/webview/shortcuts';
 const G: any = globalThis;
 

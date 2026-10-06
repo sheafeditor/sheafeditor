@@ -50,32 +50,26 @@ const cases = [
   // ---- Highlight -----------------------------------------------------------------------
   ['==x== is a Highlight', () => covers('==x==', 'Highlight', '==x==')],
   /*
-   * `===x===` **is** a Highlight, and the specification says it is not. The code is what this
-   * records, with the disagreement named, because a suite that asserted the document would be
-   * red about something nobody has decided to change.
+   * A run of three or more equals is text, matching strikethrough's rule for its own spelling.
    *
-   * Why it happens. `highlight.ts` refuses a run of three only at the run's first character:
-   * `cx.char(pos + 2) === 61` stops the `=` at index 0, and the `=` at index 1 then opens a
-   * delimiter because the character after its pair is `x`. `strikethrough.ts` has two guards
-   * this one lacks: it returns early when the previous character is a tilde, so only the first
-   * of a run decides, and it measures the whole run and refuses anything longer than two.
+   * This case used to assert the opposite, with the disagreement written into its own name, because
+   * `===x===` *was* a Highlight covering `==x===` and whether it should be was a product question.
+   * It was decided and built on 2026-10-05, so the case now asserts the rule rather than the defect.
    *
-   * So the two spellings disagree with each other about the same shape, and `highlight.ts`'s
-   * own comment says its delimiters "follow the same flanking rules as GFM strikethrough",
-   * which is the sentence that is false. Filed rather than fixed here: whether `===x===`
-   * should highlight is a product question.
+   * What was wrong: `highlight.ts` refused a run of three only at the run's first character, so the
+   * `=` at index 1 opened a delimiter because the character after its pair was `x`. It now does what
+   * `strikethrough.ts` does, which is to let only the first of a run decide and to measure the whole
+   * run rather than peek one character past the pair.
    */
+  ['===x=== is text, because a run of three or more equals is', () => absent('===x===', 'Highlight')],
+  ['====x==== is text too, which a rule peeking one character past the pair would miss', () => absent('====x====', 'Highlight')],
   [
-    '===x=== is a Highlight today, which the specification denies and strikethrough refuses for its own spelling',
-    () => covers('===x===', 'Highlight', '==x==='),
-  ],
-  [
-    'the asymmetry itself: a run of three tildes is text and a run of three equals is not',
+    'the two spellings now agree: a run of three is text in both',
     () => {
       const tildes = has('~~~x~~~', 'Strikethrough');
       const equals = has('===x===', 'Highlight');
-      if (!tildes && equals) return true;
-      return `~~~x~~~ has Strikethrough ${tildes} and ===x=== has Highlight ${equals}, so the asymmetry has moved`;
+      if (!tildes && !equals) return true;
+      return `~~~x~~~ has Strikethrough ${tildes} and ===x=== has Highlight ${equals}, so the two have parted again`;
     },
   ],
 

@@ -12,7 +12,7 @@
 
 import { EditorView } from '@codemirror/view';
 import { blockRangeAt } from './blockModel';
-import { revealField, setReveal } from './livePreview';
+import { revealField, setReveal } from './revealState';
 
 /** Show the raw Markdown of `range`, moving the caret into it when it is outside. */
 export function revealRange(view: EditorView, range: { from: number; to: number }): void {

@@ -20,7 +20,7 @@ import { indentMore, indentLess, undo, redo } from '@codemirror/commands';
 import { indentUnit, syntaxTree } from '@codemirror/language';
 import type { SyntaxNode } from '@lezer/common';
 import { formatStateAt } from './formatState';
-import { isFenceLine } from './livePreview';
+import { isFenceLine } from './fenceLines';
 import {
   toggleWrap,
   turnInto,

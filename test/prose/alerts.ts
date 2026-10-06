@@ -13,11 +13,11 @@
  * appearance is a real-window check.
  */
 
-import { setLivePreviewConfig } from '../../src/webview/livePreview';
+import { setLivePreviewConfig } from '../../src/webview/revealState';
 import { Scenario, mountProse } from '../harness';
 import { EditorView } from '@codemirror/view';
 import { ensureSyntaxTree } from '@codemirror/language';
-import { setDocumentSourceMode } from '../../src/webview/livePreview';
+import { setDocumentSourceMode } from '../../src/webview/revealState';
 import { breakOnAlertMarker } from '../../src/webview/typedIntoChrome';
 import { insertHardBreak } from '../../src/webview/toolbar';
 import { toggleBullet, toggleOrdered, toggleTask, toggleQuote, turnInto } from '../../src/webview/toolbar';

@@ -11,7 +11,7 @@ import type { FromWebview } from '../protocol';
 import { EditorState, Transaction, Compartment } from '@codemirror/state';
 import { EditorView, lineNumbers } from '@codemirror/view';
 import { isolateHistory, undo } from '@codemirror/commands';
-import { setDocumentSourceMode, setLivePreviewConfig } from './livePreview';
+import { setDocumentSourceMode, setLivePreviewConfig } from './revealState';
 import { revealOnDoubleClick } from './revealBlock';
 import { paragraphTripleClick } from './paragraphSelect';
 import { editorExtensions } from './editorExtensions';
@@ -25,7 +25,8 @@ import { setWorkspaceFilesHost, handleWorkspaceFiles, setLinkCompleteDocument } 
 import { setBlockRefHost } from './blocks';
 import { CommentsMode, handleCommentFolds, setCommentFoldsHost, setCommentsMode } from './comments';
 import { FrontMatterMode, handleFrontMatterState, setFrontMatterHost, setFrontMatterMode } from './frontMatterView';
-import { setResourceBaseUri, setupImageIngestion, handleImageSaved } from './images';
+import { setResourceBaseUri } from './imageMarkup';
+import { setupImageIngestion, handleImageSaved } from './imageIngest';
 import { setDocTitleHost } from './linkPaste';
 import { headingPosition, setFragmentHost, setLinkHost } from './linkTarget';
 import { HeldLink, contextMenuOnLink, pressOnLinkIn, releaseOnLinkIn } from './linkGesture';

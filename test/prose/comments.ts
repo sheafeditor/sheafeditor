@@ -10,7 +10,7 @@
  * them ends by reading the document back, because the bytes must never move.
  */
 
-import { setLivePreviewConfig } from '../../src/webview/livePreview';
+import { setLivePreviewConfig } from '../../src/webview/revealState';
 import { Scenario, mountProse } from '../harness';
 import { commentKeyFor, handleCommentFolds, setCommentFoldsHost, setCommentsMode } from '../../src/webview/comments';
 

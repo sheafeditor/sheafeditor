@@ -139,7 +139,7 @@ export async function editorUnderJsdom(repo, { extra = {}, name = 'editor-dom' }
     repo,
     {
       mountProse: 'test/harness',
-      'setLivePreviewConfig, setDocumentSourceMode': 'src/webview/livePreview',
+      'setLivePreviewConfig, setDocumentSourceMode': 'src/webview/revealState',
       forceParsing: '@codemirror/language',
       EditorView: '@codemirror/view',
       EditorSelection: '@codemirror/state',

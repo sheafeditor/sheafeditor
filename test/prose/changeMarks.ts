@@ -11,7 +11,7 @@
 import { Scenario, mountProse, Prose } from '../harness';
 import { Transaction } from '@codemirror/state';
 import { arrivedLines, keptLines, outsideWrite } from '../../src/webview/changeMarks';
-import { setDocumentSourceMode, setLivePreviewConfig } from '../../src/webview/livePreview';
+import { setDocumentSourceMode, setLivePreviewConfig } from '../../src/webview/revealState';
 import { minimalEdit } from '../../src/textSync';
 
 const DOC = [

@@ -17,7 +17,7 @@
  */
 
 import { Scenario, mountProse } from '../harness';
-import { setLivePreviewConfig } from '../../src/webview/livePreview';
+import { setLivePreviewConfig } from '../../src/webview/revealState';
 
 type P = ReturnType<typeof mountProse>;
 

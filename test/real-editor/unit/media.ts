@@ -5,21 +5,15 @@ import { EditorState } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
 import { history, undo } from '@codemirror/commands';
 import { ensureSyntaxTree } from '@codemirror/language';
-import { livePreview, revealField, setLivePreviewConfig } from '../../../src/webview/livePreview';
+import { livePreview } from '../../../src/webview/livePreview';
+import { revealField, setLivePreviewConfig } from '../../../src/webview/revealState';
 import { tables } from '../../../src/webview/tables';
 import { notionTheme } from '../../../src/webview/theme';
 import { planEdit } from '../../../src/textSync';
-import { sheafMarkdown, sheafMarkdownLanguage } from '../../../src/webview/markdownDialect';
-import {
-  parseMarkdownImage,
-  parseHtmlImage,
-  resolveImageSrc,
-  setResourceBaseUri,
-  setupImageIngestion,
-  handleImageSaved,
-  insertImageFiles,
-  pickImage,
-} from '../../../src/webview/images';
+import { sheafMarkdown } from '../../../src/webview/markdownDialect';
+import { sheafMarkdownLanguage } from '../../../src/webview/markdownLanguage';
+import { parseMarkdownImage, parseHtmlImage, resolveImageSrc, setResourceBaseUri } from '../../../src/webview/imageMarkup';
+import { setupImageIngestion, handleImageSaved, insertImageFiles, pickImage } from '../../../src/webview/imageIngest';
 
 type Result = boolean | { ok: boolean; detail?: string };
 interface Scenario {

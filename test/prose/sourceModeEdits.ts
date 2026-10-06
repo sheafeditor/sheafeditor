@@ -22,7 +22,7 @@
 
 import { Scenario, mountProse, Prose } from '../harness';
 import { EditorView } from '@codemirror/view';
-import { setDocumentSourceMode, setLivePreviewConfig } from '../../src/webview/livePreview';
+import { setDocumentSourceMode, setLivePreviewConfig } from '../../src/webview/revealState';
 
 /** Type `text` the way CodeMirror's own input path does, input handlers included. */
 function type(p: Prose, text: string): void {

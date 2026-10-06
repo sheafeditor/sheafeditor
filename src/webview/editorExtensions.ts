@@ -8,16 +8,19 @@ import { EditorState, Extension, Prec } from '@codemirror/state';
 import { EditorView, keymap, drawSelection, dropCursor, highlightActiveLine } from '@codemirror/view';
 import { history, historyKeymap, defaultKeymap } from '@codemirror/commands';
 import { commonmarkLanguage, markdownKeymap, insertNewlineContinueMarkupCommand } from '@codemirror/lang-markdown';
-import { markdownDialect, sheafMarkdown } from './markdownDialect';
+import { sheafMarkdown } from './markdownDialect';
+import { markdownDialect } from '../dialect/markdown';
 import { formatStateAt } from './formatState';
 import { languages } from '@codemirror/language-data';
 import { indentUnit, LanguageDescription } from '@codemirror/language';
-import { livePreview, revealField } from './livePreview';
+import { livePreview } from './livePreview';
+import { revealField } from './revealState';
 import { comments } from './comments';
 import { frontMatterView } from './frontMatterView';
 import { tables } from './tables';
 import { notionTheme } from './theme';
 import { buildEditingKeymap, orderedListRenumbering } from './shortcuts';
+import { hardBreakCompletion } from './toolbar';
 import { caretPastMarker, openLineAboveMarker, toLineStart, unwrapAtTextStart } from './lineStart';
 import { deleteAcrossInvisible, deleteWordAcrossInvisible, spaceOutsideInvisible, splitKeepingRuns } from './invisibleEdges';
 import { breakOnAlertMarker, dividerKeepsItsLine, typingBesideARule, typingIntoAFence, typingIntoAnAlert, unwrapAlertAtEdge, unwrapFenceAtEdge } from './typedIntoChrome';
@@ -187,6 +190,8 @@ export function editorExtensions(onShowShortcuts: () => void): Extension[] {
     // lists, whose `1. ` content offset is 3).
     indentUnit.of('    '),
     revealField,
+    // Shift+Enter writes its newline now and its backslash when the line it opened gets content.
+    hardBreakCompletion,
     livePreview,
     paneWidth,
     comments,

@@ -17,9 +17,9 @@
  * to do is answer *fewer* messages than it did yesterday without somebody saying so, or carry a case
  * for a message the protocol no longer has, which is dead code wearing the clothes of coverage.
  *
- * Skipped when the site checkout is not beside this one, found through SHEAF_SITE_DIR or as
- * ../sheaf-site, so a clone of this repository on its own still passes its gates. That skip is the
- * risk this file carries: a check that silently passes when it cannot see its subject is the
+ * Skipped when there is no site checkout to read, found through SHEAF_SITE_DIR or by walking up for
+ * a `sheaf-site` sibling, so a clone of this repository on its own still passes its gates. That skip
+ * is the risk this file carries: a check that silently passes when it cannot see its subject is the
  * `PLAYWRIGHT_CORE` trap, so it prints that it skipped and why rather than reporting success.
  *
  *   node scripts/check-demo-host.mjs             compare and report
@@ -32,13 +32,46 @@ import { fileURLToPath } from 'node:url';
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..');
 const BASELINE = join(REPO, 'scripts', 'demo-host.json');
 
-const SITE = [process.env.SHEAF_SITE_DIR, join(REPO, '..', 'sheaf-site')].find(
-  (dir) => dir && existsSync(join(dir, 'public'))
-);
+/*
+ * The site checkout, which sits beside the one this file belongs to rather than above it.
+ *
+ * **It walks up rather than taking one sibling, and that is the whole of this function.** Run from
+ * a session's own worktree, `sheaf-site` is not one directory up: a worktree sits at
+ * `.claude/worktrees/<name>`, three levels below the checkout it belongs to, so the sibling of
+ * wherever this file happens to be is `.claude/worktrees/sheaf-site`, which nothing has ever
+ * created. This gate could therefore pass only in the main checkout, and every branch is built in a
+ * worktree. Worse than failing: it is not forgiven, so the run stopped here and the thirteen gates
+ * after it reported nothing, while its own message blamed a missing clone that was present.
+ *
+ * Same walk and same shape as `findDevDir` in brain's `check-docs.mjs`, which had this exact bug and
+ * for the same reason. A walk rather than `git rev-parse --git-common-dir` because it needs no
+ * subprocess and works in a checkout that is not a git repository at all.
+ */
+function findSite() {
+  for (let dir = REPO; ; dir = dirname(dir)) {
+    const candidate = join(dirname(dir), 'sheaf-site');
+    if (existsSync(join(candidate, 'public'))) return candidate;
+    if (dirname(dir) === dir) return null;
+  }
+}
+
+/*
+ * `SHEAF_SITE_DIR` wins, and a wrong one is said out loud rather than quietly replaced by the walk.
+ * Taken on trust, or silently fallen back from, a mistyped path reads exactly like no site at all,
+ * and this gate's skip is the one thing it must not get wrong: it exists because a check that passes
+ * when it cannot see its subject is the `PLAYWRIGHT_CORE` trap.
+ */
+const SITE = process.env.SHEAF_SITE_DIR ?? findSite();
+
+if (process.env.SHEAF_SITE_DIR && !existsSync(join(SITE, 'public'))) {
+  console.log(`skipped: SHEAF_SITE_DIR is set to ${SITE}, which has no public/ in it.`);
+  console.log('Point it at a sheaf-site checkout or unset it to search for one. Nothing was compared.');
+  process.exit(0);
+}
 
 if (!SITE) {
-  console.log('skipped: no sheaf-site checkout beside this one, so the demo host cannot be read.');
-  console.log('Set SHEAF_SITE_DIR to point at one. Nothing was compared.');
+  console.log('skipped: no sheaf-site checkout found beside this one or any directory above it,');
+  console.log('so the demo host cannot be read. Set SHEAF_SITE_DIR to point at one. Nothing was compared.');
   process.exit(0);
 }
 

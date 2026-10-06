@@ -12,7 +12,7 @@
 
 import { Scenario, mountProse, Prose } from '../harness';
 import { Transaction } from '@codemirror/state';
-import { setDocumentSourceMode, setLivePreviewConfig, sourceModeOn } from '../../src/webview/livePreview';
+import { setDocumentSourceMode, setLivePreviewConfig, sourceModeOn } from '../../src/webview/revealState';
 
 const DOC = [
   '# Title',

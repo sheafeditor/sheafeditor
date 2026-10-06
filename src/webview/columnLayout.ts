@@ -510,9 +510,24 @@ export function createColumnLayout(
     if (!table) return;
     if (cellIsOpen() && lastWidths?.length) return;
     const { width, tookPane } = roomFor(m, frame, inset, env);
-    // The class the stylesheet draws the gaps from. "Took the pane" rather than "scrolls": a table can
-    // take the pane and still fit it, and what decides where its gaps go is which room it was given.
-    wrap.classList.toggle('is-pane-wide', tookPane);
+    /*
+     * The class the stylesheet draws the gaps from. "Took the pane" rather than "scrolls": a table can
+     * take the pane and still fit it, and what decides where its gaps go is which room it was given.
+     *
+     * **Frozen while a column is being dragged.** A table that crosses the pane threshold mid-gesture
+     * would otherwise change its left edge under the pointer, taking the grip with it and leaving the
+     * drag dead: the gesture stops answering, which reads as the feature being broken rather than as
+     * something moving. The stylesheet used to do this with `:not(.is-resizing)` on the pane-wide rule,
+     * and that held the wrong layout. A table **already** pane-wide carries `is-resizing` through every
+     * column drag too, so suspending its rule inset it by the writing column's margin for the whole
+     * gesture and snapped it back to the pane's edge on release: it stood still under the pointer, in
+     * the position it was about to leave.
+     *
+     * Freezing the class rather than suspending the rule holds whichever layout the table actually had
+     * when the drag started, which is what "do not move during a gesture" meant in the first place.
+     * The new edge is found when the drag ends, as before.
+     */
+    if (!wrap.classList.contains('is-resizing')) wrap.classList.toggle('is-pane-wide', tookPane);
     const alloc: Allocation | null = allocateColumnWidths(Math.max(0, width - m.gutter), m.columns, {
       floor: m.floor,
       cap: COLUMN_CAP_FRACTION * width,

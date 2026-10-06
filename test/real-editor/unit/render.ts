@@ -3,7 +3,7 @@
 // failing scenario is a bug candidate, drafted under bugs/render--<slug>.md.
 import { EditorSelection } from '@codemirror/state';
 import { mountProse } from '../../harness';
-import { setLivePreviewConfig, setReveal, revealField } from '../../../src/webview/livePreview';
+import { setLivePreviewConfig, setReveal, revealField } from '../../../src/webview/revealState';
 import { toggleBlockReveal } from '../../../src/webview/revealBlock';
 import { setFrontMatterMode } from '../../../src/webview/frontMatterView';
 import { blockSelectionOf } from '../../../src/webview/blockModel';
@@ -323,10 +323,35 @@ export const scenarios: Scenario[] = [
     run: () =>
       withDoc('x\n\n7. seven\n8. eight\n\n1) paren', (p) => {
         const got = [3, 4, 6].map((n) => lineText(p, n));
-        // The number and its delimiter are still the document's own text, as this feature
-        // requires; what has gone is the space after them, which the marker now takes with it
-        // so that the digits cannot move the words. The gap is drawn by the box instead.
+        // The delimiter is still the document's own, as this feature requires, and so is the
+        // space after it: that goes with the marker now, so the digits cannot move the words,
+        // and the gap is drawn by the box instead. The digits themselves are counted rather
+        // than copied, which these three cannot tell apart because 7, 8 and 1 are what both
+        // answers give. The scenario below is the one that separates them.
         return check(got[0] === '7.seven' && got[1] === '8.eight' && got[2] === '1)paren', got);
+      }),
+  },
+  {
+    id: 'render.lists-tasks.u02b',
+    feature: 'render.lists-tasks',
+    name: 'A list written 1. 1. 1. draws as 1, 2, 3, and the file keeps its own digits',
+    run: () =>
+      withDoc('x\n\n1. one\n1. two\n1. three', (p) => {
+        /*
+         * The most common way an ordered list is hand-written, and the reason the number is
+         * counted rather than copied. CommonMark numbers from the first item and counts on, so
+         * GitHub, pandoc and every other reader show 1, 2, 3 for this. Drawing the file's own
+         * digits made the editor the one place the document looked wrong.
+         *
+         * The document is read back as well, because this is a view-only decoration and the
+         * bytes must be exactly what was typed: a renderer that fixed the file instead would
+         * pass the first half of this and break the invariant the project is built on.
+         */
+        const got = { drawn: [3, 4, 5].map((n) => lineText(p, n)), doc: p.doc() };
+        return check(
+          j(got.drawn) === '["1.one","2.two","3.three"]' && got.doc === 'x\n\n1. one\n1. two\n1. three',
+          got
+        );
       }),
   },
   {

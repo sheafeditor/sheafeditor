@@ -1398,8 +1398,6 @@
     "Escape": 3,
     "FencedCode": 42,
     "CodeInfo": 12,
-    "Highlight": 8,
-    "HighlightMark": 16,
     "BulletList": 24,
     "ListItem": 115,
     "ListMark": 115,

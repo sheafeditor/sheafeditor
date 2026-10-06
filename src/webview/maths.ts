@@ -44,9 +44,7 @@
 import { Decoration, EditorView, WidgetType } from '@codemirror/view';
 import { EditorState, StateEffect } from '@codemirror/state';
 import { syntaxTree } from '@codemirror/language';
-import { MarkdownConfig } from '@lezer/markdown';
 import { SyntaxNode, Tree } from '@lezer/common';
-import { tags } from '@lezer/highlight';
 import type { KatexOptions } from 'katex';
 
 /**
@@ -68,7 +66,27 @@ type Katex = typeof import('katex').default;
 let katex: Katex | null = null;
 let pending: Promise<void> | null = null;
 let wanted = false;
+let attempts = 0;
 let load: () => Promise<Katex> = async () => (await import('katex')).default;
+
+/**
+ * How many times a failed fetch is started again before KaTeX is called lost.
+ *
+ * **This replaces a decision to never retry, and the reason that decision gave was right about the
+ * thing it was weighing.** It said: "A failed load leaves `katex` null for ever rather than
+ * retrying per pass, so a document full of equations does not become a document full of requests."
+ * `loadMaths` is called from the view plugin's `update`, which runs on every transaction, so an
+ * uncapped retry really is one request per keystroke on a page whose policy blocks the chunk.
+ *
+ * What it did not weigh is that one flake then costs the rest of the session: `katex` stays null,
+ * every equation draws as its own source, and nothing anywhere knows why. The choice was framed as
+ * permanence against flooding, and a small cap is neither. A flake recovers on the next update, and
+ * a blocked chunk is asked for three times and then left alone.
+ *
+ * The same number is in `emoji.ts`, for the same shape of fetch, and the two were copied from each
+ * other — which is why the discarded rejection was in both.
+ */
+const ATTEMPTS = 3;
 
 /**
  * Hand KaTeX over directly, already loaded. For an offline check that mounts the editor and
@@ -86,6 +104,7 @@ let load: () => Promise<Katex> = async () => (await import('katex')).default;
 export function provideMaths(api: Katex): void {
   katex = api;
   pending = null;
+  attempts = 0;
 }
 
 /** Replace the loader. For tests; forgets anything already loaded or remembered. */
@@ -93,6 +112,9 @@ export function setMathsLoader(loader: () => Promise<Katex>): void {
   load = loader;
   katex = null;
   pending = null;
+  // Including the attempt count, or a check that drove the loader to exhaustion would leave the
+  // next one unable to fetch at all, and it would read as the new loader never being called.
+  attempts = 0;
   // `wanted` stays as it is. It records that this document has maths in it, which replacing the
   // loader does not change, and clearing it would leave a test that swapped the loader waiting
   // for a request the builders have already made.
@@ -122,17 +144,33 @@ export function mathsReady(): boolean {
   return katex !== null;
 }
 
+/**
+ * Whether KaTeX is not coming: every attempt was made and every one failed.
+ *
+ * The third state, for the same reason `emojiLost()` exists: a caller that can only ask
+ * `mathsReady()` cannot tell an equation still waiting for the library from one that will never
+ * typeset. Both false together mean in flight, or not yet asked for.
+ *
+ * It says nothing about whether a *source* typesets, which is `mathError`'s question and is a
+ * property of the source rather than of the clock. The separation above is the whole reason that
+ * cache holds permanent facts.
+ */
+export function mathsLost(): boolean {
+  return katex === null && pending === null && attempts >= ATTEMPTS;
+}
+
 /** Dispatched once KaTeX has arrived, so the fields that draw maths rebuild. */
 export const mathsLoaded = StateEffect.define<null>();
 
 /**
- * Start fetching KaTeX, and redraw when it lands. Safe to call on every pass: the fetch happens
- * once and later calls fall straight through.
+ * Start fetching KaTeX, and redraw when it lands.
  *
- * A failed load leaves `katex` null for ever rather than retrying per pass, so a document full of
- * equations does not become a document full of requests. What a person sees then is every
- * equation as its own source, which is what they see while typing one and is the same fallback
- * `typeset` already uses.
+ * Safe to call on every pass, which it is: one fetch is in flight at a time, a call with KaTeX
+ * already here does nothing, and a call after `ATTEMPTS` failures does nothing. See `ATTEMPTS`
+ * above for why that is a small number rather than one or none.
+ *
+ * What a person sees while it is in flight, and after it is lost, is every equation as its own
+ * source. That is what they see while typing one and is the same fallback `typeset` already uses.
  */
 /**
  * Say that this document holds maths, so it is worth fetching KaTeX.
@@ -151,13 +189,19 @@ export function requestMaths(): void {
 }
 
 export function loadMaths(view: EditorView): void {
-  if (!wanted || katex || pending) return;
+  if (!wanted || katex || pending || attempts >= ATTEMPTS) return;
+  attempts++;
   pending = load().then(
     (loaded) => {
       katex = loaded;
+      pending = null;
       view.dispatch({ effects: mathsLoaded.of(null) });
     },
-    () => undefined
+    // Cleared rather than discarded: a settled promise is still a promise, so leaving it here made
+    // one failure permanent. `mathsLost()` is the fact a caller acts on, so the error is not kept.
+    () => {
+      pending = null;
+    }
   );
 }
 
@@ -174,62 +218,6 @@ function api(): Katex {
   return katex;
 }
 
-const DOLLAR = 36;
-const BACKSLASH = 92;
-const BACKTICK = 96;
-const NEWLINE = 10;
-
-const isSpace = (code: number): boolean => code === 32 || code === 9 || code === NEWLINE || code === 13;
-const isDigit = (code: number): boolean => code >= 48 && code <= 57;
-
-/**
- * `$…$` as a Lezer Markdown extension.
- *
- * The span is added as one element rather than as a pair of delimiters, so
- * nothing inside it is parsed as Markdown: `$a_i$` is a subscript and not the
- * start of emphasis, and `$a * b$` keeps its asterisk.
- *
- * `$$` is left alone here. Display maths is a block, and the block half of this
- * module reads it off the document rather than out of the tree.
- */
-export const Maths: MarkdownConfig = {
-  defineNodes: [
-    { name: 'InlineMath', style: { 'InlineMath/...': tags.special(tags.content) } },
-    { name: 'InlineMathMark', style: tags.processingInstruction },
-  ],
-  parseInline: [
-    {
-      name: 'InlineMath',
-      parse(cx, next, pos) {
-        if (next !== DOLLAR) return -1;
-        // `$$` opens display maths, which is a block, and `$$x$$` mid-sentence
-        // is left as written rather than drawn as one.
-        if (cx.char(pos + 1) === DOLLAR) return -1;
-        if (pos > cx.offset && cx.char(pos - 1) === DOLLAR) return -1;
-        const after = cx.char(pos + 1);
-        if (after < 0 || isSpace(after)) return -1;
-        for (let i = pos + 1; i < cx.end; i++) {
-          const ch = cx.char(i);
-          if (ch === NEWLINE || ch === BACKTICK) return -1;
-          if (ch === BACKSLASH) {
-            i++;
-            continue;
-          }
-          if (ch !== DOLLAR) continue;
-          if (isSpace(cx.char(i - 1))) continue;
-          if (isDigit(cx.char(i + 1))) continue;
-          return cx.addElement(
-            cx.elt('InlineMath', pos, i + 1, [
-              cx.elt('InlineMathMark', pos, pos + 1),
-              cx.elt('InlineMathMark', i, i + 1),
-            ])
-          );
-        }
-        return -1;
-      },
-    },
-  ],
-};
 
 // ---- Typesetting ----------------------------------------------------------
 
@@ -443,3 +431,4 @@ export function blockMathRanges(state: EditorState): BlockMathRange[] {
 
   return found;
 }
+

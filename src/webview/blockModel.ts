@@ -13,7 +13,8 @@
 import { ChangeSet, EditorSelection, EditorState, StateEffect, StateField, Text, TransactionSpec } from '@codemirror/state';
 import { Decoration, EditorView } from '@codemirror/view';
 import { ensureSyntaxTree, language, syntaxTree } from '@codemirror/language';
-import { sheafMarkdown, sheafMarkdownLanguage } from './markdownDialect';
+import { sheafMarkdown } from './markdownDialect';
+import { sheafMarkdownLanguage } from './markdownLanguage';
 import { frontMatterEnd } from './frontMatter';
 import { alertMarkerOnText } from './alerts';
 import { isolateHistory } from '@codemirror/commands';

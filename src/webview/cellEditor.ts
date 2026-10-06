@@ -29,15 +29,18 @@
  * is what keeps the two kinds of cell answering the same keys the same way.
  */
 
-import { EditorState, Extension, Facet } from '@codemirror/state';
+import { EditorState, Extension } from '@codemirror/state';
 import { EditorView, KeyBinding, keymap } from '@codemirror/view';
 import { defaultKeymap, history, redo, undo } from '@codemirror/commands';
 import { commonmarkLanguage } from '@codemirror/lang-markdown';
-import { markdownDialect, sheafMarkdown } from './markdownDialect';
-import { livePreview, revealField } from './livePreview';
+import { sheafMarkdown } from './markdownDialect';
+import { markdownDialect } from '../dialect/markdown';
+import { livePreview } from './livePreview';
+import { revealField } from './revealState';
 import { toggleWholeReveal } from './revealBlock';
 import { selectionToolbar } from './selectionToolbar';
 import { setDismissed, toolbarShown } from './floatingState';
+import { inlineOnlyEditor } from './inlineOnly';
 import { buildEditingKeymap } from './shortcuts';
 
 /*
@@ -58,21 +61,9 @@ import { buildEditingKeymap } from './shortcuts';
  * is a plain text box with no editor behind it and nothing a Markdown control can do to it.
  * The caller draws its controls unavailable in that case rather than acting somewhere else.
  */
-/**
- * True on an editor whose whole document is one cell's inline content.
- *
- * A cell holds one line and its parser is built without the block constructs, so a heading, a
- * list, a quote, a fence or a divider has no meaning in it: running one writes the marker into
- * the cell's text, where `- ` is two characters of a value rather than a bullet. Chrome that
- * offers those reads this and draws them unavailable instead, which is the rule that a control
- * unable to reach the selection says so rather than doing something else.
- *
- * A fact about the editor rather than a list held by the chrome, so the next surface that offers
- * a block command asks the same question and cannot disagree with the toolbar about the answer.
- */
-export const inlineOnlyEditor = Facet.define<boolean, boolean>({
-  combine: (values) => values.length > 0 && values[0],
-});
+// `inlineOnlyEditor`, which this editor declares below, is defined in `./inlineOnly` and imported
+// there rather than re-exported from here. A re-export would leave the import that reaches this
+// module from the chrome available to whoever writes the next one. See that file for why it matters.
 
 interface FocusedCell {
   /** The cell's editor, or null for a data cell, which is a plain text box. */

@@ -10,7 +10,7 @@ Everything you do to a table's rows and columns is on its controls bar and in it
 
 ## Find a table's commands
 
-Every command a table has is on its own bar as well as in its right-click menu, so nothing is reachable only by right-clicking.
+Every command in a table's right-click menu is also on its own bar, so nothing is reachable only by right-clicking. The bar carries one the menu does not: **Edit raw source**, which shows the table as the pipes you typed. Cmd+Alt+E does the same thing.
 
 - **The bar** holds icons in groups: insert a row above or below and delete it, then insert a column left or right and delete it. In a pane too narrow for the whole bar, its row and column buttons fold into the overflow, so the bar never wraps or gets cut off.
 - **The overflow button** at the end of the bar opens the full list, in the same order as the right-click menu: duplicating and moving rows and columns, sorting a column A to Z or Z to A, aligning a column, padding the columns so they line up in the file, fitting or resetting the column widths, and showing a pipe table as a board.
@@ -18,7 +18,9 @@ Every command a table has is on its own bar as well as in its right-click menu, 
 
 Every command acts on your selection if you have one, and on the row or column of the cell you are in if you do not.
 
-A command that cannot run where you are stays in its place, dimmed. You cannot delete the only column, move the first column left, or align a CSV block, which has nowhere to keep alignment.
+On the bar, a column's chevron and the overflow, a command that cannot run where you are stays in its place, dimmed, so you can see it exists and why it is not available. You cannot delete the only column, move the first column left, or align a CSV block, which has nowhere to keep alignment.
+
+The right-click menu works the other way: it offers only the commands that can run, so nothing in it is ever dimmed.
 
 To reach the commands from the keyboard, press Alt+F10 inside a table. It moves to the bar, then to the chevron on the current column, then back to the grid. The arrow keys move along the bar and through a menu, and Escape puts you back in the cell you were in.
 
@@ -58,7 +60,7 @@ Until you drag one, Sheaf sizes each column to what it holds: a short column kee
 The table menu has two more commands for widths:
 
 - **Fit columns to content** sets every column to the width of what it holds, so nothing in the table wraps. A table that comes out wider than the pane scrolls sideways in its frame.
-- **Reset column widths** puts every column back to the width Sheaf chooses. It is dimmed until a width has been set by hand, so the menu tells you whether one has.
+- **Reset column widths** puts every column back to the width Sheaf chooses. Until a width has been set by hand there is nothing to reset, so it is dimmed on the bar, the chevron and the overflow, and left out of the right-click menu.
 
 ## Show a table as a board
 

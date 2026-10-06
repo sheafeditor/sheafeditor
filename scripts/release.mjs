@@ -92,9 +92,46 @@ function check(what, ok, detail) {
 
 // ---- What is being released -----------------------------------------------
 
-const version = JSON.parse(readFileSync(join(REPO, 'package.json'), 'utf8')).version;
+/*
+ * **A release is a commit that was proven, not whatever `main` holds when somebody types the
+ * command.** The check half proves a commit and sets it aside under this ref; the cut half releases
+ * that commit and nothing else.
+ *
+ * It used to rebuild the release tree from `origin/main` at cut time. That is correct only while
+ * nothing lands between the proof and the cut, and the whole point of proving a release early is so
+ * that the cut can wait for the one person who holds the passphrase. Under the old shape, every
+ * commit landed while waiting shipped inside that release, with its own entries still sitting under
+ * `[Unreleased]`: a release whose notes describe less than it contains, which is the one thing a
+ * changelog exists to stop. Pinning the commit is what makes "it is ready when you are" true.
+ *
+ * A ref rather than the scratch stamp beside it, because the stamp records that the gates ran and
+ * this records what was being released. The first is a cache and may be deleted at any time; the
+ * second is a decision and shows up in `git log` and `git show`.
+ */
+const CANDIDATE = 'refs/release-candidate';
+const candidate = run('git', ['rev-parse', '--verify', '--quiet', CANDIDATE]).out;
+
+if (CUT && !candidate) {
+  process.stderr.write(
+    '\nNothing has been set aside to release.\n' +
+      'Run `npm run release:check` first: it proves the commit you are on and records it here,\n' +
+      'and this command then releases that commit however far main has moved since.\n'
+  );
+  process.exit(1);
+}
+
+/** The commit being released: the one set aside, or the one being proven. */
+const target = CUT ? candidate : run('git', ['rev-parse', 'HEAD']).out;
+
+/*
+ * The manifest and the changelog as they are **at that commit**, not in the working tree. Once main
+ * moves on, the tree's version is the next one being built and reading it here would name a release
+ * nobody proved.
+ */
+const atTarget = (path) => run('git', ['show', `${target}:${path}`]).out;
+const version = JSON.parse(atTarget('package.json')).version;
 const tag = `v${version}`;
-say(`Sheaf Editor ${version}, tag ${tag}\n`);
+say(`Sheaf Editor ${version}, tag ${tag}, from ${target.slice(0, 7)}${CUT ? ' (set aside earlier)' : ''}\n`);
 
 // ---- The checkout this is run from ----------------------------------------
 
@@ -107,7 +144,23 @@ check('no uncommitted changes', dirty === '', dirty ? dirty.split('\n').length +
 run('git', ['fetch', '--quiet', 'origin', 'main']);
 const local = run('git', ['rev-parse', 'main']).out;
 const remote = run('git', ['rev-parse', 'origin/main']).out;
-check('main is pushed to origin', local === remote, local === remote ? local.slice(0, 7) : `${local.slice(0, 7)} vs ${remote.slice(0, 7)}`);
+if (CUT) {
+  /*
+   * The commit being cut has to be on `origin/main`, and it no longer has to be its tip. That is
+   * the difference the ref above buys: main carries on while a proven release waits for the one
+   * person who can unlock the key. Contained rather than equal, so this is still refused for a
+   * commit that was proven and then never pushed, or one that was rewritten out of the branch.
+   */
+  const onMain = run('git', ['merge-base', '--is-ancestor', target, remote]).ok;
+  const behind = onMain ? Number(run('git', ['rev-list', '--count', `${target}..${remote}`]).out || 0) : 0;
+  check(
+    'the commit being released is on origin/main',
+    onMain,
+    onMain ? `${target.slice(0, 7)}, with ${behind} commit(s) landed since` : `${target.slice(0, 7)} is not on origin/main`
+  );
+} else {
+  check('main is pushed to origin', local === remote, local === remote ? local.slice(0, 7) : `${local.slice(0, 7)} vs ${remote.slice(0, 7)}`);
+}
 
 /*
  * The release branch lives in its own worktree, not in this checkout. Found rather than
@@ -136,6 +189,29 @@ check(`CHANGELOG.md has a section for ${tag}`, notes.ok && notes.out !== '', not
 const changelog = readFileSync(join(REPO, 'CHANGELOG.md'), 'utf8');
 const dated = new RegExp(`^## \\[${version.replace(/\./g, '\\.')}\\] - \\d{4}-\\d{2}-\\d{2}$`, 'm').test(changelog);
 check(`the ${version} heading is dated`, dated, dated ? 'stamped' : 'run npm version, or npm run stamp-changelog');
+
+/*
+ * `changelog-notes.mjs` reads the working tree's CHANGELOG.md, and the workflow will read the
+ * tagged commit's. Those are the same file until a release is set aside and work carries on, so
+ * rather than teaching that script to take a path, this asserts the one thing that makes its answer
+ * apply: this version's section is identical in both. Later entries land under `[Unreleased]` and do
+ * not touch it, so the normal case passes and an edit to a shipped section is caught.
+ */
+const sectionOf = (text) => {
+  const from = text.indexOf(`## [${version}] - `);
+  if (from < 0) return null;
+  const next = text.indexOf('\n## [', from + 1);
+  return next < 0 ? text.slice(from) : text.slice(from, next);
+};
+if (CUT) {
+  const here = sectionOf(changelog);
+  const there = sectionOf(atTarget('CHANGELOG.md'));
+  check(
+    `the ${version} notes are the ones that were set aside`,
+    here !== null && here === there,
+    here === there ? 'unchanged since' : 'the section has been edited since this commit was proven'
+  );
+}
 
 /*
  * The branch push, checked before the passphrase rather than discovered after it.
@@ -194,7 +270,7 @@ say(`  note   ${tag} on oss: ${tagElsewhere ? `${tagElsewhere.slice(0, 7)}, whic
  * fails instead and says what could not be read.
  */
 say('\n=== CI, on this commit, on a machine that is not this one ===');
-const ci = await ciVerdict(repoFromRemote('origin', REPO), local, token());
+const ci = await ciVerdict(repoFromRemote('origin', REPO), target, token());
 if (ci.state === 'green') check('CI passed on this commit', true, ci.detail);
 else if (ci.state === 'untokened') {
   say(`  note   CI on this commit is unchecked: ${ci.detail}`);
@@ -231,15 +307,41 @@ if (failures.length) {
  * this has to be to mean anything. `--local` hardlinks the objects, so it costs almost
  * nothing.
  */
-const head = run('git', ['rev-parse', 'HEAD']).out;
+const head = target;
 let stamped = null;
 try {
   stamped = JSON.parse(readFileSync(STAMP, 'utf8'));
 } catch {
   // No stamp, or an unreadable one: run the long half.
 }
-const STILL_GOOD_MS = 2 * 60 * 60 * 1000;
-if (stamped && stamped.head === head && Date.now() - stamped.at < STILL_GOOD_MS) {
+/*
+ * No expiry on the stamp any more, because it is about a commit rather than about `main`.
+ * A commit does not change, so a proof of one does not go stale however long it waits to be cut;
+ * two hours was the right guard while this proved whatever the branch tip happened to be.
+ */
+/*
+ * **And it does not run at all when CI is green on this commit, because CI ran strictly more.**
+ *
+ * This half existed to answer "has anything run the gates on the tree the tag will name", which
+ * once needed answering here: the v0.2.0 cut failed because nobody ran them after `npm version`
+ * rewrote the changelog. That hole is closed by requiring CI green on the commit being released
+ * rather than on whatever `main` was, which is the check above.
+ *
+ * What is left is duplication, and it was expensive: fifteen minutes between the person deciding to
+ * release and the prompt that needs them, for a run that reaches *less* than CI does. Both the local
+ * clone and the runner lack the two checkouts this repository keeps beside itself, so both forgive
+ * the same two gates by name; CI additionally runs from a clean `npm ci` on a machine nobody has
+ * been working on. The gates those two forgive are run by the integrator before the commit lands,
+ * in the one checkout that has the sibling repositories.
+ *
+ * So it runs when CI has no verdict to give: no token on this machine, or a commit CI never saw.
+ */
+const ciIsTheProof = ci.state === 'green';
+if (ciIsTheProof) {
+  say(`\n=== The gates, already run on this commit ===`);
+  say(`  ok   CI ran all of them on ${head.slice(0, 7)} from a clean install, so they are not run again here.`);
+  say('       It reaches everything this would, and from a machine that is not this one.');
+} else if (stamped && stamped.head === head) {
   const mins = Math.round((Date.now() - stamped.at) / 60000);
   say(`\n=== CI, already run on this commit ===`);
   say(`  ok   the gates and the package passed on ${head.slice(0, 7)} ${mins} minute(s) ago, so they are not run again.`);
@@ -248,7 +350,8 @@ if (stamped && stamped.head === head && Date.now() - stamped.at < STILL_GOOD_MS)
 
 const build = join(REPO, '.claude', 'scratch', 'release');
 run('rm', ['-rf', build]);
-must('Cloning main', 'git', ['clone', '--quiet', '--local', '--no-hardlinks', '--branch', 'main', REPO, build]);
+must('Cloning the commit being released', 'git', ['clone', '--quiet', '--local', '--no-hardlinks', REPO, build]);
+must(`Checking out ${target.slice(0, 7)}`, 'git', ['checkout', '--quiet', '--detach', target], build);
 /*
  * `env:` replaces the environment rather than adding to it, so these three run the way they
  * would in any terminal. See `OWN_ENV`.
@@ -307,15 +410,28 @@ unchecked.push('the Marketplace and Open VSX publishes, which need the release e
  * to mean redoing twenty minutes of gates to get back to the prompt, which is the kind of
  * cost that makes somebody skip the check next time.
  *
- * The commit and the clock both have to agree before it is reused, and the cheap checks run
- * again regardless: what is skipped is only the long half, and only for the exact commit it
- * was run on.
+ * The commit has to match before it is reused, and the cheap checks run again regardless: what is
+ * skipped is only the long half, and only for the exact commit it was run on.
  */
 try {
   mkdirSync(dirname(STAMP), { recursive: true });
-  writeFileSync(STAMP, JSON.stringify({ head: run('git', ['rev-parse', 'HEAD']).out, at: Date.now() }));
+  writeFileSync(STAMP, JSON.stringify({ head: target, at: Date.now() }));
 } catch {
   // A stamp that cannot be written costs a re-run and nothing else.
+}
+
+/*
+ * And the commit itself, set aside under a ref, which is the half of this that outlives a scratch
+ * directory. From here the cut is one command whenever the person holding the passphrase gets to it,
+ * and `main` can carry on in the meantime without changing what that command releases.
+ */
+if (!CUT) {
+  const set = run('git', ['update-ref', CANDIDATE, target]);
+  if (set.ok) {
+    say(`\nSet aside: ${tag} is ${target.slice(0, 7)}, and \`npm run release\` cuts that commit however far main moves.`);
+  } else {
+    say(`\nNote: could not record ${CANDIDATE} (${set.err.split('\n')[0]}), so the cut would ask you to run this again.`);
+  }
 }
 
 say('\n=== Green ===');
@@ -331,22 +447,22 @@ if (!CUT) {
 
 // ---- The cut --------------------------------------------------------------
 
-say('\n=== Rebuilding the release tree from origin/main ===');
+say(`\n=== Rebuilding the release tree from ${target.slice(0, 7)} ===`);
 must('Discarding whatever the release worktree held', 'git', ['reset', '--hard'], releaseTree);
-must('Taking origin/main’s tree', 'git', ['read-tree', '-u', '--reset', 'origin/main'], releaseTree);
+must(`Taking ${target.slice(0, 7)}’s tree`, 'git', ['read-tree', '-u', '--reset', target], releaseTree);
 must('Staging it', 'git', ['add', '-A'], releaseTree);
 
 /*
- * The staged tree has to be `origin/main`'s exactly. Anything here means the release would
+ * The staged tree has to be the released commit's exactly. Anything here means the release would
  * carry bytes that were never on `main`, which is the shape of the stale squash that sat in
  * this worktree for six days and would have published a Sheaf with three modules deleted.
  */
-const drift = run('git', ['diff', '--cached', '--stat', 'origin/main'], releaseTree).out;
+const drift = run('git', ['diff', '--cached', '--stat', target], releaseTree).out;
 if (drift !== '') {
-  process.stderr.write(`\nThe release tree is not origin/main's:\n${drift}\n\nNothing has been pushed.\n`);
+  process.stderr.write(`\nThe release tree is not ${target.slice(0, 7)}'s:\n${drift}\n\nNothing has been pushed.\n`);
   process.exit(1);
 }
-say('  ok   the staged tree is origin/main’s, exactly');
+say(`  ok   the staged tree is ${target.slice(0, 7)}’s, exactly`);
 
 /*
  * Only when there is something to commit.

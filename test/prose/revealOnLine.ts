@@ -19,7 +19,7 @@
  */
 
 import { Scenario, mountProse } from '../harness';
-import { setLivePreviewConfig } from '../../src/webview/livePreview';
+import { setLivePreviewConfig } from '../../src/webview/revealState';
 
 /** A document, the text whose line is put under the caret, and the raw marker to look for. */
 const CASES: { what: string; doc: string; on: string; marker: string }[] = [

@@ -15,10 +15,12 @@ import { EditorView } from '@codemirror/view';
 import { languages } from '@codemirror/language-data';
 import { forceParsing } from '@codemirror/language';
 import { SearchQuery, setSearchQuery, closeSearchPanel, openSearchPanel } from '@codemirror/search';
-import { livePreview, revealField, setLivePreviewConfig } from '../src/webview/livePreview';
+import { livePreview } from '../src/webview/livePreview';
+import { revealField, setLivePreviewConfig } from '../src/webview/revealState';
 import { revealBlockAt } from '../src/webview/revealBlock';
 import { searchSupport, findNextMatch, findPreviousMatch } from '../src/webview/search';
-import { sheafMarkdown, sheafMarkdownLanguage } from '../src/webview/markdownDialect';
+import { sheafMarkdown } from '../src/webview/markdownDialect';
+import { sheafMarkdownLanguage } from '../src/webview/markdownLanguage';
 import {
   tables,
   tableRowSourceAt,
@@ -47,7 +49,7 @@ import {
 } from '../src/webview/tables';
 import { setBlockRefHost, setCellRefSource, tableRowRef } from '../src/webview/refs';
 import { tableIcon } from '../src/webview/tableIcons';
-import { setResourceBaseUri } from '../src/webview/images';
+import { setResourceBaseUri } from '../src/webview/imageMarkup';
 import { createViewOf, viewBlocks, setDataFileHost, handleDataFile, handleDataFileCreated, handleDataFileEdited, moveBlockToFile } from '../src/webview/viewBlock';
 import { notionTheme } from '../src/webview/theme';
 import { mountContextMenu } from '../src/webview/contextmenu';
@@ -2013,6 +2015,63 @@ export async function runAll(): Promise<Result[]> {
     })
   );
 
+  /*
+   * And the same decision for the third input to the same selection, which is the one that was
+   * still getting it wrong.
+   *
+   * Clearing a whole column keeps its name and so does a block pasted over one, each by its own
+   * code. Typing did not: the branch that opens an editor on a printable key edits whatever the
+   * focus is on, and both gestures that pick a column whole leave the focus on the header. So
+   * click a column's name and type, and the column was renamed to that one character while not
+   * one of the cells underneath it changed, with auto-save writing it immediately.
+   */
+  results.push(
+    await scenario('typing over a whole column writes into its body and keeps its name', async () => {
+      const h = mount(PIPE);
+      h.mousedown(h.cell(-1, 1)!);
+      h.keydown(h.grid()!, 'x');
+      const doc = await h.commit();
+      h.view.destroy();
+      return doc === P + '| A | B | C |\n| - | - | - |\n| 1 | x | 3 |\n| 4 | 5 | 6 |';
+    })
+  );
+
+  /*
+   * The whole-table gesture, which is the one a person reaches for first when replacing a table:
+   * click a cell, Cmd+A, type. Its selection also has the header as its top-left, so it failed
+   * the same way, and it is worth its own case because the two reach that state by different
+   * code: a header press calls `selectRange` with one column, Cmd+A calls it with all of them.
+   */
+  results.push(
+    await scenario('typing after Select All writes into the first body cell, not over a name', async () => {
+      const h = mount(PIPE);
+      h.mousedown(h.cell(0, 0)!);
+      h.keydown(h.grid()!, 'a', { metaKey: true });
+      h.keydown(h.grid()!, 'x');
+      const doc = await h.commit();
+      h.view.destroy();
+      return doc === P + '| A | B | C |\n| - | - | - |\n| x | 2 | 3 |\n| 4 | 5 | 6 |';
+    })
+  );
+
+  /*
+   * The other half, as above: selecting the name on its own still renames it. Without this the
+   * two cases above would pass on a build that had stopped letting a header be typed into at
+   * all, which would take renaming a column with it.
+   */
+  results.push(
+    await scenario('typing over the header cell alone still renames the column', async () => {
+      const h = mount(PIPE);
+      // Up from the first body row, because a press on a header always takes the whole column.
+      h.mousedown(h.cell(0, 1)!);
+      h.keydown(h.grid()!, 'ArrowUp');
+      h.keydown(h.grid()!, 'x');
+      const doc = await h.commit();
+      h.view.destroy();
+      return doc === P + '| A | x | C |\n| - | - | - |\n| 1 | 2 | 3 |\n| 4 | 5 | 6 |';
+    })
+  );
+
   results.push(
     await scenario('Undo after emptying a column returns the file byte for byte', async () => {
       // `history()` has to be mounted for Cmd+Z to reach anything, as the other undo
@@ -2623,14 +2682,25 @@ export async function runAll(): Promise<Result[]> {
   );
 
   results.push(
-    await scenario('typing after a header click edits the header', async () => {
+    /*
+     * This asserted the opposite until 2026-10-05, and it was pinning a defect rather than
+     * recording a decision: it carried no reason, and it contradicted two decisions that had
+     * already shipped. A bulk clear over a selection spanning the header keeps the header, and a
+     * value pasted over a column picked by its header leaves the header alone. Typing was the
+     * third input to that same selection and the only one still renaming the column, which meant
+     * the first thing a person does to replace a table destroyed a name and changed no cells.
+     *
+     * The editor opens in the body, so `h.input(-1, 1)` is read as well: a case asserting only
+     * the file would pass on a build that had stopped opening an editor at all.
+     */
+    await scenario('typing after a header click edits the column, not its name', async () => {
       const h = mount(RAGGED);
       h.mousedown(h.cell(-1, 1)!);
       h.keydown(h.grid()!, 'N');
-      const inHeader = !!h.input(-1, 1);
+      const inBody = !!h.input(0, 1) && !h.input(-1, 1);
       const doc = await h.commit();
       h.view.destroy();
-      return inHeader && doc === RAGGED.replace('| Qty |', '| N   |');
+      return inBody && doc === RAGGED.replace('| apple | 3 |', '| apple | N |');
     })
   );
 

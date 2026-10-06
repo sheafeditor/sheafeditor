@@ -4,7 +4,7 @@
  * the default caret (position 0) leaves the lines under test inactive.
  */
 
-import { setLivePreviewConfig } from '../../src/webview/livePreview';
+import { setLivePreviewConfig } from '../../src/webview/revealState';
 import { Scenario, mountProse } from '../harness';
 
 type P = ReturnType<typeof mountProse>;

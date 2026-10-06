@@ -7,7 +7,7 @@
 
 import { setFrontMatterMode } from '../../src/webview/frontMatterView';
 import { Scenario, mountProse } from '../harness';
-import { setLivePreviewConfig, setReveal } from '../../src/webview/livePreview';
+import { setLivePreviewConfig, setReveal } from '../../src/webview/revealState';
 
 type P = ReturnType<typeof mountProse>;
 

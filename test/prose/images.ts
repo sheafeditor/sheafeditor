@@ -6,14 +6,9 @@
  */
 
 import { Scenario, mountProse } from '../harness';
-import {
-  handleImageSaved,
-  insertImageFiles,
-  parseMarkdownImage,
-  setResourceBaseUri,
-  setupImageIngestion,
-} from '../../src/webview/images';
-import { setLivePreviewConfig } from '../../src/webview/livePreview';
+import { parseMarkdownImage, setResourceBaseUri } from '../../src/webview/imageMarkup';
+import { handleImageSaved, insertImageFiles, setupImageIngestion } from '../../src/webview/imageIngest';
+import { setLivePreviewConfig } from '../../src/webview/revealState';
 
 type P = ReturnType<typeof mountProse>;
 

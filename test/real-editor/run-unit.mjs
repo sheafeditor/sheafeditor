@@ -47,7 +47,7 @@ const entry = join(out, 'entry.ts');
 writeFileSync(
   entry,
   areas.map((a, i) => `import { scenarios as s${i} } from ${JSON.stringify(join(UNIT, a))};`).join('\n') +
-    `\nimport { setLivePreviewConfig } from ${JSON.stringify(join(REPO, 'src', 'webview', 'livePreview'))};\n` +
+    `\nimport { setLivePreviewConfig } from ${JSON.stringify(join(REPO, 'src', 'webview', 'revealState'))};\n` +
     // Re-exported so the loop below can put the live-preview config back to the product default
     // before each scenario. See the call site for why.
     `export const resetConfig = () => setLivePreviewConfig({ revealSyntaxOnLine: false });\n` +

@@ -12,7 +12,7 @@
  */
 
 import { Scenario, mountProse } from '../harness';
-import { setLivePreviewConfig } from '../../src/webview/livePreview';
+import { setLivePreviewConfig } from '../../src/webview/revealState';
 import { MermaidApi, setMermaidLoader } from '../../src/webview/mermaid';
 
 type P = ReturnType<typeof mountProse>;
@@ -323,7 +323,7 @@ export const scenarios: Scenario[] = [
         p.select(0);
         await settle();
         const drawn = count(p, '.md-mermaid') === 1;
-        const { setDocumentSourceMode } = await import('../../src/webview/livePreview.js');
+        const { setDocumentSourceMode } = await import('../../src/webview/revealState.js');
         setDocumentSourceMode(p.view, document.createElement('div'), true);
         const source = count(p, '.md-mermaid') === 0 && text(p).includes('```mermaid');
         setDocumentSourceMode(p.view, document.createElement('div'), false);

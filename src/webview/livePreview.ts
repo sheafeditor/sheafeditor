@@ -17,6 +17,10 @@
  * selection touches it. Tables decide separately and by the caret rather than
  * the selection, in tables.ts.
  *
+ * What is revealed, and which lines follow from it, is `revealState.ts`. This file reads that and
+ * draws; it holds none of it. Six modules used to import this one for those two predicates, and
+ * downloaded 16 KB of the decorations below and the image widget behind them to get at them.
+ *
  * Two CodeMirror 6 constraints shape what follows:
  *   - A ViewPlugin's replace decorations may not cross a line break, so every
  *     one of them here stays within a single line. Block widgets must come from
@@ -28,12 +32,13 @@
  */
 
 import { Decoration, DecorationSet, EditorView, ViewPlugin, ViewUpdate, WidgetType } from '@codemirror/view';
-import { EditorState, Extension, Range, RangeSet, StateEffect, StateField, Text, Transaction } from '@codemirror/state';
+import { EditorState, Extension, Range, RangeSet, StateField, Text } from '@codemirror/state';
 import { syntaxTree } from '@codemirror/language';
 import { SyntaxNode, Tree } from '@lezer/common';
 import { alertLabel, alertLine, alertMarkerAt } from './alerts';
-import { emojiFor } from './emoji';
-import { editableProps, imageSelection, imageWidgetFor, matchHtmlImage } from './images';
+import { emojiFor, emojiLoaded, emojiReady, loadEmoji, requestEmoji } from './emoji';
+import { editableProps, matchHtmlImage } from './imageMarkup';
+import { imageSelection, imageWidgetFor } from './images';
 import { inlineHtmlPairAt } from './inlineHtml';
 import { BlockRange, blockRangeAt } from './blockModel';
 import {
@@ -49,163 +54,9 @@ import {
   requestMaths,
 } from './maths';
 import { MermaidRange, mermaidDiagram, mermaidThemeChanged, mermaidThemeWatch, openingFenceLang } from './mermaid';
-import { coveredEnd } from './selectionExtent';
+import { ONLY_MARKERS_BEFORE } from './fenceLines';
 import { footnoteClicks, footnoteDefDecoration, footnoteDefLine, footnoteIndex, footnoteKey, footnoteRefDecoration } from './footnotes';
-import { floatingField, setSourceMode as setSourceModeEffect } from './floatingState';
-
-export interface LivePreviewConfig {
-  revealSyntaxOnLine: boolean;
-}
-
-/*
- * The value before a host has sent one, which must be the manifest's default.
- *
- * A host sends the config at `init`, so in the product this is overwritten before anybody
- * sees a document and the value here never shows. Nothing sends one in a test, so it is the
- * value every scenario inherits, and it used to be `true` while `sheaf.revealSyntaxOnLine`
- * defaults to `false`. A scenario that said nothing was therefore written for a state a
- * person has to turn on deliberately. `test/host.test.mjs` now pins the two together,
- * because nothing compared them and that is how they came apart.
- */
-let currentConfig: LivePreviewConfig = { revealSyntaxOnLine: false };
-
-/**
- * Bumped whenever the config changes. The view plugin compares it on every
- * update, so the next transaction after a settings change (even an empty one)
- * redraws with the new config instead of waiting for the caret to move.
- */
-let configVersion = 0;
-
-export function setLivePreviewConfig(cfg: LivePreviewConfig): void {
-  if (cfg.revealSyntaxOnLine !== currentConfig.revealSyntaxOnLine) configVersion++;
-  currentConfig = cfg;
-}
-
-// ---- Explicit reveal state ------------------------------------------------
-//
-// Reveal (showing a block's raw Markdown for editing) is an EXPLICIT state, set
-// by the Edit Markdown command and the two menus that run it, by the opt-in
-// double-click, and by the search. It is deliberately NOT derived from the
-// selection, so an ordinary drag-select never exposes syntax markers. The
-// revealed range is mapped across edits, closes on a line break typed into it,
-// and collapses once the cursor leaves it.
-
-/** Set (or clear, with null) the block range whose raw Markdown is revealed. */
-export const setReveal = StateEffect.define<{ from: number; to: number } | null>();
-
-// ---- Whole-document source mode -------------------------------------------
-//
-// Source mode is the same idea as Edit Markdown, at the size of the document, so
-// it runs through the same state: the reveal covers every byte, every marker
-// shows, and a table falls back to the pipe rows it is written as. What sets it
-// apart is that it is sticky. A block's reveal closes when the caret leaves it
-// or a line break is typed into it, which is right for one block someone is
-// editing and wrong for a document someone asked to read as source. So while
-// source mode is on, the rules below that close a reveal do not run.
-//
-// Whether it is on lives in the floating state, which already carries it for the
-// selection toolbar, so there is one answer rather than two that can disagree.
-//
-// The command is the only way out. Escape and Edit Markdown both clear a reveal,
-// and while source mode is on they leave the document showing its source: only
-// the command also puts the monospace font away, so anything else that closed
-// the reveal would leave that font over rendered text.
-
-/** Whether the whole document is showing its raw Markdown. */
-export function sourceModeOn(state: EditorState): boolean {
-  return state.field(floatingField, false)?.sourceMode ?? false;
-}
-
-/** Whether source mode is on once `tr` has applied, its own effect included. */
-function sourceModeAfter(tr: Transaction): boolean {
-  let on = tr.startState.field(floatingField, false)?.sourceMode ?? false;
-  for (const e of tr.effects) if (e.is(setSourceModeEffect)) on = e.value;
-  return on;
-}
-
-/**
- * Turn whole-document source mode on or off.
- *
- * Both halves move in the one call because neither is the feature on its own:
- * the class is what the stylesheet reads for the monospace font, and the state
- * is what stops the markers being hidden. Setting only the class is what left
- * source mode looking like a font change.
- *
- * The reveal travels as an ordinary `setReveal` alongside it. The field would
- * work it out from the source-mode flag regardless; sending the effect is what
- * tells the two fields that draw from a distance — tables, and the block widget
- * for multi-line image markup — that there is something to redraw.
- */
-export function setDocumentSourceMode(view: EditorView, root: HTMLElement, on: boolean): void {
-  root.classList.toggle('source-mode', on);
-  view.dispatch({
-    effects: [
-      setSourceModeEffect.of(on),
-      setReveal.of(on ? { from: 0, to: view.state.doc.length } : null),
-    ],
-    scrollIntoView: false,
-  });
-}
-
-/**
- * Whether `tr` writes a line break the person typed into `range`.
- *
- * A line break ends the line someone was working on: they have finished with that
- * block and moved on, so its Markdown goes away and it renders again. Without this
- * the break is treated as text added at the end of the block, the reveal grows to
- * cover the new line, and the caret never leaves it.
- *
- * The test is on what the edit inserts rather than on the key, because the break
- * arrives from several commands — Markdown's list and quote continuation, Sheaf's
- * Enter for an empty item or quote line, and the hard break behind Shift+Enter —
- * and not all of them mark the transaction as typing.
- *
- * A paste is not Enter. Text arriving with line breaks in it is still text being
- * put into the block, so a multi-line paste leaves the Markdown shown.
- */
-function typedLineBreak(tr: Transaction, range: { from: number; to: number }): boolean {
-  if (tr.isUserEvent('input.paste') || tr.isUserEvent('input.drop')) return false;
-  let found = false;
-  tr.changes.iterChanges((fromA, toA, _fromB, _toB, inserted) => {
-    if (inserted.lines > 1 && toA >= range.from && fromA <= range.to) found = true;
-  });
-  return found;
-}
-
-export const revealField = StateField.define<{ from: number; to: number } | null>({
-  create: () => null,
-  update(value, tr) {
-    // Source mode reveals the whole document and keeps it revealed. It is read
-    // first because none of the rules below, each of which closes a block's
-    // reveal, applies to it: the caret cannot leave the document, and a line
-    // break typed anywhere would otherwise put the source away.
-    if (sourceModeAfter(tr)) return { from: 0, to: tr.newDoc.length };
-    // A reveal asked for in this transaction is what the range is, edits and all:
-    // the table's Edit raw source rewrites the pipes and opens them in one go.
-    let asked = false;
-    for (const e of tr.effects) {
-      if (e.is(setReveal)) {
-        value = e.value;
-        asked = true;
-      }
-    }
-    if (!value) return null;
-    if (tr.docChanged) {
-      if (!asked && typedLineBreak(tr, value)) return null;
-      // Text typed at either edge of the block joins it, so adding to the end
-      // of a revealed line (the most common edit) keeps its Markdown shown.
-      const from = tr.changes.mapPos(value.from, -1);
-      const to = tr.changes.mapPos(value.to, 1);
-      if (from >= to) return null;
-      value = { from, to };
-    }
-    // Collapse the reveal once the caret leaves the block.
-    const sel = tr.selection ?? (tr.docChanged ? tr.startState.selection.map(tr.changes) : tr.startState.selection);
-    const head = sel.main.head;
-    if (head < value.from || head > value.to) return null;
-    return value;
-  },
-});
+import { activeLines, revealConfigVersion, revealField, setReveal, sourceModeOn } from './revealState';
 
 // ---- Widgets --------------------------------------------------------------
 
@@ -240,6 +91,37 @@ class BulletWidget extends WidgetType {
      */
     span.setAttribute('aria-hidden', 'true');
     span.textContent = '•';
+    return span;
+  }
+}
+
+/**
+ * An ordered item's number as the finished document has it, which is not always the file's digits.
+ *
+ * CommonMark numbers a list from its *first* item's own number and counts from there, ignoring what
+ * the later markers say. So `1.` three times is a list of 1, 2, 3, and that is what GitHub, pandoc
+ * and every other reader shows. It is also the most common way people hand-write a list, which is
+ * what makes the difference matter: a document typed that way read `1. 1. 1.` here and `1. 2. 3.`
+ * everywhere it was published, and the editor was the only place it looked wrong.
+ *
+ * The file is untouched. This is a view-only decoration over the marker, the same mechanism that
+ * draws a bullet for `-`, so the digits on disk stay exactly as they were typed.
+ */
+class OrderedWidget extends WidgetType {
+  constructor(readonly label: string) {
+    super();
+  }
+  eq(other: OrderedWidget): boolean {
+    return other.label === this.label;
+  }
+  toDOM(): HTMLElement {
+    const span = document.createElement('span');
+    // The same box as the bullet and the checkbox, so `9.` and `10.` end on the same period and
+    // leave their words on one stop.
+    span.className = 'tok-bullet tok-marker-box';
+    // Not `aria-hidden`, unlike the bullet. Sheaf exposes no list semantics, so these digits are
+    // the only thing carrying the ordinal, and hiding them would read `seven` for `1. seven`.
+    span.textContent = this.label;
     return span;
   }
 }
@@ -419,6 +301,41 @@ const orderedMark = Decoration.mark({ class: 'tok-bullet tok-marker-box' });
 function markerEnd(doc: Text, to: number): number {
   return doc.sliceString(to, to + 1) === ' ' ? to + 1 : to;
 }
+
+/**
+ * What an ordered item's marker should read, counted the way a Markdown reader counts it.
+ *
+ * From the list's first marker, plus the item's place in it. Returns null when the shape is not the
+ * one this is about — a mark outside an `OrderedList`, or a first marker that is not a number — so
+ * the caller falls back to drawing the file's own characters rather than inventing a number.
+ *
+ * The delimiter stays the file's own, `.` or `)`, which this feature requires and which a browser's
+ * `<ol>` does not do: it draws `1.` for a list written `1)`, as GitHub and pandoc also do. So the
+ * render path and the editor differ on six items in the corpus, deliberately, and that is a separate
+ * question from this one rather than something to settle in passing.
+ *
+ * The delimiter is taken from the first item, not each item's. A list written `1.` then `2)` is one
+ * list with one delimiter to every reader, and reading it per item would draw a punctuation change
+ * the finished document does not have.
+ */
+function orderedLabel(doc: Text, mark: SyntaxNode): string | null {
+  const item = mark.parent;
+  const list = item?.parent;
+  if (!item || item.name !== 'ListItem' || !list || list.name !== 'OrderedList') return null;
+  let first: SyntaxNode | null = list.firstChild;
+  while (first && first.name !== 'ListItem') first = first.nextSibling;
+  const firstMark = first?.firstChild;
+  if (!first || !firstMark || firstMark.name !== 'ListMark') return null;
+  const m = /^(\d+)([.)])$/.exec(doc.sliceString(firstMark.from, firstMark.to).trim());
+  if (!m) return null;
+  let n = Number(m[1]);
+  // Compared by position rather than by identity: a cursor hands back a fresh object each time, so
+  // `c !== item` is true even of the item itself and the count would run to the end of the list.
+  for (let c: SyntaxNode | null = first; c && c.from !== item.from; c = c.nextSibling) {
+    if (c.name === 'ListItem') n++;
+  }
+  return `${n}${m[2]}`;
+}
 const fenceMark = Decoration.mark({ class: 'tok-code-fence' });
 const hide = Decoration.replace({});
 
@@ -464,56 +381,6 @@ function frontMatterRange(state: EditorState): BlockRange | null {
   }
   return range;
 }
-
-// ---- Active-line computation ---------------------------------------------
-
-/**
- * The lines showing their raw Markdown, by line number.
- *
- * Empty in source mode, where every line shows it: the callers ask
- * `sourceModeOn` first rather than making this fill a set with every line number
- * in the document on every redraw.
- *
- * Exported as `activeLines` for the block widgets drawn from their own fields,
- * so what shows its source is decided in one place for every construct.
- */
-function activeLineSet(state: EditorState): Set<number> {
-  const lines = new Set<number>();
-  if (sourceModeOn(state)) return lines;
-  const doc = state.doc;
-  const addRange = (from: number, to: number): void => {
-    const start = doc.lineAt(from).number;
-    const end = doc.lineAt(to).number;
-    for (let n = start; n <= end; n++) lines.add(n);
-  };
-
-  // Explicit double-click reveal — always shows the block's raw Markdown.
-  const reveal = state.field(revealField, false);
-  if (reveal) addRange(reveal.from, reveal.to);
-
-  // Obsidian-style live preview (opt-in): also reveal whatever the selection
-  // touches, including the bare cursor line, widened to the whole block at each
-  // end: every line of a quote or paragraph, or a list item with its
-  // continuation and nested lines. Off by default, so plain selections never
-  // expose syntax.
-  if (currentConfig.revealSyntaxOnLine) {
-    for (const range of state.selection.ranges) {
-      // A selection ending at the start of a line (a triple-clicked line) covers
-      // nothing of that line, so neither it nor its block is revealed.
-      const end = coveredEnd(doc, range);
-      addRange(range.from, end);
-      for (const pos of range.empty ? [range.head] : [range.from, end]) {
-        const block = blockRangeAt(state, pos);
-        if (block && block.kind !== 'frontmatter') addRange(block.from, block.to);
-      }
-    }
-  }
-
-  return lines;
-}
-
-/** The lines showing their raw Markdown, for a field drawing its own block widgets. */
-export const activeLines = activeLineSet;
 
 // ---- Builder --------------------------------------------------------------
 
@@ -722,40 +589,10 @@ interface FenceLine {
   lang: string;
 }
 
-/**
- * What may sit between the start of a line and the backtick run that opens a fence.
- *
- * Only a quote or list marker; anything else means the backticks are part of the code. Shared with
- * `isFenceLine` below, because a second copy of this is a second answer to "is this line a fence" and
- * they would stop agreeing.
- */
-const ONLY_MARKERS_BEFORE = /^[\s>]*(?:[-*+]|\d+[.)])?\s*$/;
-
-/**
- * Whether `pos` is on a line that opens or closes a fenced block.
- *
- * Needed outside the drawing, because a command acting on "a code block" has to tell the fence lines
- * from the code between them. `formatStateAt(...).codeBlock` is true on all three, which is right for
- * deciding whether the caret is in a block and wrong for deciding what to write: indenting a fence by
- * four spaces stops it being a fence, and the closing one then opens a new block that swallows the
- * rest of the document.
- */
-export function isFenceLine(state: EditorState, pos: number): boolean {
-  const line = state.doc.lineAt(pos);
-  let found = false;
-  syntaxTree(state).iterate({
-    from: line.from,
-    to: line.to,
-    enter: (node) => {
-      if (found || node.name !== 'CodeMark') return;
-      if (node.node.parent?.name !== 'FencedCode') return;
-      if (state.doc.lineAt(node.from).number !== line.number) return;
-      if (!ONLY_MARKERS_BEFORE.test(line.text.slice(0, node.from - line.from))) return;
-      found = true;
-    },
-  });
-  return found;
-}
+// `ONLY_MARKERS_BEFORE` and `isFenceLine` are in `./fenceLines`, imported above. They moved because
+// `shortcuts.ts` needs the second one, and that single import put this whole file into everything
+// that reads the shortcut registry — the toolbar and the grid among them. See that file for the
+// measurement.
 
 /**
  * The opening and closing fence lines of a fenced block.
@@ -785,7 +622,7 @@ function buildDecorations(view: EditorView): BuiltDecorations {
   const b = new DecoBuilder();
   const { state } = view;
   const allActive = sourceModeOn(state);
-  const active = activeLineSet(state);
+  const active = activeLines(state);
   const doc = state.doc;
   const lineActive = (pos: number): boolean => allActive || active.has(doc.lineAt(pos).number);
   // The parser marks every `[...]` as a Link; only some of them are links.
@@ -953,6 +790,13 @@ function buildDecorations(view: EditorView): BuiltDecorations {
         // between colons that is nobody's shortcode are left alone.
         if (name === 'Emoji') {
           if (!lineActive(node.from)) {
+            // The table is fetched on first sight of a shortcode, so say the document holds one and
+            // leave this span as typed until it lands. `emojiFor` would throw here, and must: its
+            // `undefined` means "github.com does not draw that name either", which is permanent.
+            if (!emojiReady()) {
+              requestEmoji();
+              return;
+            }
             const char = emojiFor(doc.sliceString(node.from + 1, node.to - 1));
             if (char) b.replace(Decoration.replace({ widget: new EmojiWidget(char) }), node.from, node.to);
           }
@@ -1246,9 +1090,19 @@ function buildDecorations(view: EditorView): BuiltDecorations {
           } else if (!ordered) {
             b.replace(Decoration.replace({ widget: new BulletWidget() }), node.from, markerEnd(doc, node.to));
           } else {
-            // The number stays the document's own text, boxed so that `9.` and `10.` end on
-            // the same period and start their words at the same place.
-            b.mark(orderedMark, node.from, node.to);
+            /*
+             * The number a reader of the finished document sees, boxed so that `9.` and `10.` end
+             * on the same period and start their words at the same place.
+             *
+             * It used to be the document's own text, marked rather than replaced. That drew `1.`
+             * three times for the list everybody writes as `1. 1. 1.`, where every Markdown reader
+             * counts 1, 2, 3 — so the one place the document looked wrong was the editor it was
+             * written in. `orderedLabel` returns null for any shape this is not about, and then the
+             * file's characters are drawn as before.
+             */
+            const label = orderedLabel(doc, node.node);
+            if (label === null) b.mark(orderedMark, node.from, node.to);
+            else b.replace(Decoration.replace({ widget: new OrderedWidget(label) }), node.from, node.to);
             b.replace(hide, node.to, markerEnd(doc, node.to));
           }
           return;
@@ -1469,7 +1323,7 @@ function buildHtmlImageDecorations(state: EditorState): DecorationSet {
   if (sourceModeOn(state)) return Decoration.none;
   const decos: Range<Decoration>[] = [];
   const doc = state.doc;
-  const active = activeLineSet(state);
+  const active = activeLines(state);
 
   syntaxTree(state).iterate({
     enter: (node) => {
@@ -1506,7 +1360,7 @@ interface HtmlImageDecorations {
 }
 
 const htmlImageField = StateField.define<HtmlImageDecorations>({
-  create: (state) => ({ configVersion, decorations: buildHtmlImageDecorations(state) }),
+  create: (state) => ({ configVersion: revealConfigVersion(), decorations: buildHtmlImageDecorations(state) }),
   update(value, tr) {
     // A long document is parsed in stages, so a block further down can enter
     // the syntax tree in a transaction that changes nothing else.
@@ -1514,10 +1368,10 @@ const htmlImageField = StateField.define<HtmlImageDecorations>({
       tr.docChanged ||
       tr.selection ||
       tr.effects.some((e) => e.is(setReveal)) ||
-      value.configVersion !== configVersion ||
+      value.configVersion !== revealConfigVersion() ||
       syntaxTree(tr.state) !== syntaxTree(tr.startState)
     ) {
-      return { configVersion, decorations: buildHtmlImageDecorations(tr.state) };
+      return { configVersion: revealConfigVersion(), decorations: buildHtmlImageDecorations(tr.state) };
     }
     return { configVersion: value.configVersion, decorations: value.decorations.map(tr.changes) };
   },
@@ -1541,7 +1395,7 @@ function buildBlockMathDecorations(state: EditorState): DecorationSet {
   if (sourceModeOn(state)) return Decoration.none;
   const decos: Range<Decoration>[] = [];
   const doc = state.doc;
-  const active = activeLineSet(state);
+  const active = activeLines(state);
 
   for (const math of blockMathRanges(state)) {
     const first = doc.lineAt(math.from).number;
@@ -1572,16 +1426,16 @@ interface BlockMathDecorations {
 }
 
 const blockMathField = StateField.define<BlockMathDecorations>({
-  create: (state) => ({ configVersion, decorations: buildBlockMathDecorations(state) }),
+  create: (state) => ({ configVersion: revealConfigVersion(), decorations: buildBlockMathDecorations(state) }),
   update(value, tr) {
     if (
       tr.docChanged ||
       tr.selection ||
       tr.effects.some((e) => e.is(setReveal) || e.is(mathsLoaded)) ||
-      value.configVersion !== configVersion ||
+      value.configVersion !== revealConfigVersion() ||
       syntaxTree(tr.state) !== syntaxTree(tr.startState)
     ) {
-      return { configVersion, decorations: buildBlockMathDecorations(tr.state) };
+      return { configVersion: revealConfigVersion(), decorations: buildBlockMathDecorations(tr.state) };
     }
     return { configVersion: value.configVersion, decorations: value.decorations.map(tr.changes) };
   },
@@ -1633,7 +1487,7 @@ function buildMermaidDecorations(state: EditorState): DecorationSet {
   if (sourceModeOn(state)) return Decoration.none;
   const decos: Range<Decoration>[] = [];
   const doc = state.doc;
-  const active = activeLineSet(state);
+  const active = activeLines(state);
   for (const block of mermaidRanges(state)) {
     const first = doc.lineAt(block.from).number;
     const last = doc.lineAt(block.to).number;
@@ -1645,16 +1499,16 @@ function buildMermaidDecorations(state: EditorState): DecorationSet {
 }
 
 const mermaidField = StateField.define<BlockMathDecorations>({
-  create: (state) => ({ configVersion, decorations: buildMermaidDecorations(state) }),
+  create: (state) => ({ configVersion: revealConfigVersion(), decorations: buildMermaidDecorations(state) }),
   update(value, tr) {
     if (
       tr.docChanged ||
       tr.selection ||
       tr.effects.some((e) => e.is(setReveal) || e.is(mermaidThemeChanged)) ||
-      value.configVersion !== configVersion ||
+      value.configVersion !== revealConfigVersion() ||
       syntaxTree(tr.state) !== syntaxTree(tr.startState)
     ) {
-      return { configVersion, decorations: buildMermaidDecorations(tr.state) };
+      return { configVersion: revealConfigVersion(), decorations: buildMermaidDecorations(tr.state) };
     }
     return { configVersion: value.configVersion, decorations: value.decorations.map(tr.changes) };
   },
@@ -1671,31 +1525,45 @@ const livePreviewPlugin = ViewPlugin.fromClass(
   class {
     decorations: DecorationSet;
     atomicRanges: DecorationSet;
-    configVersion = configVersion;
+    configVersion = revealConfigVersion();
     constructor(view: EditorView) {
       const built = buildDecorations(view);
       this.decorations = built.decorations;
       this.atomicRanges = built.atomicRanges;
-      // Built first, so the builders have had their chance to say the document holds maths. This
-      // is the view half of that: a `StateField` may not dispatch, and the load resolving does.
+      // Built first, so the builders have had their chance to say the document holds maths or a
+      // shortcode. This is the view half of that: a `StateField` may not dispatch, and a load
+      // resolving does.
       loadMaths(view);
+      loadEmoji(view);
     }
     update(update: ViewUpdate): void {
       const revealChanged =
         update.startState.field(revealField, false) !== update.state.field(revealField, false);
       // KaTeX landed, so every equation now has an answer where a moment ago it had none.
       const mathsArrived = update.transactions.some((tr) => tr.effects.some((e) => e.is(mathsLoaded)));
+      // And the same for the emoji table: shortcodes that drew as text now have characters.
+      const emojiArrived = update.transactions.some((tr) => tr.effects.some((e) => e.is(emojiLoaded)));
       // A background parse that finishes later can reveal a reference
       // definition, which turns brackets elsewhere into links.
       const treeChanged = syntaxTree(update.startState) !== syntaxTree(update.state);
-      const configChanged = this.configVersion !== configVersion;
-      if (update.docChanged || update.selectionSet || update.viewportChanged || revealChanged || treeChanged || configChanged || mathsArrived) {
-        this.configVersion = configVersion;
+      const configChanged = this.configVersion !== revealConfigVersion();
+      if (
+        update.docChanged ||
+        update.selectionSet ||
+        update.viewportChanged ||
+        revealChanged ||
+        treeChanged ||
+        configChanged ||
+        mathsArrived ||
+        emojiArrived
+      ) {
+        this.configVersion = revealConfigVersion();
         const built = buildDecorations(update.view);
         this.decorations = built.decorations;
         this.atomicRanges = built.atomicRanges;
       }
       loadMaths(update.view);
+      loadEmoji(update.view);
     }
   },
   {

@@ -10,6 +10,8 @@ Sheaf's dialect is CommonMark, the five GFM extensions, emoji shortcodes, and th
 
 The equals signs must touch the text they wrap, so == this is not a highlight == stays as typed.
 
+A run of three or more equals is text, the way three tildes are: ===x=== stays as typed, and so does ====x====. One spelling behaving unlike the other would be a rule a reader has to learn rather than work out.
+
 ## Strikethrough, one tilde or two
 
 ~~Two tildes~~ is the GFM spelling and works as it does everywhere.

@@ -14,7 +14,7 @@
 import { EditorView } from '@codemirror/view';
 
 import { Scenario, mountProse } from '../harness';
-import { setLivePreviewConfig, setReveal } from '../../src/webview/livePreview';
+import { setLivePreviewConfig, setReveal } from '../../src/webview/revealState';
 
 type P = ReturnType<typeof mountProse>;
 
@@ -259,7 +259,9 @@ export const scenarios: Scenario[] = [
       const p = mountProse(doc);
       p.select(doc.length);
       p.press('Shift-Enter');
-      const broke = p.doc() === P0 + '> Quoted line\\\n> ';
+      // The newline and the marker now; the backslash arrives with the words, which the scenario
+      // above this one checks. What matters here is where the caret lands.
+      const broke = p.doc() === P0 + '> Quoted line\n> ';
       const last = p.view.state.doc.line(p.view.state.doc.lines);
       // The new line's whole source is the quote's marker, so it draws as empty. Which side
       // of the marker the caret is on is what decides whether that matters: past it, the
@@ -279,7 +281,59 @@ export const scenarios: Scenario[] = [
       const p = mountProse(doc);
       p.select(P0.length + 'Before'.length);
       p.press('Shift-Enter');
+      /*
+       * The backslash is written on the keystroke here, and that is the distinction worth holding:
+       * this break has text after it, so it is a hard break the moment it exists. Only a break at the
+       * end of a line, which opens a line with nothing on it, waits for something to break.
+       */
       const ok = p.doc() === P0 + 'Before\\\n bold after';
+      p.destroy();
+      return ok;
+    },
+  },
+  {
+    /*
+     * One backslash for one gesture, however much is typed afterwards.
+     *
+     * The owed position was held after the backslash was written, so every later keystroke was read
+     * as earning the break again: a forty-character second line left forty backslashes. And from the
+     * second one it was worse than untidy, because `\\` is an escaped backslash rather than a hard
+     * break, so the run destroyed the break it had just made and left the characters in the text.
+     */
+    name: 'a second line typed after Shift+Enter earns exactly one backslash, not one per keystroke',
+    run: () => {
+      const doc = P0 + '- first bullet';
+      const p = mountProse(doc);
+      p.select(doc.length);
+      p.press('Shift-Enter');
+      const counts: number[] = [];
+      for (const ch of 'second') {
+        p.view.dispatch(p.view.state.replaceSelection(ch));
+        counts.push((p.view.state.doc.line(p.view.state.doc.lines - 1).text.match(/\\/g) ?? []).length);
+      }
+      const ok = counts.every((n) => n === 1) && p.doc() === P0 + '- first bullet\\\n  second';
+      p.destroy();
+      return ok;
+    },
+  },
+  {
+    /*
+     * A break the person walked away from stays unmade, wherever they go on typing.
+     *
+     * The waiting position was compared as "anywhere after the break", so typing further down the
+     * document finished a gesture that had been abandoned, and the backslash landed on a line the
+     * caret had long left. It is the line the break opened that is waiting, and only that line.
+     */
+    name: 'typing further down the document after an abandoned Shift+Enter leaves no backslash behind',
+    run: () => {
+      const doc = P0 + 'First para.\n\nSecond para.';
+      const p = mountProse(doc);
+      p.select(P0.length + 'First para.'.length);
+      p.press('Shift-Enter');
+      const opened = p.doc() === P0 + 'First para.\n\n\nSecond para.';
+      p.select(p.doc().length);
+      p.view.dispatch(p.view.state.replaceSelection('!'));
+      const ok = opened && p.doc() === P0 + 'First para.\n\n\nSecond para.!';
       p.destroy();
       return ok;
     },

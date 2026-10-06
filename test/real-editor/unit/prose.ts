@@ -131,6 +131,37 @@ function withBar(doc: string, anchor: number, head: number | undefined, fn: (b: 
   p.destroy();
   return out;
 }
+/**
+ * `withBar` for a command whose work lands after the click rather than during it.
+ *
+ * The two table insertions in the Insert menu are fetched when chosen, because importing them
+ * statically brought the whole grid into every profile that holds this toolbar. So the click
+ * returns before the document changes, and reading `p.doc()` on the next line reads the document
+ * as it was.
+ *
+ * One macrotask is enough and it is measured rather than reasoned: the first draft waited twice,
+ * on the theory that the import resolves in a microtask and the command then dispatches, so one
+ * `await` would land between them. Tried with a single wait, all 129 scenarios pass. A macrotask
+ * boundary drains the whole microtask queue, so both steps are done by the time it is reached.
+ *
+ * That holds because the test bundle resolves this import from memory. It is a wait for the fetch,
+ * which in a real document has already happened, and not for any part of the insertion.
+ *
+ * The assertions this serves are unchanged: both still read the whole document back. Without the
+ * wait they fail, which is how the lazy import was found to be visible here at all.
+ */
+async function withBarSettled(doc: string, anchor: number, head: number | undefined, fn: (b: Bar, p: Prose) => void): Promise<string> {
+  const p = mountProse(doc);
+  p.select(anchor, head);
+  const b = mountBar(p);
+  b.refresh();
+  fn(b, p);
+  await new Promise((r) => setTimeout(r, 0));
+  const out = p.doc();
+  b.remove();
+  p.destroy();
+  return out;
+}
 const pressedOn = (b: Bar, cmd: string): boolean => b.button(cmd).classList.contains('is-active') && b.button(cmd).getAttribute('aria-pressed') === 'true';
 
 const CODE = '```\nlet x = 1\n```';
@@ -685,8 +716,8 @@ export const scenarios: Scenario[] = [
     id: 'prose.insert-menu.u04',
     feature: 'prose.insert-menu',
     name: 'Insert > Markdown table with the caret mid-paragraph puts the table after the paragraph, not inside it',
-    run: () => {
-      const out = withBar('one two\nthree\n\nnext', 3, undefined, (b) => b.menuItem('insert', 'Markdown table').click());
+    run: async () => {
+      const out = await withBarSettled('one two\nthree\n\nnext', 3, undefined, (b) => b.menuItem('insert', 'Markdown table').click());
       return { ok: out.startsWith('one two\nthree\n\n|') && out.endsWith('\n\nnext') && count(out, 'Table') === 1, detail: JSON.stringify(out) };
     },
   },
@@ -694,8 +725,8 @@ export const scenarios: Scenario[] = [
     id: 'prose.insert-menu.u05',
     feature: 'prose.insert-menu',
     name: 'Insert > CSV data table puts a csv fenced block after the paragraph',
-    run: () => {
-      const out = withBar('para', 2, undefined, (b) => b.menuItem('insert', 'CSV data table').click());
+    run: async () => {
+      const out = await withBarSettled('para', 2, undefined, (b) => b.menuItem('insert', 'CSV data table').click());
       return { ok: /^para\n\n```csv\n[\s\S]*\n```\n?$/.test(out), detail: JSON.stringify(out) };
     },
   },
@@ -948,9 +979,15 @@ export const scenarios: Scenario[] = [
     feature: 'prose.hard-break',
     name: 'Shift-Enter in a numbered item and a task item indents the new line to the item text',
     run: () => {
+      /*
+       * The indent is what this is about, and the backslash is deliberately absent: a break at the
+       * end of a line opens a line with nothing on it, and a trailing backslash there is a literal
+       * backslash rather than a hard break. It arrives with the first character typed, which
+       * `prose/commands.ts` checks for all four shapes.
+       */
       const a = edit('1. item', 7, undefined, (p) => p.press('Shift-Enter'));
       const b = edit('- [ ] task', 10, undefined, (p) => p.press('Shift-Enter'));
-      return { ok: a === '1. item\\\n   ' && b === '- [ ] task\\\n      ', detail: JSON.stringify([a, b]) };
+      return { ok: a === '1. item\n   ' && b === '- [ ] task\n      ', detail: JSON.stringify([a, b]) };
     },
   },
   {
@@ -960,7 +997,7 @@ export const scenarios: Scenario[] = [
     run: () => {
       const a = edit('- p\n    - c', 11, undefined, (p) => p.press('Shift-Enter'));
       const b = edit('> > q', 5, undefined, (p) => p.press('Shift-Enter'));
-      return { ok: a === '- p\n    - c\\\n      ' && b === '> > q\\\n> > ', detail: JSON.stringify([a, b]) };
+      return { ok: a === '- p\n    - c\n      ' && b === '> > q\n> > ', detail: JSON.stringify([a, b]) };
     },
   },
   {

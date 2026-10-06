@@ -6,7 +6,7 @@
 
 import { Scenario, mountProse } from '../harness';
 import { handleDocPathPaste, handleLinkPaste, markdownLink, pastedDocPath, pastedUrl, setDocTitleHost } from '../../src/webview/linkPaste';
-import { setupImageIngestion } from '../../src/webview/images';
+import { setupImageIngestion } from '../../src/webview/imageIngest';
 
 interface Pasted {
   /** Whether the paste was answered as a link rather than left to the editor. */

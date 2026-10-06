@@ -2644,10 +2644,25 @@ async function hostCases() {
     // All four from one base, which is what makes the chrome one knob rather than four.
     const derived = ['row', 'secondary', 'label', 'title'].filter((k) => !/var\(--sheaf-ui-step\)/.test(declared(`sheaf-ui-${k}`) ?? ''));
     if (derived.length) return { ok: false, detail: `these steps do not derive from --sheaf-ui-step: ${derived.join(', ')}` };
-    // Named for the host's UI size, with VS Code's own default as the fallback a browser tab takes.
-    return declared('sheaf-ui-step') === 'var(--vscode-font-size, 13px)'
+    /*
+     * Named for the host's UI size, with a browser tab's size behind it, and **13px is still what a
+     * browser tab gets** — which is the thing this asserts rather than the spelling it is written in.
+     *
+     * It used to compare the declaration against the exact string `var(--vscode-font-size, 13px)`.
+     * That pinned the text while the comment above it described the value, so naming the fallback as
+     * a token failed the check without changing a pixel. A check that cares about a number and reads
+     * a string says so only when somebody writes the number a second way.
+     *
+     * So the fallback is followed: written inline or as a Sheaf token, it has to arrive at 13px.
+     */
+    const step = declared('sheaf-ui-step');
+    const base = /^var\(\s*--vscode-font-size\s*,\s*(.+?)\s*\)$/.exec(step ?? '');
+    if (!base) return { ok: false, detail: `--sheaf-ui-step is ${step}, not the host's UI size with a fallback` };
+    const token = /^var\(\s*(--[\w-]+)\s*\)$/.exec(base[1]);
+    const browser = token ? declared(token[1].slice(2)) : base[1];
+    return browser === '13px'
       ? true
-      : { ok: false, detail: `--sheaf-ui-step is ${declared('sheaf-ui-step')}` };
+      : { ok: false, detail: `a browser tab's UI size resolves to ${browser}, from --sheaf-ui-step ${step}` };
   });
 
   check('stylesheet: the header row sticks to the top of the editor, and a table that fits its frame lets it', () => {
@@ -3932,9 +3947,26 @@ async function hostCases() {
       const bare = title.replace(/^Sheaf: /, '');
       if (!titles.has(bare)) missing.push(`command **${title}**`);
     }
-    for (const [, chord] of notes.matchAll(/\*\*((?:Cmd|Ctrl|Alt|Shift|Opt)(?:\+[A-Za-z0-9]+)+)\*\*/g)) {
-      named.chords.push(chord);
-      if (!chords.has(chord.toLowerCase().replace(/opt/g, 'alt'))) missing.push(`chord **${chord}**`);
+    /*
+     * A chord anywhere inside a bold span, rather than one that is the whole of a bold span.
+     *
+     * The pattern was anchored to the span's edges, and a bolded lead sentence that mentions a
+     * chord can never satisfy that, because Markdown has no nested bold. So the one entry shape
+     * this file uses most — a bold sentence saying what a reader now gets — was unsatisfiable
+     * alongside it, and the next author to name a key in one walks into the same wall. It failed
+     * `main` rather than the branch that wrote it, because the entry landed in a changelog-only
+     * commit and the gates were not re-run after it: the same shape as the release that failed
+     * because nobody ran them after `npm version` stamped the file.
+     *
+     * The loose detector below is unaffected and keeps doing what its own control describes,
+     * catching a chord written as prose with no bold around it at all. This only widens what
+     * counts as bolded, so every chord the old pattern resolved is still resolved here.
+     */
+    for (const [, span] of notes.matchAll(/\*\*([^*]+?)\*\*/g)) {
+      for (const [, chord] of span.matchAll(/\b((?:Cmd|Ctrl|Alt|Shift|Opt)(?:\+[A-Za-z0-9]+)+)/g)) {
+        named.chords.push(chord);
+        if (!chords.has(chord.toLowerCase().replace(/opt/g, 'alt'))) missing.push(`chord **${chord}**`);
+      }
     }
 
     const found = named.settings.length + named.commands.length + named.chords.length;
@@ -4047,6 +4079,22 @@ async function hostCases() {
       chordUnbolded: judgeUnreleased('\n- Cmd+B still bolds the selection.\n', declared),
       allDeclared: judgeUnreleased('\n- `sheaf.lineNumbers` is off by default, and **Cmd+B** still bolds.\n', declared),
       undeclared: judgeUnreleased('\n- `sheaf.notAThing` was added, and **Sheaf: Nowhere** opens it.\n', declared),
+      /*
+       * The shape this file actually writes, and the gap that let a red `main` through.
+       *
+       * Every case above puts a chord on its own between the asterisks, and the pattern was
+       * anchored to them, so a bolded lead sentence mentioning a chord was unsatisfiable and
+       * nothing here said so. Markdown has no nested bold, so there was no way to write the
+       * entry correctly either. So `chordInBoldSentence` is the discriminating one: reverting
+       * the widening turns it false and fails this control.
+       *
+       * `undeclaredInBoldSentence` answers false both ways, by the loose detector before and by
+       * the chord lookup after, and is here for the opposite risk. It is what would fail if the
+       * widening were ever loosened into resolving whatever it found, which is the way this
+       * check could be turned off while still reporting that it ran.
+       */
+      chordInBoldSentence: judgeUnreleased('\n- **Pressing Cmd+B bolds what you have selected.** And it did not before.\n', declared),
+      undeclaredInBoldSentence: judgeUnreleased('\n- **Pressing Cmd+Shift+J does nothing at all.** Which is the point.\n', declared),
     };
     const want = {
       empty: true,
@@ -4057,6 +4105,8 @@ async function hostCases() {
       chordUnbolded: false,
       allDeclared: true,
       undeclared: false,
+      chordInBoldSentence: true,
+      undeclaredInBoldSentence: false,
     };
     const wrong = Object.keys(want).filter((k) => cases[k].ok !== want[k]);
     return {
@@ -4464,7 +4514,23 @@ async function hostCases() {
       // that the hint is `aria-hidden` while the row carries `aria-keyshortcuts`. This check refused the
       // first version at 3322, which was the same code with its reasoning inside the closure, and moving
       // the explanation to the function it explains is what the refusal was asking for.
-      ['tables.ts', 3297],
+      //
+      // 3299: and two more at the end of a column drag, one comment and one `columns.remeasure()`.
+      // A table that crosses the pane threshold mid-gesture must not move under the pointer, so
+      // `is-pane-wide` is frozen while a drag is in flight; removing `is-resizing` ends the freeze and
+      // something has to recompute what was frozen, or the table keeps the class it started with until
+      // an unrelated measure happens. The decision is in `columnLayout.ts`, where the class is chosen;
+      // what is here is the one call that says the gesture is over, which cannot live anywhere else.
+      // 3302: and three more, for which cell a typed character goes into. Clearing a selection and
+      // pasting over one both already ask whether a column was picked whole, and typing was the third
+      // input to the same selection and the only one that did not: both gestures that pick a column
+      // whole leave the focus on the header, so typing renamed the column and changed none of the cells
+      // underneath it. The rule is `pasteStartRow` at module scope, which the paste path already calls
+      // and whose comment now carries all three inputs; here is one call, one line that moves the focus
+      // into the body, and one line pointing at the function. Refused at 3319 first, which was the same
+      // code with its reasoning in the closure — the same refusal the 3297 entry records, and the same
+      // answer: the explanation belongs beside the rule it explains.
+      ['tables.ts', 3302],
       ['viewBlock.ts', 780],
     ];
     const over = [];
@@ -4841,8 +4907,8 @@ async function hostCases() {
      * The band is wide next to what this exists to catch. `@codemirror/language-data`
      * going eager again is a thousand kilobytes, forty times the headroom.
      */
-    const CEILING_KB = 1001;
-    const FLOOR_KB = 951;
+    const CEILING_KB = 958;
+    const FLOOR_KB = 908;
     /*
      * Moved up 25 KB on 2026-09-29, after a run of features took the closure from 1,222 to
      * 1,226 KB. Checked before moving it, which is the point of the check: the closure is the
@@ -5606,10 +5672,10 @@ async function hostCases() {
    * nothing else compared them.
    */
   check('the live-preview config starts at the manifest default, so a test inherits what a person has', () => {
-    const source = readFileSync(path.join(here, '..', 'src', 'webview', 'livePreview.ts'), 'utf8');
+    const source = readFileSync(path.join(here, '..', 'src', 'webview', 'revealState.ts'), 'utf8');
     const found = /let currentConfig: LivePreviewConfig = \{ revealSyntaxOnLine: (true|false) \};/.exec(source);
     if (!found) {
-      return { ok: false, detail: 'could not find the initial currentConfig in livePreview.ts, so nothing was compared' };
+      return { ok: false, detail: 'could not find the initial currentConfig in revealState.ts, so nothing was compared' };
     }
     const declared = manifest().contributes.configuration.properties['sheaf.revealSyntaxOnLine']?.default;
     if (typeof declared !== 'boolean') {

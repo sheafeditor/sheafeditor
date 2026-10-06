@@ -50,8 +50,14 @@ const TELLTALES = [
   { name: 'display maths', rendered: /\$\$/, source: /^\s*\$\$/m },
   { name: 'heading hashes', rendered: /^#{1,6}\s+\S/m, source: /^#{1,6}\s+\S/m },
   { name: 'strong markers', rendered: /\*\*[^*\s][^*\n]*\*\*/, source: /\*\*[^*\s][^*\n]*\*\*/ },
-  { name: 'strikethrough', rendered: /~~[^~\s][^~\n]*~~/, source: /~~[^~\s][^~\n]*~~/ },
-  { name: 'highlight', rendered: /==[^=\s][^=\n]*==/, source: /==[^=\s][^=\n]*==/ },
+  { name: 'strikethrough', rendered: /(?<!~)~~[^~\s][^~\n]*~~(?!~)/, source: /(?<!~)~~[^~\s][^~\n]*~~(?!~)/ },
+  /*
+   * The run guards are the dialect's rule, not pattern tidiness. A run of three or more equals is
+   * text, as it is for tildes, so `===x===` draws as itself and an auditor without the lookarounds
+   * matches the `==x==` *inside* it and reports a highlight that failed to render. Strikethrough
+   * needs the same guards for the same reason and has always had them in the parser.
+   */
+  { name: 'highlight', rendered: /(?<!=)==[^=\s][^=\n]*==(?!=)/, source: /(?<!=)==[^=\s][^=\n]*==(?!=)/ },
   { name: 'image syntax', rendered: /!\[[^\]\n]*\]\([^)\n]*\)/, source: /!\[[^\]\n]*\]\([^)\n]*\)/ },
   { name: 'link syntax', rendered: /(?<!!)\[[^\]\n]+\]\([^)\s\n]+\)/, source: /(?<!!)\[[^\]\n]+\]\([^)\s\n]+\)/ },
   { name: 'inline HTML tag', rendered: /<\/?(kbd|sub|sup|abbr|mark|small)\b[^>]*>/i, source: /<\/?(kbd|sub|sup|abbr|mark|small)\b[^>]*>/i },
@@ -103,7 +109,7 @@ const entry = join(out, 'entry.ts');
 writeFileSync(
   entry,
   `export { mountProse } from ${JSON.stringify(join(REPO, 'test', 'harness'))};\n` +
-    `export { setLivePreviewConfig } from ${JSON.stringify(join(REPO, 'src', 'webview', 'livePreview'))};\n` +
+    `export { setLivePreviewConfig } from ${JSON.stringify(join(REPO, 'src', 'webview', 'revealState'))};\n` +
     `export { forceParsing } from '@codemirror/language';\n`
 );
 const bundle = join(out, 'bundle.cjs');

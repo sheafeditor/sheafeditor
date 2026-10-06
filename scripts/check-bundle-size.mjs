@@ -19,6 +19,7 @@
  *   node scripts/check-bundle-size.mjs            measure and compare against the committed sizes
  *   node scripts/check-bundle-size.mjs --accept    write what it measured as the new committed sizes
  *   node scripts/check-bundle-size.mjs --floors    build and measure the layers under the editor
+ *   node scripts/check-bundle-size.mjs --budgets   every budget against its floor and its measurement
  */
 import { readFileSync, writeFileSync, existsSync, readdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
@@ -139,25 +140,236 @@ const kb = (n) => `${(n / 1024).toFixed(0)} KB`;
  * from the editor's own size cannot say whether the budget is reachable, because it cannot say how
  * much of that size is CodeMirror, how much is the Markdown language layer and how much is Sheaf's.
  *
- * Not run by `npm test`: it builds five bundles, which is seconds rather than milliseconds, and the
- * numbers move only when a dependency does.
+ * **What this costs, measured rather than assumed, because it is now in every landing.** Nine
+ * entries, bundled and minified, in 0.26s, and the whole of this check including them in 0.33s. The
+ * comment here used to say "seconds rather than milliseconds" as the reason `npm test` does not run
+ * it, and that was a guess at esbuild's speed rather than a reading of it: 29ms an entry. So the
+ * cost is not a reason to keep this out of anything, and the reason it stays out of `npm test` is
+ * only that the suites bundle their own entries and the numbers here move when a dependency does.
+ *
+ * **Built with splitting, and measured as the eager closure**, the same way the profiles above are.
+ * Without splitting esbuild inlines every `import()`, so a floor came out holding everything the
+ * layer can reach rather than everything it loads: the `field` entry read 268 KB gzipped, of which
+ * 76 KB was KaTeX, which that path loads only when a document first shows an equation. A number that
+ * counts lazy code is not comparable to the profile budgets it exists to be compared against, and it
+ * points the work at the wrong thing — in that case at removing a dependency that was already lazy.
  */
-if (process.argv.includes('--floors')) {
+/** Build every entry in `scripts/size-floors/` and measure its eager closure. */
+function measureFloors() {
   const dir = join(REPO, 'scripts', 'size-floors');
   const out = mkdtempSync(join(tmpdir(), 'sheaf-floors-'));
   const esbuild = join(REPO, 'node_modules', '.bin', 'esbuild');
-  console.log('What each layer under the editor costs, gzipped, measured on its own:\n');
+  const measured = {};
   try {
     for (const file of readdirSync(dir).filter((f) => f.endsWith('.ts')).sort()) {
-      const built = join(out, file.replace(/\.ts$/, '.js'));
-      execFileSync(esbuild, [join(dir, file), '--bundle', '--minify', '--format=esm', '--platform=browser', '--target=es2020', `--outfile=${built}`, '--log-level=error']);
-      const size = sizeOf([built]);
-      console.log(`  ${kb(size.gz).padStart(7)} gz, ${kb(size.raw).padStart(8)} raw   ${file.replace(/^floor-|\.ts$/g, '')}`);
+      const name = file.replace(/^floor-|\.ts$/g, '');
+      const dest = join(out, name);
+      const meta = join(out, `${name}.json`);
+      execFileSync(esbuild, [
+        join(dir, file), '--bundle', '--minify', '--format=esm', '--platform=browser', '--target=es2020',
+        '--splitting', `--outdir=${dest}`, '--entry-names=entry', '--chunk-names=c/[name]-[hash]',
+        `--metafile=${meta}`, '--log-level=error',
+      ]);
+      const metafile = JSON.parse(readFileSync(meta, 'utf8'));
+      const entry = Object.keys(metafile.outputs).find((o) => o.endsWith('entry.js'));
+      const closure = [...eagerOutputs(metafile, entry)].map((o) => join(REPO, o));
+      measured[name] = { ...sizeOf(closure), files: closure.length };
     }
   } finally {
     rmSync(out, { recursive: true, force: true });
   }
+  return measured;
+}
+
+if (process.argv.includes('--floors')) {
+  console.log('What each layer under the editor costs, gzipped, as a reader downloads it:\n');
+  for (const [name, size] of Object.entries(measureFloors())) {
+    console.log(`  ${kb(size.gz).padStart(7)} gz, ${kb(size.raw).padStart(8)} raw   ${name}  (${size.files} file(s))`);
+  }
   console.log('\nThe budgets to compare these against are in the table at the top of this file.');
+  process.exit(0);
+}
+
+/*
+ * Every budget against the floor underneath it and the measurement above it, in one pass.
+ *
+ *   node scripts/check-bundle-size.mjs --budgets
+ *
+ * **It exists because three budgets were each found unreachable or exceeded separately, days apart,
+ * by people working on something else.** A release that learns the same thing three times has paid
+ * for it three times. This is a report rather than a gate: it prints and exits 0, because deciding
+ * what a budget should be is a product call and this only supplies the number it is decided against.
+ *
+ * **The three columns answer different questions and the distinction is the point.** The *floor* is
+ * what the layer costs on its own, built fresh from `scripts/size-floors/` and so independent of
+ * whatever happens to be built in this checkout. The *measurement* is what the profile pulls today,
+ * which only exists for a profile that has an entry point, so two of the three have none. The
+ * *budget* is the target.
+ *
+ * From which three verdicts follow, and only one of them is somebody's mistake:
+ *
+ *   unreachable   the floor is already over the budget, so no arrangement of boundaries gets there
+ *                 and the budget is the thing that has to move
+ *   over          the floor fits and the measurement does not, which is work
+ *   unmeasured    the floor fits and nothing measures the profile yet, so the budget is neither met
+ *                 nor missed and saying either would be inventing a result
+ *
+ * The floor a profile is held to is named here rather than derived, because `document`'s is a
+ * judgement: every profile needs the dialect inside CodeMirror and everything above that is
+ * features, so `dialect` is the irreducible part. `field` and `notes` have floors of their own.
+ */
+/*
+ * **`enforce` is data rather than code, and every one of them is `false` today.** The comparison runs
+ * on every landing, and a non-zero exit on an over-budget profile would stop every landing in the
+ * repository: `field` measures 138 KB against 60 KB and `document` is over by 4 KB. So the
+ * enforcement path exists, is exercised by its own control, and is switched off per profile with the
+ * reason beside it. Turning one on is a one-word edit by whoever owns the budget, not a change to
+ * this file's logic, which is the difference between a check that can be enabled and a check that
+ * has to be written.
+ *
+ * `render` is in this table and is not a profile. It is the render path, and it is here because
+ * being small is the whole argument for its existence, so it owes the same three numbers. Its budget
+ * has not been decided, which prints as undecided rather than as met.
+ */
+/*
+ * **Each row says what its floor is about, because the verdict column cannot see it.**
+ *
+ * A verdict compares two numbers and reports which side they fall on. It cannot report that the
+ * floor was a measurement of something else, and a floor that measures the wrong subject produces a
+ * row where every part works: a real number, a real budget, and "over". A reader scanning verdicts
+ * sees that row working.
+ *
+ * So the question each `about` answers is **what a decision would do to this number**, and there are
+ * three answers:
+ *
+ *   the profile     built from the module the profile actually is, so a decision about what the
+ *                   profile carries changes this number and never invalidates it
+ *   another profile accurate, and about a different profile than the row it is in
+ *   a layer         a dependency set rather than a profile, so no decision about which profile
+ *                   carries which construct can reach it; it moves when a dependency does
+ *   a list of it    a module list written by hand from the profile's construct list, which goes
+ *                   stale the next time that list is decided, silently
+ *
+ * **The axis is what the floor is about, not how it is built**, and that distinction cost a wrong
+ * classification before this was written: `floor-notes` and `floor-cm` are the same shape as code,
+ * both a hand-written list of modules, and only one of them can be falsified by a product decision.
+ * Sorting on the visible property gives a table that is internally consistent and sorted on the
+ * wrong thing. The six floors that are dependency sets are not in this table at all; `--floors`
+ * prints them and nothing compares them to a budget, which is correct.
+ *
+ * The general form, which predicts the next instance: a measurement derived from **the thing**
+ * survives a decision about the thing; one derived from **a description of the thing** does not.
+ */
+const PROFILE_FLOORS = {
+  field: {
+    floor: 'field',
+    enforce: false,
+    about: 'another profile',
+    instrument:
+      "built from `cellEditor.ts`, which is the editor a cell opens inside a *document*, so this is `document`'s cost. It has never been a field's floor, which is why it did not move through four separate module cuts aimed at the field.",
+    why: 'the floor is 78 KB over the budget, so enforcing it would fail every landing over a profile that has no entry point yet',
+    // Was "the cell editor, which is the field today", which the line below it now contradicts: the
+    // cell editor is the in-document one, so it is not the field and never was.
+    note: 'floor and measurement are one number here, because the module measured is the only thing that exists',
+  },
+  notes: {
+    floor: 'notes',
+    enforce: false,
+    about: 'a list of the profile',
+    instrument:
+      "a module list written by hand from the profile's construct list, so a decision about that list invalidates it. Twice now: its own comment says it excludes footnotes, and footnotes were placed in `notes` on 2026-10-05.",
+    why: 'nothing measures this profile, so there is no measurement to enforce against',
+    note: 'reading only: no module draws lists and quotes without also drawing images, maths and tables',
+  },
+  document: {
+    floor: 'dialect',
+    enforce: false,
+    about: 'a layer',
+    instrument: 'a dependency set rather than a construct list: what every profile needs whatever it carries, so no decision about constructs reaches it',
+    why: 'over by 4 KB today, and the ratchet already refuses growth, which is the part that can be held to',
+    note: 'the dialect inside CodeMirror, which every profile needs and nothing can remove',
+  },
+  render: {
+    floor: 'render',
+    enforce: false,
+    about: 'the profile',
+    instrument: 'built from `renderMarkdown` itself, so a change to what the render path carries moves this number rather than invalidating it',
+    why: 'no budget decided, so there is nothing to enforce against',
+    note: 'the render path rather than a profile: it owes the same numbers because being small is its whole argument',
+  },
+};
+
+/**
+ * Every profile against the floor under it and the measurement above it, printed and returned.
+ *
+ * Returned as well as printed because the default run compares what this works out, and a caller
+ * that re-derived a verdict from the printed text would be a second definition of it. The
+ * requirements this answers got where they were by a number being printed and never compared, so the
+ * one thing not to do here is produce another report nothing reads.
+ */
+function budgetReport() {
+  const floors = measureFloors();
+  const built = existsSync(join(REPO, 'media', 'webview.js'));
+  const shipping = built ? sizeOf(eagerClosure(join(REPO, 'media', 'webview.js'))) : null;
+  const verdicts = [];
+
+  console.log('Every profile budget against the floor under it and the measurement above it, gzipped:\n');
+  console.log(`  ${'profile'.padEnd(9)} ${'budget'.padStart(8)} ${'floor'.padStart(8)} ${'measured'.padStart(9)}   verdict`);
+
+  for (const [name, { floor, note, enforce, why, about, instrument }] of Object.entries(PROFILE_FLOORS)) {
+    const budget = BUDGETS[name];
+    const floorGz = floors[floor]?.gz;
+    /*
+     * Only `document` has a build entry point. `field`'s floor *is* a measurement of the thing that
+     * exists, and so is `render`'s, because both floors are built from a real module rather than from
+     * a layer assembled to be measured. `notes` has nothing to measure, and an absent number prints
+     * as absent rather than as zero.
+     */
+    const measured = name === 'document' ? shipping?.gz : name === 'field' || name === 'render' ? floorGz : undefined;
+
+    let verdict;
+    let over = false;
+    if (floorGz === undefined) verdict = `no floor: scripts/size-floors/floor-${floor}.ts is missing`;
+    else if (budget === undefined) verdict = `no budget decided, so ${kb(floorGz)} is reported and compared to nothing`;
+    else if (floorGz > budget) {
+      verdict = `unreachable: the floor is ${kb(floorGz - budget)} over the budget`;
+      over = true;
+    } else if (measured === undefined) verdict = `unmeasured: the floor fits by ${kb(budget - floorGz)}, and nothing measures this profile yet`;
+    else if (measured > budget) {
+      verdict = `over by ${kb(measured - budget)}, with ${kb(budget - floorGz)} of room under the floor`;
+      over = true;
+    } else verdict = `within, by ${kb(budget - measured)}`;
+
+    console.log(
+      `  ${name.padEnd(9)} ${(budget === undefined ? '-' : kb(budget)).padStart(8)} ${kb(floorGz ?? 0).padStart(8)} ${(measured === undefined ? '-' : kb(measured)).padStart(9)}   ${verdict}`
+    );
+    console.log(`  ${''.padEnd(9)} ${''.padStart(8)} ${''.padStart(8)} ${''.padStart(9)}   ${note}`);
+    /*
+     * What the floor is about, printed under every row rather than only the troubling ones. A note
+     * that appears only where something is wrong is a note a reader learns to skip, and the two rows
+     * where this matters most are the two that otherwise look like the others.
+     */
+    console.log(`  ${''.padEnd(9)} ${''.padStart(8)} ${''.padStart(8)} ${''.padStart(9)}   floor measures ${about}: ${instrument}`);
+    if (over) {
+      console.log(
+        `  ${''.padEnd(9)} ${''.padStart(8)} ${''.padStart(8)} ${''.padStart(9)}   ` +
+          (enforce ? 'ENFORCED, so this run fails' : `not enforced: ${why}`)
+      );
+    }
+    verdicts.push({ name, budget, floor: floorGz, measured, over, enforce, verdict, about });
+  }
+
+  if (!built) {
+    console.log('\nmedia/webview.js is not built, so document has no measurement in this run. Run npm run build.');
+  }
+  console.log('\nThe floors are built from source here, so they do not depend on what this checkout has built.');
+  console.log("document's measurement is read from the last build, and `--accept` is what refuses to record one");
+  console.log('taken from a tree with uncommitted inputs.');
+  return verdicts;
+}
+
+if (process.argv.includes('--budgets')) {
+  budgetReport();
   process.exit(0);
 }
 
@@ -372,6 +584,57 @@ if (grown.length) {
   console.log(`\n${grown.join('; ')}.`);
   console.log('Explain the growth and run with --accept in the same commit, or take it back out.');
   process.exit(1);
+}
+
+/*
+ * And every profile against its own floor and its own budget, in the same run.
+ *
+ * **This used to be behind `--budgets`, which the gates never passed, so the floors were in no
+ * landing at all.** The numbers were good and nothing compared them, which is the whole of what was
+ * wrong: a human read the table and did the comparison in their head. A flag somebody has to
+ * remember is the same as no check, one step more flattering.
+ *
+ * The report is unconditional. The *failure* is per profile and off everywhere today, for the reason
+ * printed beside each one.
+ */
+console.log('');
+const verdicts = budgetReport();
+
+/*
+ * A distinct exit code from the ones above, because an over-budget profile and a tree that will not
+ * build are different facts and a caller that can only see "non-zero" cannot act on either. 1 is a
+ * build or a ratchet failure, which is something to fix in the change; 2 is a profile over a budget
+ * somebody is holding it to, which may be a decision to revisit instead.
+ */
+const enforced = verdicts.filter((v) => v.enforce && v.over);
+if (enforced.length) {
+  console.log(`\n${enforced.length} profile(s) over a budget that is being enforced:\n`);
+  for (const v of enforced) {
+    console.log(`  ${v.name}: ${v.verdict}`);
+    console.log(`    budget ${kb(v.budget)}, floor ${kb(v.floor)}, measured ${v.measured === undefined ? 'none' : kb(v.measured)}`);
+  }
+  console.log('\nEither the profile loses weight or the budget moves, and the second is a decision rather than a fix.');
+  process.exit(2);
+}
+
+const notEnforced = verdicts.filter((v) => v.over && !v.enforce).map((v) => v.name);
+if (notEnforced.length) {
+  console.log(`\nOver budget and not enforced: ${notEnforced.join(', ')}. Each says above why, and none of them fails this run.`);
+}
+
+/*
+ * And the rows a reader should not act on, named again at the bottom where the eye lands.
+ *
+ * A verdict is a comparison, and a comparison of the wrong number against the right budget reads
+ * exactly like one that worked. Repeated here rather than left to the per-row line, because the
+ * failure this guards against is a reader taking the table's shape for its meaning.
+ */
+const unsound = verdicts.filter((v) => v.about === 'another profile' || v.about === 'a list of the profile');
+if (unsound.length) {
+  console.log(
+    `\nDo not act on ${unsound.map((v) => v.name).join(' or ')} without reading the floor line above it: ` +
+      `${unsound.length} of ${verdicts.length} floors here are not measurements of the profile in their own row.`
+  );
 }
 
 console.log('\nNo profile grew beyond the size committed beside it, and nothing forbidden is loaded eagerly.');

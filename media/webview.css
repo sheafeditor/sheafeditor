@@ -2,6 +2,18 @@
  * Sheaf webview styles — Notion-inspired reading/editing surface layered on
  * top of CodeMirror 6, themed with VS Code theme variables so it blends into
  * whatever color theme the user runs.
+ *
+ * **A `var(--vscode-*)` written here without a fallback is a requirement on
+ * `media/browser-theme.css`, and the server suite fails if that file does not
+ * define it.** VS Code supplies these variables to its webview; nothing supplies
+ * them in a browser tab, in the site's demo, or in a consumer application, and a
+ * variable with nothing behind it does not degrade to a default — the element is
+ * simply transparent. So the shim has to define every one this file depends on.
+ *
+ * Which makes the comma load-bearing rather than a matter of taste. A fallback
+ * after it says the variable is optional and names what to use instead, and the
+ * check leaves it alone. No fallback says the shim must carry it. Both spellings
+ * are here deliberately: 21 uses across 3 variables have none, and the rest do.
  */
 
 /*
@@ -72,8 +84,18 @@
    * a group title or a badge, **title** for the heading of a panel. Document content keeps the
    * document's own typography, which is why a table's cells and a board's cards are not here.
    */
+  /*
+   * Sheaf's own base UI size, which is what the scale above falls back to outside VS Code.
+   *
+   * It is named rather than written inline because every size in this block derives from it, so a
+   * literal here is five derived sizes and every control using them resting on an unnamed number.
+   * Naming it is not the same as choosing it: 13px is VS Code's default, kept so the browser build
+   * is unchanged to the pixel, and whether that is the right base for a reader who is not in VS
+   * Code is a question this declaration makes askable rather than answers.
+   */
+  --md-ui-size: 13px;
   --sheaf-ui-font: var(--vscode-font-family, var(--md-font));
-  --sheaf-ui-step: var(--vscode-font-size, 13px);
+  --sheaf-ui-step: var(--vscode-font-size, var(--md-ui-size));
   --sheaf-ui-row: var(--sheaf-ui-step);
   --sheaf-ui-secondary: calc(var(--sheaf-ui-step) * 0.92);
   --sheaf-ui-label: calc(var(--sheaf-ui-step) * 0.85);
@@ -167,6 +189,32 @@
   --md-tok-invalid: #f14c4c;
   --md-code-chip: var(--vscode-textPreformat-background, var(--md-code-bg));
   --md-link: var(--vscode-textLink-foreground, #2f81f7);
+  /* The foreground for text on a filled accent, where `--md-link` above is the fill it has to read
+     against. One consumer today, the primary button, and it is named because that is the only
+     place in this stylesheet putting text on an accent rather than on the page: the next one would
+     otherwise re-derive white from nothing, with no way to tell the two were the same decision. If
+     the accent stops being a mid-blue, this is the pair to look at. */
+  --md-on-accent: #fff;
+  /*
+   * The four values below are the remainder of "a `--vscode-*` fallback ends on a Sheaf token".
+   * Each had one or more bare literals behind it and no token to defer to, so each is a decision
+   * the stylesheet was making without naming. The values are the ones already in the file: nothing
+   * here changes a pixel, and each is now one declaration to change rather than several.
+   */
+  /* The background of a floating surface — a notice, a widget — where the page's own background is
+     the thing it sits on top of. Shares `#fff` with `--md-on-accent` and is a different decision:
+     one is a surface, the other is a foreground that has to read against the accent. */
+  --md-surface: #fff;
+  /* What a floating surface casts. One consumer, named for the same reason `--md-on-accent` is:
+     it names a decision that exists rather than generalising from one case. */
+  --md-shadow: rgba(0, 0, 0, 0.2);
+  /* Error red. Three consumers already, so it is a system whether or not it has a name. */
+  --md-error: #e5534b;
+  /* The two find highlights, which a reader is looking straight at while searching. `current` is
+     the match the caret is on; the other is every remaining match. Two tokens rather than one
+     because the whole point of the pair is that they differ. */
+  --md-find-match: rgba(81, 92, 106, 0.6);
+  --md-find-match-other: rgba(234, 92, 0, 0.33);
   --md-selection: var(--vscode-editor-selectionBackground);
   /* High contrast themes paint the selection in a color ordinary text cannot be
      read against, and supply a foreground to draw selected text in. Themes that
@@ -638,21 +686,58 @@ body {
  * not on a measured width. Either would be a cycle: the class would set the padding, the padding
  * would change the room, and the room would change the class.
  *
- * **And held off while a column is being dragged, which `:not(.is-resizing)` does.** Without it a
- * drag that takes a table past its writing column made it pane-wide mid-gesture, so the content
- * jumped from 246 to 0 — and the grip went with it, leaving the pointer on nothing and the drag dead.
- * Measured: `is-pane-wide false, left 246, width 709` at rest, then `true, left 0, width 829` after a
- * 120px drag, and a further 400px drag changed nothing at all because the grip was no longer under
- * the pointer. A gesture that stops answering is a different category from a thing that moves: the
- * obvious next move is to drag again, which also does nothing, and that is how somebody concludes the
- * feature is broken.
+ * **The class is frozen while a column is being dragged, and that is done in `columnLayout.ts`
+ * rather than here.** A drag that takes a table past its writing column would otherwise make it
+ * pane-wide mid-gesture, moving the content from 246 to 0 and taking the grip with it, leaving the
+ * pointer on nothing and the drag dead. A gesture that stops answering is worse than a thing that
+ * moves: the obvious next move is to drag again, which also does nothing.
  *
- * So the table holds still under the pointer and finds its new edge when the drag ends. A resize of
- * the window across the same threshold still moves it, and that is accepted rather than overlooked:
- * during a window resize everything is already moving, so a table finding a new left edge reads as
- * reflow, while during a drag nothing else is moving and the table is the only event.
+ * This rule used to carry `:not(.is-resizing)` for that, and it held the wrong layout. A table that is
+ * **already** pane-wide carries `is-resizing` through every column drag as well, so the rule was
+ * suspended for the whole gesture and the table sat inset by the writing column's margin, then
+ * snapped to the pane's edge on release. It stood still under the pointer, in the position it was
+ * about to leave. Freezing the class holds whichever layout the table actually had.
+ *
+ * A window resize across the same threshold still moves it, which is accepted rather than
+ * overlooked: during a window resize everything is already moving, so a table finding a new left
+ * edge reads as reflow, while during a drag nothing else is moving and the table is the only event.
  */
-.sheaf-table.can-use-pane.is-pane-wide:not(.is-resizing) > .sheaf-table-grid {
+.sheaf-table.can-use-pane.is-pane-wide > .sheaf-table-grid {
+  padding-left: 0;
+  padding-right: var(--md-gutter);
+}
+/*
+ * The two labels above and below the grid line up with the grid, in both states.
+ *
+ * A data block's name (```csv id=tasks) and the note saying why a board is a grid again are the
+ * wrap's children, not the grid's, so the negative margins above put their boxes at the pane's edges
+ * and neither took any of the inset back. Measured at 1440: the grid's content at 366, level with the
+ * paragraph above it, and the caption's box `0..1440`, so a block's name sat in the pane's left gutter
+ * on its own, over nothing. It read correct on a table that had taken the pane, because there the grid
+ * is at 0 as well and the two agree again, which is why it survived four other findings about this
+ * mechanism.
+ *
+ * So these follow the grid rather than the prose: the same inset at rest, and the same drop to the
+ * pane's edge once the table took the pane. A label belongs over the thing it labels, and on a wide
+ * table that thing is at 0.
+ *
+ * Both edges, so a long name wraps inside the same column the grid's content occupies. The right
+ * padding is **not** the end-of-scroll signal the grid's is: nothing here scrolls, and a label that
+ * ran to the window's edge while the table stopped short would be the same disagreement the other way
+ * round.
+ *
+ * `.sheaf-table-controls` is deliberately not here. What matters about a bar is where it *ends*, so it
+ * is absolutely positioned and reconciled by its right edge from `--md-table-edge`. Three children,
+ * three mechanisms, and `scripts/check-wrap-children.mjs` is what keeps a fourth from being found by
+ * somebody noticing it.
+ */
+.sheaf-table.can-use-pane > .sheaf-table-caption,
+.sheaf-table.can-use-pane > .sheaf-table-board-note {
+  padding-left: var(--md-table-inset);
+  padding-right: var(--md-table-inset);
+}
+.sheaf-table.can-use-pane.is-pane-wide > .sheaf-table-caption,
+.sheaf-table.can-use-pane.is-pane-wide > .sheaf-table-board-note {
   padding-left: 0;
   padding-right: var(--md-gutter);
 }
@@ -1671,9 +1756,9 @@ body {
   transform: translateX(-50%);
   border: 1px solid var(--vscode-notifications-border, var(--md-rule));
   border-radius: 6px;
-  background: var(--vscode-notifications-background, var(--vscode-editorWidget-background, var(--vscode-editor-background, #fff)));
+  background: var(--vscode-notifications-background, var(--vscode-editorWidget-background, var(--vscode-editor-background, var(--md-surface))));
   color: var(--vscode-notifications-foreground, var(--md-text));
-  box-shadow: 0 2px 8px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.2));
+  box-shadow: 0 2px 8px var(--vscode-widget-shadow, var(--md-shadow));
   font-size: var(--sheaf-ui-secondary);
   line-height: 1.5;
 }
@@ -1831,7 +1916,7 @@ body {
 .sheaf-view-menu .sheaf-view-menu-apply {
   border-color: var(--vscode-button-background, var(--md-link));
   background: var(--vscode-button-background, var(--md-link));
-  color: var(--vscode-button-foreground, #fff);
+  color: var(--vscode-button-foreground, var(--md-on-accent));
 }
 .sheaf-view-menu button.is-disabled {
   opacity: 0.5;
@@ -2942,7 +3027,7 @@ body {
  * written, so it is a squiggle and nothing louder.
  */
 .md-math-error {
-  text-decoration: underline wavy var(--vscode-editorError-foreground, #e5534b);
+  text-decoration: underline wavy var(--vscode-editorError-foreground, var(--md-error));
   text-decoration-skip-ink: none;
   text-underline-offset: 0.2em;
 }
@@ -3027,13 +3112,13 @@ body {
   padding: 8px 12px;
   border-radius: 4px;
   background: var(--md-code-bg, color-mix(in srgb, var(--md-text) 5%, transparent));
-  font-family: var(--vscode-editor-font-family, ui-monospace, monospace);
+  font-family: var(--vscode-editor-font-family, var(--md-mono));
   font-size: 0.9em;
   white-space: pre;
 }
 .md-mermaid-message {
   margin: 0.4em 0 0;
-  color: var(--vscode-editorError-foreground, #e5534b);
+  color: var(--vscode-editorError-foreground, var(--md-error));
   font-size: 0.85em;
   white-space: pre-wrap;
 }
@@ -3325,7 +3410,7 @@ body {
   border-color: var(--vscode-focusBorder, var(--md-link));
 }
 .sheaf-find.is-invalid .sheaf-find-row:first-child .sheaf-find-field {
-  border-color: var(--vscode-inputValidation-errorBorder, var(--vscode-errorForeground, #e5534b));
+  border-color: var(--vscode-inputValidation-errorBorder, var(--vscode-errorForeground, var(--md-error)));
 }
 .sheaf-find-input {
   flex: 1 1 auto;
@@ -3431,11 +3516,11 @@ body {
 
 /* Matches use the workbench's own find colours, so they read the same as in a text editor. */
 .cm-editor .cm-content .cm-searchMatch {
-  background-color: var(--vscode-editor-findMatchHighlightBackground, rgba(234, 92, 0, 0.33));
+  background-color: var(--vscode-editor-findMatchHighlightBackground, var(--md-find-match-other));
   border-radius: 2px;
 }
 .cm-editor .cm-content .cm-searchMatch-selected {
-  background-color: var(--vscode-editor-findMatchBackground, rgba(81, 92, 106, 0.6));
+  background-color: var(--vscode-editor-findMatchBackground, var(--md-find-match));
   outline: 1px solid var(--vscode-editor-findMatchBorder, transparent);
 }
 /* A grid draws a match as the whole cell holding it, tinted with the same colours.
@@ -3895,7 +3980,7 @@ body {
  */
 :root {
   --sheaf-arrived: var(--vscode-editorGutter-modifiedBackground, var(--vscode-focusBorder, var(--md-link)));
-  --sheaf-arrived-deleted: var(--vscode-editorGutter-deletedBackground, var(--vscode-editorError-foreground, #e5534b));
+  --sheaf-arrived-deleted: var(--vscode-editorGutter-deletedBackground, var(--vscode-editorError-foreground, var(--md-error)));
 }
 body.vscode-high-contrast,
 body.vscode-high-contrast-light {

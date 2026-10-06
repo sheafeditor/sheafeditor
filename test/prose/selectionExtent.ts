@@ -11,7 +11,7 @@ import { Scenario, mountProse } from '../harness';
 import { coveredEnd } from '../../src/webview/selectionExtent';
 import { fillLineHeight, screenLineBoxes } from '../../src/webview/selectionHighlight';
 import { mountContextMenu } from '../../src/webview/contextmenu';
-import { setLivePreviewConfig } from '../../src/webview/livePreview';
+import { setLivePreviewConfig } from '../../src/webview/revealState';
 
 const G: any = globalThis;
 

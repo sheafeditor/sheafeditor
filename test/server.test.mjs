@@ -970,8 +970,17 @@ const cases = [
 
   ['the browser theme defines every colour variable the editor asks for', async () => {
     const here = join(import.meta.dirname, '..', 'media');
-    const stylesheet = await readFile(join(here, 'webview.css'), 'utf8');
-    const theme = await readFile(join(here, 'browser-theme.css'), 'utf8');
+    /*
+     * Comments come out of both files first, because this reads CSS as text and a
+     * comment is text. Without it, documenting the rule inside `webview.css` breaks
+     * the rule: writing `var(--vscode-x)` in a sentence about fallbacks is read as a
+     * use of a variable nothing defines. Which is exactly what happened when the
+     * comment at the top of that file was written, and it is the shape where a check
+     * forbids the thing that explains it.
+     */
+    const noComments = (text) => text.replace(/\/\*[\s\S]*?\*\//g, '');
+    const stylesheet = noComments(await readFile(join(here, 'webview.css'), 'utf8'));
+    const theme = noComments(await readFile(join(here, 'browser-theme.css'), 'utf8'));
     // A use with a fallback after the comma stands on its own, so it is not
     // this file's job to define it.
     const asked = new Set(

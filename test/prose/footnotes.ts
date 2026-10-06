@@ -12,8 +12,8 @@
  */
 
 import { Scenario, mountProse } from '../harness';
-import { setLivePreviewConfig } from '../../src/webview/livePreview';
-import { sheafMarkdownLanguage } from '../../src/webview/markdownDialect';
+import { setLivePreviewConfig } from '../../src/webview/revealState';
+import { sheafMarkdownLanguage } from '../../src/webview/markdownLanguage';
 import { footnoteIndex, footnoteJump } from '../../src/webview/footnotes';
 
 type P = ReturnType<typeof mountProse>;

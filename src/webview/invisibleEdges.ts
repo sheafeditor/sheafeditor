@@ -42,7 +42,7 @@
 import { EditorSelection, EditorState, findClusterBreak } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
 import { syntaxTree } from '@codemirror/language';
-import { activeLines, sourceModeOn } from './livePreview';
+import { activeLines, sourceModeOn } from './revealState';
 import { showingSource } from './lineStart';
 
 /**

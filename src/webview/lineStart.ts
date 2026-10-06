@@ -39,7 +39,7 @@
 import { EditorSelection, EditorState, Extension, SelectionRange } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
 import { blockRangeAt } from './blockModel';
-import { activeLines, sourceModeOn } from './livePreview';
+import { activeLines, sourceModeOn } from './revealState';
 
 /** Blocks whose lines are not prose, so nothing in them opens with a marker. */
 const NOT_PROSE = new Set(['code', 'table', 'frontmatter']);
