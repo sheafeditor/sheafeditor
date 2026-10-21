@@ -60,6 +60,8 @@ import { scenarios as sourceModeEdits } from './prose/sourceModeEdits';
 import { scenarios as literalMarks } from './prose/literalMarks';
 import { scenarios as revealOnLine } from './prose/revealOnLine';
 import { scenarios as linkTyping } from './prose/linkTyping';
+import { scenarios as mountFocus } from './prose/mountFocus';
+import { scenarios as mountRoundTrip } from './prose/mountRoundTrip';
 
 interface Result {
   name: string;
@@ -124,6 +126,8 @@ export async function runAll(): Promise<Result[]> {
     ...sourceModeEdits,
     ...literalMarks,
     ...linkTyping,
+    ...mountFocus,
+    ...mountRoundTrip,
   ] as Scenario[]) {
     /*
      * The live-preview config is a module-level variable, so a scenario that changes it and

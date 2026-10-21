@@ -417,6 +417,28 @@ export async function session(area, { settings = {} } = {}) {
       formats: () => app.evaluate(({ clipboard }) => clipboard.availableFormats()),
     },
 
+    /**
+     * Put the workspace's copy of `sample/` back to what the repository holds.
+     *
+     * **The corpus is copied once per session, not once per scenario**, so a scenario that opens a
+     * corpus file with `open` edits a file the next scenario will also open. Within a single run of
+     * an area that has always been true and the scenarios are written for it. It stops being true
+     * the moment a run is repeated: `--times` ran `blocks.drag.e13` twenty-five times and it passed
+     * once, on the first pass, because every later pass started from the document the pass before
+     * it had already dragged. Read as a rate that is "the product fails this drag 15 times in 16",
+     * which is wrong and is the worst kind of wrong, because the number looks like a measurement.
+     *
+     * So the repeat runner calls this between passes and every pass starts from the same bytes.
+     * Files a scenario made with `fresh` are left alone: they are written anew each time they are
+     * used, and deleting the whole workspace would take out the file VS Code currently has open.
+     *
+     * 44 of the scenarios read a corpus file this way against 722 that use `fresh`, so this is the
+     * small half, and it is the half where a repeat run is silently measuring something else.
+     */
+    resetWorkspace() {
+      cpSync(join(REPO, 'sample'), ws, { recursive: true });
+    },
+
     /** Open a workspace file (relative to the workspace) in Sheaf with Quick Open. */
     async open(rel) {
       current = join(ws, rel);

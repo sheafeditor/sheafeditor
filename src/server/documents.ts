@@ -92,8 +92,27 @@ export class OpenDocument implements SyncHost {
   private readonly subscribers = new Set<Subscriber>();
   private watcher: FSWatcher | undefined;
   private settle: ReturnType<typeof setTimeout> | undefined;
-  /** Set while this document is writing, so its own write is not read back as news. */
-  private writing = false;
+  /**
+   * How many changes of this document's own are in progress: a write between starting to put text
+   * in the file and knowing what it holds, and a keystroke from the tab between arriving and being
+   * worked into the file. Reading the file says nothing during either. A write leaves it part
+   * written, and a keystroke is planned against a text that a read of the file would move under it.
+   *
+   * A count rather than a flag because there can be several at once: the tab's keystroke, the write
+   * it makes, and the merge `reload` applies. Whichever finishes first must not declare the file
+   * settled while the others are still under way.
+   *
+   * This is state, not time. It used to be a flag cleared on a timer some 80ms after the write,
+   * and everything the watcher reported inside that period was thrown away, an agent's genuine
+   * write included. What tells this host's own write from somebody else's is what the file holds
+   * once nothing of ours is in it: `reload` compares that against `this.text`, so a read-back of
+   * what was just written finds nothing new however soon it comes, and anything else is news.
+   */
+  private writing = 0;
+  /** Counts the starts and ends of those changes, so a read can tell whether one overlapped it. */
+  private writeEpoch = 0;
+  /** True when the watcher settled while a change of ours was in progress, so the file is read once they are done. */
+  private changedWhileWriting = false;
 
   private constructor(
     readonly path: string,
@@ -135,37 +154,110 @@ export class OpenDocument implements SyncHost {
    * False means the file moved under the plan and the caller should plan again,
    * which is how a write that was prepared before somebody else's arrived is
    * kept from undoing it.
+   *
+   * `planned` is the text the offsets were read off, and it is compared as well as the
+   * file. The two answer different questions. The file read answers "did something else
+   * write this"; the comparison answers "is this document still what the plan describes",
+   * which a write of this host's own moves while leaving the file and `this.text`
+   * agreeing, so the read finds nothing wrong and the stale offsets land.
+   *
+   * The window host had exactly that fault and wrote a sentence into the file twice. This
+   * host was driven the same way and did not: with the merge in `reload` pushed to the tab
+   * and its write under way, a keystroke sent at six timings across that window, three
+   * runs each, left both changes in the file and nothing twice in all eighteen. So this
+   * comparison is the rule the two hosts now answer alike rather than a fix for anything
+   * measured here, and the file read above is what was already carrying it.
    */
-  async applyEdit(start: number, end: number, replacement: string): Promise<boolean> {
+  async applyEdit(start: number, end: number, replacement: string, planned: string): Promise<boolean> {
+    if (planned !== this.text) {
+      return false; // Moved since the plan, by a write of this host's own.
+    }
     let onDisk: string;
     try {
       onDisk = await readFile(this.path, 'utf8');
     } catch {
       return false; // Gone, or unreadable. Nothing to write into.
     }
+    if (planned !== this.text) {
+      /*
+       * The comparison above is repeated because the read took time. `reload` sets `this.text` to
+       * what it reads, and a read that finishes while this one is still out would leave the file
+       * and `this.text` agreeing on the new text, so the check below finds nothing wrong and the
+       * offsets, which name places in the text the plan was made against, land in this one.
+       * Measured: an outside write replacing a saved sentence with a shorter one, and a keystroke
+       * sent a few milliseconds before the watcher settled, wrote the keystroke into the middle of
+       * the next paragraph's last word.
+       */
+      return false;
+    }
     const current = onDisk.startsWith(BOM) ? onDisk.slice(1) : onDisk;
     if (current !== this.text) {
-      // Somebody else wrote between the plan and now. Take theirs and refuse.
+      // Somebody else wrote between the plan and now. Take theirs and refuse, rebased first onto
+      // what this host had already written when theirs was made from an older copy.
       this.bom = onDisk.startsWith(BOM);
-      this.text = current;
+      const rebased = this.rebaseOntoOwnWrites(current);
+      if (rebased === undefined || !(await this.putInFile(rebased))) this.text = current;
       return false;
     }
-    const next = this.text.slice(0, start) + replacement + this.text.slice(end);
-    this.writing = true;
+    return this.putInFile(this.text.slice(0, start) + replacement + this.text.slice(end));
+  }
+
+  /**
+   * Write `text` to the file and take it as what the file holds, or say it could not be.
+   *
+   * The count is raised for the length of the write because the file is part-written for a
+   * while, and the watcher settling then would read a half of one text or the other. That read is
+   * put off, not dropped: see `reload`. Once the write is over and `this.text` is what it
+   * wrote, the file is read as usual, and the echo of this write finds nothing new.
+   */
+  private async putInFile(text: string): Promise<boolean> {
+    this.begin();
     try {
-      await writeFile(this.path, this.bom ? BOM + next : next, 'utf8');
+      await writeFile(this.path, this.bom ? BOM + text : text, 'utf8');
+      this.text = text;
+      return true;
     } catch {
-      this.writing = false;
       return false;
+    } finally {
+      this.end();
     }
-    this.text = next;
-    // The watcher fires after the write lands, so the flag is dropped on a timer
-    // rather than immediately; `documentChanged` would drop the echo anyway, and
-    // this keeps the file from being read back for nothing on every keystroke.
-    setTimeout(() => {
-      this.writing = false;
-    }, WATCH_SETTLE_MS * 2);
-    return true;
+  }
+
+  /**
+   * A write from outside, found on disk as a keystroke is about to be written, put together with
+   * what this host had already written there: or undefined when it should be taken as it is.
+   *
+   * **This is the path `reload` cannot reach.** A keystroke that goes out inside the watcher's
+   * settle finds the write here first, before `reload` has read it, and the keystroke queue in
+   * `DocumentSync` then merges the person's text against the write using what the file last
+   * held as the base. That base already holds the person's saved sentence, so a write made from
+   * a copy taken before the sentence reads as somebody deleting it, and the sentence goes from
+   * the file with the next keystroke landing on the write's line instead. Measured, before this:
+   * a sentence saved, a write carrying the pre-save copy plus a paragraph, and a keystroke sent
+   * 0 to 25 ms after it, lost the sentence in eighteen drives out of eighteen.
+   *
+   * The base used here is `typing.baseline()`, the text before the person's oldest edit still in
+   * the window, which is what the write's author can have read. It is still on record at this
+   * point because nothing has reached the tab since the person typed: `forget` is only called
+   * once a document has been pushed, and here none has been yet.
+   *
+   * The two sides merged are the file as this host wrote it and the file as it now is, both
+   * without the keystroke in flight. That turns the write into what it would have been had its
+   * author read the saved file, and the keystroke queue then plans against that as an ordinary
+   * outside change, the case it already merges cleanly.
+   *
+   * The same guard `reload` and the window have: taken only when it genuinely combines the two.
+   * A merge that resolves to either side is a write that really conflicts, or one that changed
+   * nothing of the person's, and both go the way they went before.
+   */
+  private rebaseOntoOwnWrites(current: string): string | undefined {
+    const base = this.typing.baseline();
+    if (base === undefined) return undefined;
+    const ours = toWebviewText(this.text);
+    const theirs = toWebviewText(current);
+    const together = mergeOutsideChange(base, ours, theirs).text;
+    if (together === ours || together === theirs) return undefined;
+    return planEdit(current, together, firstEolIsCrlf(current))?.text;
   }
 
   setContent(text: string, tookTypedText: boolean): void {
@@ -188,7 +280,32 @@ export class OpenDocument implements SyncHost {
     // the notice then reads back to them.
     this.typing.record(this.webview, text);
     this.webview = text;
-    return this.sync.edit(text);
+    /*
+     * Counted for as long as the keystroke is being worked into the file, so `reload` does not take
+     * an outside write in at the same time. Both would put the same write together with the same
+     * typing, each against its own idea of what the person started from, and the second would add
+     * what the first had already added: a measured drive wrote the keystroke into the file twice.
+     * One of them goes first, and `reload` is the one that waits, because the keystroke's own
+     * write reads the file before it writes and meets the outside write there.
+     */
+    this.begin();
+    return this.sync.edit(text).finally(() => this.end());
+  }
+
+  /** A change of ours begins: until it ends, what the file holds is not news. */
+  private begin(): void {
+    this.writing++;
+    this.writeEpoch++;
+  }
+
+  /** A change of ours ends, and a change the watcher reported meanwhile is read now. */
+  private end(): void {
+    this.writing--;
+    this.writeEpoch++;
+    if (this.writing === 0 && this.changedWhileWriting) {
+      this.changedWhileWriting = false;
+      this.fileChanged();
+    }
   }
 
   subscribe(sub: Subscriber): () => void {
@@ -222,17 +339,30 @@ export class OpenDocument implements SyncHost {
     if (this.settle) clearTimeout(this.settle);
     this.settle = setTimeout(() => {
       this.settle = undefined;
-      if (this.writing) return;
       void this.reload();
     }, WATCH_SETTLE_MS);
   }
 
   private async reload(): Promise<void> {
+    const epoch = this.writeEpoch;
     let raw: string;
     try {
       raw = await readFile(this.path, 'utf8');
     } catch {
       return; // Deleted or replaced mid-write. The next change will bring it back.
+    }
+    if (this.writing > 0 || epoch !== this.writeEpoch) {
+      /*
+       * A change of this host's own was under way, began, or ended while the file was being read.
+       * A file being written holds a half of one text or the other, and one read just before a
+       * write is the file as it was, with `this.text` already past it. Taken for news, the first
+       * would be pushed to the tab as it stands and the second would put the tab back a keystroke
+       * while the file kept it. Nothing is lost by not looking: the file is read again once the
+       * changes are over, and by content.
+       */
+      if (this.writing > 0) this.changedWhileWriting = true;
+      else this.fileChanged();
+      return;
     }
     const text = raw.startsWith(BOM) ? raw.slice(1) : raw;
     if (text === this.text) return;
@@ -273,8 +403,9 @@ export class OpenDocument implements SyncHost {
      * `sync.edit` means the webview made an edit, so it plans and replans against the webview's own
      * state; given a merge it produced a plan against a text that had already moved and left the
      * write's line in the file twice, which is the one outcome `multipliesALine` exists to refuse.
-     * `applyEdit` is the document path, and it already holds `writing` across the write so the
-     * watcher does not read this host's own write back as news and merge against itself.
+     * `applyEdit` is the document path, and it already counts itself in `writing` across the write
+     * and sets `this.text` to what it wrote, so the watcher's read of this host's own write finds
+     * nothing new and does not merge against itself.
      */
     const base = this.typing.baseline();
     const together = base === undefined ? null : mergeOutsideChange(base, this.webview, arriving);
@@ -287,7 +418,7 @@ export class OpenDocument implements SyncHost {
         // The tab first, so it is holding the result before the file is written and there is no
         // moment where the two disagree in the direction a person would notice.
         this.sync.documentChanged(plan.text, false);
-        void this.applyEdit(plan.start, plan.end, plan.replacement);
+        void this.applyEdit(plan.start, plan.end, plan.replacement, this.text);
         return;
       }
     }

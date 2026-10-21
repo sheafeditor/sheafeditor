@@ -37,6 +37,23 @@
     "tables"
   ],
   "main": "./dist/extension.js",
+  "exports": {
+    ".": {
+      "types": "./lib/types/lib/index.d.ts",
+      "import": "./lib/index.js"
+    },
+    "./editor": {
+      "types": "./lib/types/lib/editor.d.ts",
+      "import": "./lib/editor.js"
+    },
+    "./render": {
+      "types": "./lib/types/lib/render.d.ts",
+      "import": "./lib/render.js"
+    },
+    "./chunks/*": "./lib/chunks/*",
+    "./webview.css": "./media/webview.css",
+    "./browser-theme.css": "./media/browser-theme.css"
+  },
   "activationEvents": [
     "onStartupFinished"
   ],
@@ -313,6 +330,7 @@
     "check-field-imports": "node scripts/check-field-imports.mjs",
     "check-render-safety": "node scripts/check-render-safety.mjs",
     "check-docs": "node scripts/check-docs.mjs",
+    "check-package": "node scripts/check-package.mjs",
     "check-private-terms": "node scripts/check-private-terms.mjs",
     "version": "node scripts/stamp-changelog.mjs && git add CHANGELOG.md",
     "stamp-changelog": "node scripts/stamp-changelog.mjs",
@@ -320,6 +338,7 @@
     "check-bundle-size": "node scripts/check-bundle-size.mjs",
     "check-demo-host": "node scripts/check-demo-host.mjs",
     "check-reveal": "node scripts/check-reveal.mjs",
+    "check-enter": "node scripts/check-enter.mjs",
     "check-samples": "node scripts/check-samples.mjs",
     "gen:corpus": "node scripts/gen-corpus.mjs",
     "gen:emoji": "node scripts/gen-emoji.mjs",
@@ -337,11 +356,14 @@
     "check-code-colours": "node scripts/check-code-colours.mjs",
     "check-hover-bar": "node scripts/check-hover-bar.mjs",
     "check-css-line-padding": "node scripts/check-css-line-padding.mjs",
+    "check-field-height": "node scripts/check-field-height.mjs",
     "check-diagrams": "node scripts/check-diagrams.mjs",
     "check-table-widths": "node scripts/check-table-widths.mjs",
     "check-cell-source": "node scripts/check-cell-source.mjs",
     "check-wrap-children": "node scripts/check-wrap-children.mjs",
+    "check-editor-whole": "node scripts/check-editor-whole.mjs",
     "check-lazy-retry": "node scripts/check-lazy-retry.mjs",
+    "check-mount-click": "node scripts/check-mount-click.mjs",
     "measure:tables": "node scripts/measure-tables.mjs",
     "profile:keystroke": "node scripts/profile-table-keystroke.mjs",
     "gates": "node scripts/gates.mjs",

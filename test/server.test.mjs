@@ -234,7 +234,203 @@ async function firstSetContent(origin, path, trigger) {
   }
 }
 
+/**
+ * A subscription held open, read a frame at a time.
+ *
+ * The helpers above open the stream, run a trigger and read until they have what they came for,
+ * so whatever the check does next happens after the stream has closed. A check that has to act
+ * *on the moment* a frame arrives, the way a person types on as soon as the tab shows a change,
+ * needs the frame handed over while the stream is still open: `next` resolves with the first
+ * frame matching `want`, or null once a second passes without one.
+ */
+async function openStream(origin, path) {
+  const control = new AbortController();
+  const res = await fetch(`${origin}/api/events?path=${encodeURIComponent(path)}`, {
+    headers: { 'x-sheaf-local': '1' },
+    signal: control.signal,
+  });
+  if (res.status !== 200) throw new Error(`the subscription answered ${res.status}`);
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  const frames = [];
+  let buffer = '';
+  const pump = (async () => {
+    try {
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) return;
+        buffer += decoder.decode(value, { stream: true });
+        const blocks = buffer.split('\n\n');
+        buffer = blocks.pop() ?? '';
+        for (const block of blocks) {
+          const name = block.split('\n', 1)[0];
+          if (!name.startsWith('event: ')) continue;
+          frames.push({
+            event: name.slice('event: '.length),
+            text: block.split('\n').filter((l) => l.startsWith('data: ')).map((l) => l.slice('data: '.length)).join('\n'),
+          });
+        }
+      }
+    } catch {
+      // Closed, which is how every use of this ends.
+    }
+  })();
+  let read = 0;
+  return {
+    frames,
+    async next(want) {
+      for (let i = 0; i < 1000; i++) {
+        while (read < frames.length) {
+          const frame = frames[read++];
+          if (want(frame)) return frame;
+        }
+        await new Promise((r) => setTimeout(r, 1));
+      }
+      return null;
+    },
+    close() {
+      control.abort();
+      return pump;
+    },
+  };
+}
+
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+
+const pause = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** The `node:fs/promises` the server was bundled against, whose functions it reads at each call. */
+const fsPromises = createRequire(import.meta.url)('node:fs/promises');
+
+/**
+ * Run `body` with the server's writes to `target` made slow: half the text, a pause of `gapMs`,
+ * then the rest. A disk that takes a while to write a file is the one way to hold the file
+ * part-written for long enough to look at it, and nothing else in this suite can.
+ */
+async function withSlowWrites(target, gapMs, body) {
+  const real = fsPromises.writeFile;
+  fsPromises.writeFile = async function (file, data, ...rest) {
+    if (file !== target) return real.call(this, file, data, ...rest);
+    const bytes = Buffer.from(data, 'utf8');
+    const half = Math.floor(bytes.length / 2);
+    const handle = await fsPromises.open(file, 'w');
+    try {
+      await handle.write(bytes.subarray(0, half));
+      await pause(gapMs);
+      await handle.write(bytes.subarray(half));
+    } finally {
+      await handle.close();
+    }
+  };
+  try {
+    return await body();
+  } finally {
+    fsPromises.writeFile = real;
+  }
+}
+
+/**
+ * Run `body` with the first read of `target` after this call returning what the file held when
+ * the read began, but only `lateMs` later. That is a read overtaken by a write, which on a quiet
+ * disk takes a fraction of a millisecond to arrange by luck and here takes a parameter.
+ */
+async function withLateFirstRead(target, lateMs, body) {
+  const real = fsPromises.readFile;
+  let armed = true;
+  fsPromises.readFile = async function (file, ...rest) {
+    const seen = await real.call(this, file, ...rest);
+    if (file === target && armed) {
+      armed = false;
+      await pause(lateMs);
+    }
+    return seen;
+  };
+  try {
+    return await body();
+  } finally {
+    fsPromises.readFile = real;
+  }
+}
+
+/**
+ * Run `body` with the first read of `target` after this call held back for `heldMs` before it
+ * reads anything. That is a keystroke whose check of the file is slow to start, which leaves a
+ * stretch in which the watcher can settle and the host can take in a write the keystroke has not
+ * seen, and which luck arranges only by the millisecond.
+ */
+async function withHeldFirstRead(target, heldMs, body) {
+  const real = fsPromises.readFile;
+  let armed = true;
+  fsPromises.readFile = async function (file, ...rest) {
+    if (file === target && armed) {
+      armed = false;
+      await pause(heldMs);
+    }
+    return real.call(this, file, ...rest);
+  };
+  try {
+    return await body();
+  } finally {
+    fsPromises.readFile = real;
+  }
+}
+
+/**
+ * Like `withHeldFirstRead`, but the hold waits to be armed: `body` is handed `arm`, and the first
+ * read of `target` after `arm()` is called is held back for `heldMs`. The reads before it, which
+ * the host makes on its own account, go through untouched.
+ */
+async function withHeldFirstReadAfter(target, heldMs, body) {
+  const real = fsPromises.readFile;
+  let armed = false;
+  fsPromises.readFile = async function (file, ...rest) {
+    if (file === target && armed) {
+      armed = false;
+      await pause(heldMs);
+    }
+    return real.call(this, file, ...rest);
+  };
+  try {
+    return await body(() => {
+      armed = true;
+    });
+  } finally {
+    fsPromises.readFile = real;
+  }
+}
+
+/**
+ * What the server serves for a document, asked while a tab is subscribed to it.
+ *
+ * The subscription matters: the server holds a document only while something is subscribed, and
+ * lets it go when the last tab does. Asked after the stream has closed, the server reads the file
+ * afresh and answers with what the file holds, which says nothing about the text it was holding.
+ */
+async function servedWhileSubscribed(get) {
+  return (await (await get('/api/doc?path=a.md')).json()).text;
+}
+
+/**
+ * One drive of: the tab saves, and a different program writes the file `delay` ms after the save
+ * returned. Says whether the tab was sent that program's text and whether the server, asked
+ * while the tab is still there, serves it. The server's answer is read off the API rather than
+ * the file, because the fault is a tab left holding text the file no longer has.
+ */
+async function outsideWriteAfterSave(delay) {
+  return serving({ 'a.md': 'Line one.\n' }, async ({ origin, root, get, post }) => {
+    const stream = await openStream(origin, 'a.md');
+    try {
+      const outside = 'Line one. typed\nWritten by somebody else.\n';
+      await post('/api/doc', { path: 'a.md', text: 'Line one. typed\n' });
+      await pause(delay);
+      await writeFile(join(root, 'a.md'), outside, 'utf8');
+      const told = (await stream.next((f) => f.text === outside)) !== null;
+      return { told, served: (await servedWhileSubscribed(get)) === outside };
+    } finally {
+      await stream.close();
+    }
+  });
+}
 
 /* --- The checks -------------------------------------------------------------- */
 
@@ -671,6 +867,213 @@ const cases = [
       return text === '# A from somewhere else\n';
     })],
 
+  /*
+   * A change on disk that arrives soon after the tab's own save.
+   *
+   * The host used to ignore everything the watcher reported for about 80ms after a write of its
+   * own, which was how it avoided reading that write back as news. A different program writing
+   * inside that window was ignored with it, and the tab went on holding text the file no longer
+   * had, with nothing to say so. The host now tells its own write from somebody else's by what
+   * the file holds, so the delay between the two does not matter and this sweeps it.
+   *
+   * Swept rather than tried at one value, and the delays past 80ms are the control: a check that
+   * passed at every delay, the long ones included, would not be reading the window at all. Three
+   * drives at each, because the settle timer and the write race each other by milliseconds.
+   */
+  ['a change from another program is seen at every delay after the tab saves', async () => {
+    let allSeen = true;
+    for (const delay of [0, 10, 40, 80, 200]) {
+      const results = [];
+      for (let run = 0; run < 3; run++) results.push(await outsideWriteAfterSave(delay));
+      const told = results.filter((r) => r.told).length;
+      const served = results.filter((r) => r.served).length;
+      if (told !== 3 || served !== 3) {
+        console.log(`   delay ${delay}ms: tab told in ${told} of 3, text served in ${served} of 3`);
+        allSeen = false;
+      }
+    }
+    return allSeen;
+  }],
+
+  /*
+   * The control for the check above: seeing every change must not mean seeing the host's own.
+   * The timer was there to stop the host reading its own write back as news, and a host that
+   * treated every read as news would pass the sweep and send the tab its own keystrokes, merged
+   * against themselves.
+   *
+   * Two forms of it. A burst of saves with nobody else writing sends the tab nothing. And a write
+   * that takes the disk a while, with the watcher settling while the file holds half of it, sends
+   * the tab nothing beyond the one frame that write is for: that half is neither the text before
+   * nor the text after, and reading it as somebody else's change is the one way a host judging by
+   * content gets this wrong.
+   *
+   * The slow write is the one the host makes when it puts an outside change together with typing.
+   * A keystroke's own write cannot show it, because the tab's edit is being worked in for as long
+   * as that write lasts and the tab is sent nothing meanwhile in any case: the first version of
+   * this check used one, and passed with the guard taken out.
+   */
+  ['the tab is sent nothing for the host\u2019s own saves, in a burst or on a slow disk', () =>
+    serving({ 'a.md': 'Line one.\n' }, async ({ origin, root, get, post, read }) => {
+      const stream = await openStream(origin, 'a.md');
+      try {
+        const burst = ['a', 'ab', 'abc', 'abcd', 'abcde'].map((t) => `Line one. ${t}\n`);
+        for (const text of burst) {
+          await post('/api/doc', { path: 'a.md', text });
+          await pause(15);
+        }
+        await pause(300);
+        if (stream.frames.length !== 0 || (await read('a.md')) !== burst.at(-1)) {
+          console.log(`   burst: ${stream.frames.length} frames sent, file ${JSON.stringify(await read('a.md'))}`);
+          return false;
+        }
+        const target = join(root, 'a.md');
+        // A copy from before the burst, with a line of its own: put together with the typing, which
+        // the host then writes back, slowly.
+        const merged = 'Line one. abcde\nAppended elsewhere.\n';
+        await withSlowWrites(target, 250, async () => {
+          await writeFile(target, 'Line one.\nAppended elsewhere.\n', 'utf8');
+          await stream.next(() => true);
+          await pause(600);
+        });
+        const served = await servedWhileSubscribed(get);
+        const frames = stream.frames.map((f) => f.text);
+        if (frames.length !== 1 || frames[0] !== merged || served !== merged || (await read('a.md')) !== merged) {
+          console.log(`   slow disk: ${frames.length} frames sent ${JSON.stringify(frames)}, served ${JSON.stringify(served)}`);
+          return false;
+        }
+        return true;
+      } finally {
+        await stream.close();
+      }
+    })],
+
+  /*
+   * A read that a save overtakes.
+   *
+   * The watcher settles, the file is read, and while that read is on its way a keystroke is saved.
+   * The read returns the file as it was before the save, which is not what the host now holds, and
+   * taken as somebody else's change it puts the tab back a keystroke while the file keeps it. With
+   * the host ignoring the watcher for a while after each save this could not happen; judging by
+   * content, it can, so a read that a save overtook is read again.
+   *
+   * The late read is arranged rather than hoped for, by holding the first read back after it has
+   * taken its copy of the file. The first read is the one the watcher causes: the write below
+   * leaves the file as it was, which is all it takes to wake the watcher.
+   */
+  ['a read of the file that a save overtakes is not taken for a change from outside', () =>
+    serving({ 'a.md': 'Line one.\n' }, async ({ origin, root, get, post, read }) => {
+      const stream = await openStream(origin, 'a.md');
+      try {
+        const target = join(root, 'a.md');
+        const typed = 'Line one. typed while the read was on its way\n';
+        await withLateFirstRead(target, 300, async () => {
+          await writeFile(target, 'Line one.\n', 'utf8');
+          await pause(120);
+          await post('/api/doc', { path: 'a.md', text: typed });
+          await pause(450);
+        });
+        const served = await servedWhileSubscribed(get);
+        if (stream.frames.length !== 0 || served !== typed || (await read('a.md')) !== typed) {
+          console.log(`   overtaken read: ${stream.frames.length} frames sent ${JSON.stringify(stream.frames.map((f) => f.text))}, served ${JSON.stringify(served)}`);
+          return false;
+        }
+        return true;
+      } finally {
+        await stream.close();
+      }
+    })],
+
+  /*
+   * A keystroke planned before a write arrived, applied after the host has taken the write in.
+   *
+   * The keystroke's offsets name places in the text it was planned against. Its check of the file
+   * runs after that, and a write that lands in between is read by the watcher in the meantime, so
+   * by the time the check answers the file and the host agree on the write's text and nothing
+   * looks wrong. The offsets are then applied to a text they were not read off. Here the write
+   * replaces a sentence with a much shorter one, so the keystroke's place is past the end of the
+   * paragraph it was meant for and the " More." goes into the middle of the last word.
+   *
+   * What the file ends up holding is the person's text or the write's text with the keystroke
+   * made to it, whichever the merge decides; what it must not hold is a splice of the two.
+   */
+  ['a keystroke planned before a write arrived is not applied to the text the write left', () =>
+    serving(
+      { 'a.md': 'Alpha line one.\n\nBravo line two. And a sentence the person wrote themselves.\n\nCharlie line three.\n' },
+      async ({ origin, root, get, post, read }) => {
+        const stream = await openStream(origin, 'a.md');
+        try {
+          const target = join(root, 'a.md');
+          const person = 'Alpha line one.\n\nBravo line two. And a sentence the person wrote themselves. More.\n\nCharlie line three.\n';
+          const write = 'Alpha line one.\n\nBravo line two. And a corrected sentence.\n\nCharlie line three.\n';
+          const together = 'Alpha line one.\n\nBravo line two. And a corrected sentence. More.\n\nCharlie line three.\n';
+          await withHeldFirstRead(target, 250, async () => {
+            const keystroke = post('/api/doc', { path: 'a.md', text: person });
+            await pause(20);
+            await writeFile(target, write, 'utf8');
+            await keystroke;
+            await pause(300);
+          });
+          const onDisk = await read('a.md');
+          const served = await servedWhileSubscribed(get);
+          if ((onDisk !== person && onDisk !== together) || served !== onDisk) {
+            console.log(`   spliced: file ${JSON.stringify(onDisk)}, served ${JSON.stringify(served)}`);
+            return false;
+          }
+          return true;
+        } finally {
+          await stream.close();
+        }
+      }
+    )],
+
+  /*
+   * A keystroke whose read of the file is overtaken by the host's own write.
+   *
+   * When the host puts an outside change together with typing it writes the result back, and a
+   * keystroke that arrives while that write is under way is planned against the text from before
+   * it. The write then finishes during the keystroke's read of the file, so the read finds the
+   * file and the document agreeing on the new text and the offsets, which name places in the old
+   * one, land in it. The write is slowed and the keystroke's read held back so the overlap is
+   * certain rather than a matter of a millisecond.
+   */
+  ['a keystroke is not applied to the text a write of the host\u2019s own left behind it', () =>
+    serving(
+      { 'a.md': 'Alpha line one.\n\nBravo line two.\n\nCharlie line three.\n' },
+      async ({ origin, root, get, post, read }) => {
+        const stream = await openStream(origin, 'a.md');
+        try {
+          const target = join(root, 'a.md');
+          const phrase = ' And a sentence the person wrote themselves.';
+          const saved = 'Alpha line one.\n\nBravo line two.' + phrase + '\n\nCharlie line three.\n';
+          await post('/api/doc', { path: 'a.md', text: saved });
+          await pause(300);
+          // A copy from before the sentence, with a paragraph the host has to put together with it.
+          const write = 'Alpha line one.\n\nBravo line two.\n\nA paragraph an agent added.\n\nCharlie line three.\n';
+          const together = saved.replace('Charlie line three.', 'A paragraph an agent added.\n\nCharlie line three.');
+          const final = together.replace(phrase, phrase + ' More.');
+          await withSlowWrites(target, 200, () =>
+            withHeldFirstReadAfter(target, 350, async (arm) => {
+              await writeFile(target, write, 'utf8');
+              const frame = await stream.next(() => true);
+              if (frame?.text !== together) return;
+              arm();
+              await post('/api/doc', { path: 'a.md', text: frame.text.replace(phrase, phrase + ' More.') });
+              await pause(500);
+            })
+          );
+          const onDisk = await read('a.md');
+          const served = await servedWhileSubscribed(get);
+          if (onDisk !== final || served !== final) {
+            console.log(`   file ${JSON.stringify(onDisk)}, served ${JSON.stringify(served)}`);
+            return false;
+          }
+          return true;
+        } finally {
+          await stream.close();
+        }
+      }
+    )],
+
   /* A write from outside that lands on top of unsaved typing.
    *
    * This is the race the editor is meant to be open in: somebody types, the save follows a
@@ -710,6 +1113,104 @@ const cases = [
       await new Promise((r) => setTimeout(r, 300));
       const onDisk = await readFile(join(root, 'a.md'), 'utf8');
       return frame?.event === 'setContent' && frame.text === both && onDisk === both;
+    })],
+
+  /*
+   * The same write, with the person still typing when it arrives.
+   *
+   * The check above stops once the merge is shown. A person does not: the tab shows the merged
+   * text, and their next keystroke goes out while the merge is still on its way to the disk. That
+   * keystroke is planned against what this host holds as the document, and for the length of the
+   * merge's write that is the write as it arrived, without the sentence. Planned against that, the
+   * keystroke reads as somebody else having deleted the sentence, and the sentence goes.
+   *
+   * The file is read, not the frame, because the file is the store. The keystroke is sent on the
+   * moment the merged frame reaches the tab, at six timings into the merge's write, because the
+   * window is that write's round trip and one timing can miss it.
+   */
+  ['a write carrying the file from before a saved sentence keeps it when the person types on through the merge', async () => {
+    const doc = 'Alpha line one.\n\nBravo line two.\n\nCharlie line three.\n';
+    const phrase = ' And a sentence the person wrote themselves.';
+    const agent = doc.replace('Charlie line three.', 'A paragraph an agent added.\n\nCharlie line three.');
+    const want = doc.replace('Bravo line two.', `Bravo line two.${phrase}`).replace('Charlie line three.', 'A paragraph an agent added.\n\nCharlie line three.');
+    const more = ' More.';
+    const after = want.replace(phrase, phrase + more);
+    const results = [];
+    // Six timings across the merge's own write, three runs each: the window is that write's round
+    // trip to the disk, and a single pass at one timing can land either side of it.
+    for (const before of [true, false])
+    for (const delay of [0, 5, 10, 15, 20, 25]) {
+      for (let run = 0; run < 3; run++) {
+        results.push(
+          await serving({ 'a.md': doc }, async ({ origin, root, post, read }) => {
+            const stream = await openStream(origin, 'a.md');
+            try {
+              const saved = doc.replace('Bravo line two.', `Bravo line two.${phrase}`);
+              // Typed a key at a time, each one posted after the last was taken, which is how the tab
+              // sends them.
+              const at = doc.indexOf('Bravo line two.') + 'Bravo line two.'.length;
+              for (let i = 1; i <= phrase.length; i++) {
+                await post('/api/doc', { path: 'a.md', text: doc.slice(0, at) + phrase.slice(0, i) + doc.slice(at) });
+                await new Promise((r) => setTimeout(r, 15));
+              }
+              if (!(await until(async () => (await read('a.md')) === saved))) return `${delay}ms: the sentence never reached the file`;
+              // The auto-save debounce in a window, and long past this host's own writes.
+              await new Promise((r) => setTimeout(r, 620));
+              await writeFile(join(root, 'a.md'), agent, 'utf8');
+              if (before) {
+                // The next keystroke goes out before the host has noticed the write, so the tab is
+                // still holding the saved text and knows nothing of the paragraph.
+                await new Promise((r) => setTimeout(r, delay));
+                await post('/api/doc', { path: 'a.md', text: saved.replace(phrase, phrase + more) });
+              } else {
+                // The person goes on typing the moment the tab shows the write: the merged frame.
+                const frame = await stream.next((f) => f.event === 'setContent' || f.event === 'contentTookTypedText');
+                if (!frame) return `${delay}ms: no frame reached the tab`;
+                if (frame.text !== want) return `${delay}ms: the tab was shown ${JSON.stringify(frame.text)}`;
+                await new Promise((r) => setTimeout(r, delay));
+                await post('/api/doc', { path: 'a.md', text: frame.text.replace(phrase, phrase + more) });
+              }
+              await until(async () => (await read('a.md')) === after);
+              await new Promise((r) => setTimeout(r, 200));
+              const onDisk = await read('a.md');
+              return onDisk === after ? 'kept' : `${delay}ms: file ${JSON.stringify(onDisk)}`;
+            } finally {
+              stream.close();
+            }
+          })
+        );
+      }
+    }
+    const lost = results.filter((r) => r !== 'kept');
+    if (lost.length) console.log(`    ${lost.length} of ${results.length} lost something: ${lost.slice(0, 3).join(' | ')}`);
+    return lost.length === 0;
+  }],
+
+  /*
+   * The control for the check above: a write that replaces the person's saved sentence with a
+   * different one is not rebased. It was made from a copy that held the sentence, so it is a real
+   * change to the person's words rather than a write that is merely behind, the merge refuses, and
+   * the keystroke goes exactly the way it went before the rebase existed. A rebase that always
+   * preferred the person would pass the check above and fail this one.
+   */
+  ['a write that replaces a saved sentence with its own is not rebased onto it', () =>
+    serving({ 'a.md': 'Alpha line one.\n\nBravo line two.\n' }, async ({ origin, root, post, read }) => {
+      const stream = await openStream(origin, 'a.md');
+      try {
+        const saved = 'Alpha line one.\n\nBravo line two. And a saved sentence.\n';
+        await post('/api/doc', { path: 'a.md', text: saved });
+        if (!(await until(async () => (await read('a.md')) === saved))) return false;
+        await new Promise((r) => setTimeout(r, 300));
+        await writeFile(join(root, 'a.md'), 'Alpha line one.\n\nBravo line two. And a corrected sentence.\n', 'utf8');
+        await post('/api/doc', { path: 'a.md', text: saved.replace('sentence.', 'sentence. More.') });
+        await new Promise((r) => setTimeout(r, 300));
+        const onDisk = await read('a.md');
+        // The write's sentence stands, and the keystroke after it.
+        const want = 'Alpha line one.\n\nBravo line two. And a corrected sentence. More.\n';
+        return onDisk === want || (console.log(`    file ${JSON.stringify(onDisk)}`), false);
+      } finally {
+        stream.close();
+      }
     })],
 
   /* And the words to say, quoting what was taken.
@@ -900,6 +1401,22 @@ const cases = [
       return reread.text === 'original edited\n';
     })],
 
+  /*
+   * The same question the window was asked, and this host's answer is different.
+   *
+   * The window had three things writing one document without waiting for each other, and
+   * a plan made inside another write's round trip was measured against a document that
+   * had already moved, so a sentence went into the file twice. This host has two writers
+   * and one path to the file, and that path reads the file before it writes.
+   *
+   * Driven the same way, it does not double anything: with the merge in `reload` pushed to
+   * the tab and its write under way, a keystroke sent at six timings across that window,
+   * three runs each, left both changes in the file and nothing twice in all eighteen.
+   *
+   * No check is left here for it, because the drive needs the keystroke sent on the moment
+   * the merged frame reaches the tab, and a check written without that timing would pass
+   * without having looked. Reaching the window needs a helper this suite does not have.
+   */
   /* A folder with a lot in it. */
 
   ['a folder of several hundred documents lists all of them, in order, without taking a noticeable pause', () =>

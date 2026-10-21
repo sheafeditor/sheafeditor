@@ -14,6 +14,9 @@ import { join } from 'node:path';
 import { spawn } from 'node:child_process';
 import { complaintFor, readVerdict } from '../scripts/lib/gateOutput.mjs';
 import { runGates } from '../scripts/lib/gateRun.mjs';
+import { STEPS } from '../scripts/lib/gateSteps.mjs';
+import { SUBJECTS, checkPattern, localImports, selectSteps, subjectGaps, unclaimed } from '../scripts/lib/gateTier.mjs';
+import { parseArgs } from './real-editor/args.mjs';
 import {
   ago,
   holderProgress,
@@ -37,6 +40,62 @@ const j = (x) => JSON.stringify(x);
 
 /** A scratch directory of its own per check, so one cannot leave a lock for the next. */
 const scratch = () => mkdtempSync(join(tmpdir(), 'sheaf-harness-'));
+
+/*
+ * The runner's command line. Four lines of parsing, wrong twice, and both times in the one
+ * direction that matters: it selected nothing and the run reported a clean 0/0 and exit 0.
+ * A parse fault that produces an empty selection is indistinguishable from a passing run,
+ * which is why these are here rather than trusted to be obvious.
+ */
+check('an area alone is the area, with one pass and no filter', () => {
+  const r = parseArgs(['blocks']);
+  return { ok: r.ok && r.area === 'blocks' && r.only === null && r.times === 1, detail: j(r) };
+});
+
+check('an area and an id substring keep both', () => {
+  const r = parseArgs(['blocks', 'blocks.drag.e01']);
+  return { ok: r.ok && r.area === 'blocks' && r.only === 'blocks.drag.e01' && r.times === 1, detail: j(r) };
+});
+
+check('--times after the area does not become the id filter', () => {
+  const r = parseArgs(['blocks', '--times', '300']);
+  return { ok: r.ok && r.area === 'blocks' && r.only === null && r.times === 300, detail: j(r) };
+});
+
+check('--times after an id filter keeps the filter and the count', () => {
+  const r = parseArgs(['blocks', 'blocks.drag.e01', '--times', '50']);
+  return { ok: r.ok && r.area === 'blocks' && r.only === 'blocks.drag.e01' && r.times === 50, detail: j(r) };
+});
+
+check('another flag beside --times is ignored and takes nothing with it', () => {
+  const r = parseArgs(['blocks', '--no-wait', 'blocks.drag', '--times', '7']);
+  return { ok: r.ok && r.area === 'blocks' && r.only === 'blocks.drag' && r.times === 7, detail: j(r) };
+});
+
+/*
+ * The refusals. Each of these used to be a run that measured nothing and said it passed, so
+ * the check is that the parse refuses rather than that it returns something harmless.
+ */
+check('no area is refused rather than defaulted', () => {
+  const r = parseArgs([]);
+  return { ok: r.ok === false && r.why.length > 0, detail: j(r) };
+});
+
+check('--times with a word, a fraction or a zero is refused, and the reason names the value', () => {
+  const bad = [['blocks', '--times', 'lots'], ['blocks', '--times', '2.5'], ['blocks', '--times', '0'], ['blocks', '--times']];
+  const rs = bad.map((a) => parseArgs(a));
+  return {
+    ok: rs.every((r) => r.ok === false && /--times/.test(r.why)),
+    detail: rs.map(j).join(' '),
+  };
+});
+
+check('CONTROL: a command that should work is not refused by the same guard', () => {
+  // The complement of the refusals above. Without it, a parser that refused everything
+  // would pass every one of them.
+  const rs = [parseArgs(['blocks']), parseArgs(['blocks', '--times', '1']), parseArgs(['blocks', 'x', '--times', '999'])];
+  return { ok: rs.every((r) => r.ok === true), detail: rs.map(j).join(' ') };
+});
 
 check('the first run takes the lock and the second is told who holds it', () => {
   const dir = scratch();
@@ -746,6 +805,187 @@ check('a green run says how many gates it passed, so a shrinking number is visib
     // shape of the fault this whole change is about.
     ok: r.status === 0 && outs.includes('All 23 of 23 gates passed') && short.ran === 9,
     detail: `${j(outs.trim())}; the nine-gate run reported ran ${short.ran} of ${short.total}`,
+  };
+});
+
+/*
+ * Which gates a change has to run, which is the other half of "which gates get reached".
+ *
+ * Driven with steps of this suite's own for the same reason the loop above is: what is being
+ * asserted is a selection, and asking it of the real gates would mean ten minutes per answer and
+ * no way to present a change that touches exactly one gate's area. The checks that are about the
+ * real mapping say so and use the real `STEPS`.
+ */
+const tierSteps = () => [
+  ['Cheap one', 'noop', ['/repo/scripts/check-cheap-one.mjs']],
+  ['Cheap two', 'noop', ['/repo/scripts/check-cheap-two.mjs']],
+  ['Alpha', 'noop', ['/repo/scripts/check-alpha.mjs'], ['src/alpha/**']],
+  ['Beta', 'noop', ['/repo/scripts/check-beta.mjs'], ['src/beta/**']],
+  ['Both', 'noop', ['/repo/scripts/check-both.mjs'], ['src/alpha/**', 'src/beta/**']],
+];
+const ranIn = (r) => r.run.map(([l]) => l);
+
+check('a change in one gate’s area runs that gate and leaves the others out', () => {
+  const r = selectSteps({ steps: tierSteps(), changed: ['src/alpha/thing.ts'], base: 'abc', repo: '/repo' });
+  const ran = ranIn(r);
+  return {
+    ok:
+      ran.length === 4 &&
+      ran.includes('Cheap one') &&
+      ran.includes('Cheap two') &&
+      ran.includes('Alpha') &&
+      ran.includes('Both') &&
+      !ran.includes('Beta'),
+    detail: `ran ${j(ran)}; Beta left out because ${j(r.selected.find((s) => s.label === 'Beta'))}`,
+  };
+});
+
+check('a change touching nothing conditional runs the cheap tier alone', () => {
+  /*
+   * The control for the check above, and the one that matters: "Alpha ran" is also true of a
+   * selector that has lost the ability to leave anything out, and a selector that runs everything
+   * is the state this change is trying to move away from. Here nothing conditional may run.
+   */
+  const r = selectSteps({ steps: tierSteps(), changed: ['CHANGELOG.md', 'docs/02-settings.md'], base: 'abc', repo: '/repo' });
+  return {
+    ok: ranIn(r).length === 2 && r.selected.every((s) => s.by === null),
+    detail: `ran ${j(ranIn(r))}`,
+  };
+});
+
+check('no base commit runs every gate, rather than quietly running none of them', () => {
+  /*
+   * Every undecidable case has to fail towards running too much. A clone with no `origin/main`, a
+   * detached head, a tree git cannot be asked about: each of those is a selector with no evidence,
+   * and a selector with no evidence that returned the cheap tier would be the whole bar gone with
+   * a green line over it.
+   */
+  const none = selectSteps({ steps: tierSteps(), changed: [], base: null, repo: '/repo' });
+  const forced = selectSteps({ steps: tierSteps(), changed: ['esbuild.mjs'], base: 'abc', repo: '/repo' });
+  return {
+    ok: ranIn(none).length === 5 && none.everything && ranIn(forced).length === 5 && forced.everything,
+    detail: `no base ran ${ranIn(none).length}, a change to esbuild.mjs ran ${ranIn(forced).length}, of 5`,
+  };
+});
+
+check('a path nothing claims is reported, and naming it in a subject is what stops it', () => {
+  /*
+   * The check this design most depends on. A path claimed by nothing runs the cheap tier alone,
+   * so an expensive gate silently never runs for it and the run is green. Both directions are
+   * asserted, because "nothing unclaimed" is also what a function that always returns an empty
+   * list says: the first call has to find the stray and the second, with it claimed, has to not.
+   */
+  const population = ['src/alpha/a.ts', 'src/beta/b.ts', 'src/stray/c.ts'];
+  const before = unclaimed({ steps: tierSteps(), population });
+  const claimed = [...tierSteps(), ['Gamma', 'noop', ['/repo/scripts/check-gamma.mjs'], ['src/stray/**']]];
+  const after = unclaimed({ steps: claimed, population });
+  return {
+    ok: before.length === 1 && before[0] === 'src/stray/c.ts' && after.length === 0,
+    detail: `unclaimed ${j(before)}; once a gate claims src/stray/** ${j(after)}`,
+  };
+});
+
+check('a subject narrowed below its artefact’s closure is caught, and names what it lost', () => {
+  /*
+   * The break that the per-path sweep above cannot see. Narrow a subject to one of the files its
+   * bundle is built from and every path in the tree is still claimed by something, while every
+   * gate reading that subject has quietly stopped running for most of the editor. What catches it
+   * is the metafile: the sources esbuild really pulled in, from the build in the same run.
+   */
+  const dir = scratch();
+  mkdirSync(join(dir, 'meta'), { recursive: true });
+  writeFileSync(
+    join(dir, 'meta', 'm.json'),
+    JSON.stringify({ inputs: { 'src/webview/main.ts': {}, 'src/webview/tables.ts': {}, 'node_modules/x/y.js': {} } })
+  );
+  const artefact = { built: 'media/webview.js', metafile: 'meta/m.json' };
+  const whole = subjectGaps(dir, { patterns: ['src/webview/**'] }, artefact);
+  const narrowed = subjectGaps(dir, { patterns: ['src/webview/tables.ts'] }, artefact);
+  const absent = subjectGaps(dir, { patterns: ['src/webview/**'] }, { built: 'x', metafile: 'meta/gone.json' });
+  rmSync(dir, { recursive: true, force: true });
+  return {
+    ok:
+      whole.missing.length === 0 &&
+      whole.closure.length === 2 &&
+      narrowed.missing.length === 1 &&
+      narrowed.missing[0] === 'src/webview/main.ts' &&
+      absent === null,
+    detail:
+      `the whole subject leaves ${j(whole.missing)} uncovered of ${whole.closure.length} repository inputs; ` +
+      `narrowed to one file it leaves ${j(narrowed.missing)}; a missing metafile gives ${j(absent)}`,
+  };
+});
+
+check('a pattern that is neither an exact path nor a directory refuses to be a pattern', () => {
+  /*
+   * A pattern like `src/*.ts` that silently matched nothing would be a gate covering less than
+   * its line says, which is this design's whole fault shape. So the form is narrow and anything
+   * else throws where it is written rather than where it fails to match.
+   */
+  const threw = (p) => {
+    try {
+      checkPattern(p);
+      return false;
+    } catch {
+      return true;
+    }
+  };
+  return {
+    ok:
+      threw('src/*.ts') &&
+      threw('src/**/*.ts') &&
+      threw('/src/webview/**') &&
+      !threw('src/webview/**') &&
+      !threw('src/textSync.ts'),
+    detail: `src/*.ts ${threw('src/*.ts')}, src/**/*.ts ${threw('src/**/*.ts')}, src/webview/** ${threw('src/webview/**')}`,
+  };
+});
+
+check('a gate’s own helpers are read off its imports rather than listed beside it', () => {
+  /*
+   * Six gates import `serve-for-check.mjs` and two import `lib/editorDom.mjs`, so an edit to
+   * either has to run them. Declaring that in each gate's covers would be a second copy of import
+   * lines that are already in the files, and the copy is what goes stale.
+   */
+  const repo = join(import.meta.dirname, '..');
+  const reach = localImports(repo, 'scripts/check-paging.mjs');
+  const widths = selectSteps({ steps: STEPS, changed: ['scripts/serve-for-check.mjs'], base: 'abc', repo });
+  const running = widths.selected.filter((s) => s.by).map((s) => s.label);
+  return {
+    ok:
+      reach.has('scripts/serve-for-check.mjs') &&
+      reach.has('scripts/check-paging.mjs') &&
+      running.includes('Paging') &&
+      running.includes('Table widths') &&
+      !running.includes('Editing matrix'),
+    detail:
+      `check-paging reaches ${reach.size} local modules including serve-for-check ${reach.has('scripts/serve-for-check.mjs')}; ` +
+      `a change to serve-for-check runs ${j(running)}`,
+  };
+});
+
+check('every conditional gate in the real list declares subjects that exist', () => {
+  /*
+   * About the real mapping rather than the selector. A `covers` entry that is neither a subject
+   * name nor a valid pattern would quietly match nothing, so the gate would run for a narrower
+   * set of changes than its line claims. `check-gate-tiers.mjs` asks the same question of the
+   * tree; this asks it without a build, so a typo fails in a second.
+   */
+  const conditional = STEPS.filter((s) => Array.isArray(s[3]));
+  const bad = [];
+  for (const [label, , , covers] of conditional) {
+    for (const name of covers) {
+      if (SUBJECTS[name]) continue;
+      try {
+        checkPattern(name);
+      } catch {
+        bad.push(`${label}: ${name}`);
+      }
+    }
+  }
+  return {
+    ok: conditional.length > 0 && bad.length === 0,
+    detail: `${conditional.length} conditional gates of ${STEPS.length}; unknown covers ${j(bad)}`,
   };
 });
 

@@ -42,10 +42,11 @@
  */
 
 import { Decoration, EditorView, WidgetType } from '@codemirror/view';
-import { EditorState, StateEffect } from '@codemirror/state';
+import { EditorState } from '@codemirror/state';
 import { syntaxTree } from '@codemirror/language';
 import { SyntaxNode, Tree } from '@lezer/common';
 import type { KatexOptions } from 'katex';
+import { lazyResource } from './lazyResource';
 
 /**
  * KaTeX is fetched when a document first shows an equation, not when the editor loads.
@@ -63,30 +64,49 @@ import type { KatexOptions } from 'katex';
  */
 type Katex = typeof import('katex').default;
 
-let katex: Katex | null = null;
-let pending: Promise<void> | null = null;
-let wanted = false;
-let attempts = 0;
-let load: () => Promise<Katex> = async () => (await import('katex')).default;
+const resource = lazyResource<Katex>({
+  name: 'maths',
+  readyName: 'mathsReady',
+  getName: 'mathError() or before building a widget',
+  load: async () => (await import('katex')).default,
+  /*
+   * The error cache goes with the library, and that is a change rather than a move.
+   *
+   * `errors` holds, per source, whether KaTeX could typeset it. That is a property of the source and
+   * of the library reading it, so a different KaTeX is entitled to a different answer. Before this,
+   * `setMathsLoader` cleared the cache and `provideMaths` did not, which is a distinction neither
+   * function's comment claims and that nothing relies on: both are entry points for supplying the
+   * library, and a cache of derived facts about a library that has just been replaced is stale by
+   * definition.
+   *
+   * **Clearing it on both cannot be stale, which is not the same as cannot be wrong.** It costs a
+   * re-typeset of every equation on each supply, and a source KaTeX genuinely cannot typeset is
+   * re-asked and re-fails on each one. `provideMaths`'s only caller outside the checks is
+   * `mountProse`, which runs on every mount, so a suite mounting hundreds of times pays that
+   * hundreds of times and nothing measures it. The trade is worth taking and it is a trade: if a
+   * suite's time ever matters, this is one of the places to look, and a comment claiming the choice
+   * could not be wrong is what would stop somebody looking.
+   */
+  onReset: () => {
+    errors.clear();
+  },
+});
 
-/**
- * How many times a failed fetch is started again before KaTeX is called lost.
+/*
+ * **The bounded retry above replaces a decision to never retry, and that decision's reason was
+ * right about the thing it weighed.** It said: "A failed load leaves `katex` null for ever rather
+ * than retrying per pass, so a document full of equations does not become a document full of
+ * requests." `loadMaths` is called from a view plugin's `update`, which runs on every transaction,
+ * so an uncapped retry really is one request per keystroke on a page whose policy blocks the chunk.
  *
- * **This replaces a decision to never retry, and the reason that decision gave was right about the
- * thing it was weighing.** It said: "A failed load leaves `katex` null for ever rather than
- * retrying per pass, so a document full of equations does not become a document full of requests."
- * `loadMaths` is called from the view plugin's `update`, which runs on every transaction, so an
- * uncapped retry really is one request per keystroke on a page whose policy blocks the chunk.
- *
- * What it did not weigh is that one flake then costs the rest of the session: `katex` stays null,
+ * What it did not weigh is that one flake then costs the rest of the session: KaTeX stays absent,
  * every equation draws as its own source, and nothing anywhere knows why. The choice was framed as
- * permanence against flooding, and a small cap is neither. A flake recovers on the next update, and
- * a blocked chunk is asked for three times and then left alone.
+ * permanence against flooding and a small cap is neither.
  *
- * The same number is in `emoji.ts`, for the same shape of fetch, and the two were copied from each
- * other — which is why the discarded rejection was in both.
+ * It lives in `lazyResource.ts` now rather than here, which is the point of that file: this was
+ * written out by hand in two modules and `emoji.ts` had the same discarded rejection, because the
+ * shape was copied rather than shared.
  */
-const ATTEMPTS = 3;
 
 /**
  * Hand KaTeX over directly, already loaded. For an offline check that mounts the editor and
@@ -102,23 +122,19 @@ const ATTEMPTS = 3;
  * path stays lazy.
  */
 export function provideMaths(api: Katex): void {
-  katex = api;
-  pending = null;
-  attempts = 0;
+  resource.provide(api);
 }
 
-/** Replace the loader. For tests; forgets anything already loaded or remembered. */
+/**
+ * Replace the loader with one of your own.
+ *
+ * For a consumer whose page will not allow the built-in dynamic import, and for a check that wants
+ * to drive the failure paths. Forgets anything already loaded or remembered, and deliberately
+ * leaves the record that this document holds maths alone: replacing the loader does not change
+ * that, and clearing it would leave a caller waiting for a request the builders have already made.
+ */
 export function setMathsLoader(loader: () => Promise<Katex>): void {
-  load = loader;
-  katex = null;
-  pending = null;
-  // Including the attempt count, or a check that drove the loader to exhaustion would leave the
-  // next one unable to fetch at all, and it would read as the new loader never being called.
-  attempts = 0;
-  // `wanted` stays as it is. It records that this document has maths in it, which replacing the
-  // loader does not change, and clearing it would leave a test that swapped the loader waiting
-  // for a request the builders have already made.
-  errors.clear();
+  resource.setLoader(loader);
 }
 
 /**
@@ -141,7 +157,7 @@ export function setMathsLoader(loader: () => Promise<Katex>): void {
  * breaking this contract is loud rather than caught and stored as KaTeX's opinion of the source.
  */
 export function mathsReady(): boolean {
-  return katex !== null;
+  return resource.ready();
 }
 
 /**
@@ -156,11 +172,11 @@ export function mathsReady(): boolean {
  * cache holds permanent facts.
  */
 export function mathsLost(): boolean {
-  return katex === null && pending === null && attempts >= ATTEMPTS;
+  return resource.lost();
 }
 
 /** Dispatched once KaTeX has arrived, so the fields that draw maths rebuild. */
-export const mathsLoaded = StateEffect.define<null>();
+export const mathsLoaded = resource.arrived;
 
 /**
  * Start fetching KaTeX, and redraw when it lands.
@@ -185,24 +201,11 @@ export const mathsLoaded = StateEffect.define<null>();
  * a rebuild anyway.
  */
 export function requestMaths(): void {
-  wanted = true;
+  resource.request();
 }
 
 export function loadMaths(view: EditorView): void {
-  if (!wanted || katex || pending || attempts >= ATTEMPTS) return;
-  attempts++;
-  pending = load().then(
-    (loaded) => {
-      katex = loaded;
-      pending = null;
-      view.dispatch({ effects: mathsLoaded.of(null) });
-    },
-    // Cleared rather than discarded: a settled promise is still a promise, so leaving it here made
-    // one failure permanent. `mathsLost()` is the fact a caller acts on, so the error is not kept.
-    () => {
-      pending = null;
-    }
-  );
+  resource.load(view);
 }
 
 /**
@@ -214,8 +217,7 @@ export function loadMaths(view: EditorView): void {
  * of being caught and cached as KaTeX's opinion of the equation.
  */
 function api(): Katex {
-  if (!katex) throw new Error('maths: KaTeX is not loaded. Ask mathsReady() before mathError() or before building a widget.');
-  return katex;
+  return resource.get();
 }
 
 

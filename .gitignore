@@ -41,3 +41,11 @@ sample/wild/files/
 
 # Local scratch for driving a real VS Code window: fixtures, profile, builds. Never committed.
 .claude/scratch/
+
+# The library a consumer imports: three entry bundles, their shared chunks and the type
+# declarations, all written by `npm run build`. Named by the `exports` map, never committed.
+#
+# Anchored with a leading slash, which is load-bearing: `lib/` with no slash matches a directory
+# called `lib` at any depth, and the first spelling of this line silently ignored `src/lib/`, the
+# library's own source. `git status` showed a clean tree with three new files in it.
+/lib/

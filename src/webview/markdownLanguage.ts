@@ -29,7 +29,7 @@ import { sheafMarkdown } from './markdownDialect';
 /**
  * That dialect as a language, for the places that need a parser or a small
  * detached editor rather than the whole editing surface. Fenced code is left
- * unparsed here; a caller that wants highlighted code blocks passes its own
- * `codeLanguages` to `sheafMarkdown()` with this as the base.
+ * unparsed here; a caller that wants highlighted code blocks passes
+ * `fencedCode(...)` among its extensions to `sheafMarkdown()` with this as the base.
  */
 export const sheafMarkdownLanguage = sheafMarkdown({ base: commonmarkLanguage, extensions: markdownDialect }).language;

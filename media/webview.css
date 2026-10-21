@@ -2382,6 +2382,34 @@ body {
   outline: none;
 }
 
+/*
+ * A `field` is one line, so it is not a page and carries none of a page's vertical space.
+ *
+ * `src/webview/theme.ts` pads the scroller with `--sheaf-page-top` above the first line and
+ * `--sheaf-page-bottom` under the last, which is right for a document: air before the first
+ * word, and room to go on scrolling after the last one. A `field` is a title or a form input.
+ * Given those insets it came out 480 pixels tall the moment somebody clicked into it, because
+ * the bottom one is `40vh`: 56px, one 24px line, and 400px of room to scroll on a 1000px
+ * window, and 640px on a 1400px one. `scripts/check-field-height.mjs` reads both.
+ *
+ * No height a consumer sets fixes that from outside. A `height: 24px; overflow: hidden` box
+ * clips the line away rather than shortening it: measured with these insets back on, the line
+ * sat from 56px to 80px down a 24px box, so what it hides is the text. Without this rule the
+ * remedy is to give up and use a plain `<input>`.
+ *
+ * This works by inheritance rather than by winning the cascade, which is why it can live in
+ * this file at all: see the note above about CodeMirror's base theme. `0px` rather than `0`
+ * because these are read as lengths.
+ *
+ * Only the vertical insets. A field still carries the writing column's side gutters and its
+ * 708px measure, so its text starts some way in from its left edge. That is a separate fault
+ * with a separate fix, and `src/lib/README.md` says what a consumer can set meanwhile.
+ */
+.sheaf-surface-field {
+  --sheaf-page-top: 0px;
+  --sheaf-page-bottom: 0px;
+}
+
 /* No padding here: CodeMirror's base theme sets `.ͼ1 .cm-line`, two classes to
    this rule's one, so anything this asks for is discarded. The 1px of leading
    that used to be written here never reached a document. Block spacing is set in

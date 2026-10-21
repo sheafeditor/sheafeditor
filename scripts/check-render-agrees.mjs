@@ -4,6 +4,13 @@
  *   node scripts/check-render-agrees.mjs            every document in sample/
  *   node scripts/check-render-agrees.mjs --verbose  every disagreeing line, not just the first few
  *
+ * **This builds both halves, every run, from this checkout.** The whole script is a comparison
+ * between them, so one half taken from a prebuilt artefact compares two trees and reports the
+ * difference as a disagreement between two implementations. The editor half used to come from
+ * `test/bundle.cjs`, which a suite writes, so the oracle every line here is judged against was
+ * whatever state of `src/` that suite last saw. The run says so below the heading, because a
+ * comparison is only worth the claim that both sides came from the same bytes.
+ *
  * **This is the check the render path exists to survive.** `src/render/markdown.ts` walks a tree and
  * writes tags; the editor hangs CodeMirror decorations over a document. They cannot be one
  * implementation, and a field that shows one thing unfocused and another thing focused is the most
@@ -30,10 +37,10 @@
  */
 import { JSDOM } from 'jsdom';
 import { createRequire } from 'node:module';
-import { buildSync } from 'esbuild';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { bundleExports } from './lib/bundle.mjs';
 
 const REPO = dirname(dirname(fileURLToPath(import.meta.url)));
 const VERBOSE = process.argv.includes('--verbose');
@@ -86,13 +93,20 @@ window.Element.prototype.getBoundingClientRect = function () {
 };
 
 const require = createRequire(import.meta.url);
-const { drawMap } = require(join(REPO, 'test', 'bundle.cjs'));
 
-// The render path, bundled from source so this measures what the repository holds rather than
-// whatever was built last.
-const RENDER = join(REPO, '.claude', 'scratch', 'render-agrees.cjs');
-buildSync({ entryPoints: [join(REPO, 'src', 'render', 'markdown.ts')], bundle: true, format: 'cjs', outfile: RENDER, platform: 'node', logLevel: 'error', absWorkingDir: REPO });
-const { renderMarkdown, dialectParser } = require(RENDER);
+/*
+ * Both sides, one after the other, from the sources on disk now.
+ *
+ * The editor side is the engine suite's own entry and the oracle every comparison below is made
+ * against. The render side is `src/render/markdown.ts`, bundled for Node because nothing in it
+ * reaches the DOM: it walks a `@lezer/markdown` tree and writes tags. That is also why the
+ * Markdown-language redirect the helper applies by default costs nothing here, since this half
+ * never imports `@codemirror/lang-markdown` for it to act on.
+ */
+const { drawMap } = require(await bundleExports(REPO, { drawMap: 'test/engine.entry' }, 'render-agrees-editor'));
+const { renderMarkdown, dialectParser } = require(
+  await bundleExports(REPO, { 'renderMarkdown, dialectParser': 'src/render/markdown' }, 'render-agrees-render', { platform: 'node' })
+);
 
 /*
  * **A tag ends at the `>` that closes it, not at the first `>` in it.**
@@ -123,6 +137,9 @@ const textOf = (html) =>
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
     .replace(/&quot;/g, '"')
+    // A non-breaking space is written back as its entity by the DOM round trip in `withMarkers`, and
+    // the renderer's own output holds the character, so the two spellings of one character agree here.
+    .replace(/&nbsp;/g, ' ')
     .replace(/&amp;/g, '&');
 
 /*
@@ -145,7 +162,14 @@ const textOf = (html) =>
  */
 function withMarkers(html) {
   if (!/<ol[ >]/.test(html)) return html;
-  const root = new window.DOMParser().parseFromString(`<body>${html}</body>`, 'text/html').body;
+  /*
+   * An HTML parser drops a newline that comes straight after `<pre>`, and the renderer writes one
+   * there on purpose: it stands for the opening fence's line, so a code block takes as many output
+   * lines as it took source lines and every line below it is still compared with its own. Parsing
+   * the document here would delete it and shift everything after the first fence by one, which
+   * reads as thousands of disagreements. A second newline is what the parser leaves behind as one.
+   */
+  const root = new window.DOMParser().parseFromString(`<body>${html.replace(/<pre>\n/g, '<pre>\n\n')}</body>`, 'text/html').body;
   for (const ol of root.querySelectorAll('ol')) {
     let n = Number(ol.getAttribute('start') ?? 1);
     for (const li of ol.children) {
@@ -188,6 +212,7 @@ const corpusLine = wild
   : `${files.length} document(s). **sample/wild/files/ is empty**, so about 69,000 lines of the corpus are not being compared. Run npm run fetch:wild for the full population`;
 let compared = 0;
 let skipped = 0;
+let definitionLines = 0;
 let undrawn = 0;
 const undrawnBy = new Map();
 /** Every construct that appeared somewhere a line was actually compared. */
@@ -230,6 +255,31 @@ for (const file of files) {
   }
 
   /*
+   * The one construct the two paths differ on deliberately: a link reference definition.
+   *
+   * The editor draws it as the source line it is, because a person editing needs to see it. The
+   * renderer leaves it out, because it is bookkeeping for the links that name it and CommonMark
+   * removes it from the document. So the editor's line holds `[d]: https://e.com` and this path's
+   * holds nothing, on every definition in the corpus, and counting those as disagreements would put
+   * a decision on the renderer's account. They are counted on their own and named in the report.
+   *
+   * Found from the tree rather than from the text, so a line that only looks like a definition, in
+   * the middle of a paragraph, is still compared.
+   */
+  const dropped = new Set();
+  {
+    const cursor = dialectParser.parse(text).cursor();
+    do {
+      if (cursor.name !== 'LinkReference') continue;
+      for (let n = 0; n < lineStarts.length; n++) {
+        const from = lineStarts[n];
+        const to = n + 1 < lineStarts.length ? lineStarts[n + 1] - 1 : text.length;
+        if (cursor.from < to && cursor.to > from) dropped.add(n + 1);
+      }
+    } while (cursor.next());
+  }
+
+  /*
    * Split the way the editor counts lines, which is on any of the three endings.
    *
    * This path keeps the file's bytes, so a document using lone CRs came back as one long line here
@@ -253,6 +303,10 @@ for (const file of files) {
   for (const row of drawn) {
     if (refused.has(row.line)) {
       skipped++;
+      continue;
+    }
+    if (dropped.has(row.line)) {
+      definitionLines++;
       continue;
     }
     /*
@@ -283,7 +337,15 @@ for (const file of files) {
      * Both show a sublist one step in, and only one has the step in the string.
      */
     const markerGap = /^\s*(\d+\.)\s+/;
-    const theirs = row.drawn.replace(/^\s*\u2022\s*/, '').replace(markerGap, '$1');
+    /*
+     * The editor's bullet is stripped only from a line that has a list marker to draw one for. A line
+     * that begins with a literal bullet character, as a Project Gutenberg licence indents its terms,
+     * is text, and in an indented code block it is code: stripping it from the editor's side alone
+     * made every such line read as the renderer inventing a bullet. Until indented code was drawn
+     * those lines were out of scope and never reached this.
+     */
+    const hasMarker = /^[\s>]*[-*+]\s/.test(row.source);
+    const theirs = (hasMarker ? row.drawn.replace(/^\s*\u2022\s*/, '') : row.drawn).replace(markerGap, '$1');
     const ours = (mine[row.line - 1] ?? '').replace(markerGap, '$1');
     /*
      * A line the editor could not draw is not a disagreement, and counting it as one puts a fifth of
@@ -325,6 +387,13 @@ const NOTES_CONSTRUCTS = [
 const unseen = NOTES_CONSTRUCTS.filter((c) => !seenConstructs.has(c));
 
 console.log(`The render path against the editor, over ${corpusLine}:\n`);
+/*
+ * Said in the output rather than left to the reader, because the one thing that invalidates every
+ * number below is the two halves having come from different trees, and nothing in a disagreement
+ * count shows it.
+ */
+console.log('  both halves were bundled from this checkout in this run, so every difference below is');
+console.log('  between the two implementations rather than between two trees\n');
 if (unseen.length) {
   console.log(`  ${unseen.length} of ${NOTES_CONSTRUCTS.length} constructs the notes profile carries never reached a compared line:`);
   console.log(`      ${unseen.join(', ')}`);
@@ -335,6 +404,10 @@ if (unseen.length) {
 console.log(`  ${compared} line(s) compared`);
 console.log(`  ${skipped} line(s) out of scope, named rather than dropped:`);
 for (const [c, n] of [...skippedBy].sort((a, b) => b[1] - a[1])) console.log(`      ${String(n).padStart(4)}  ${c}`);
+if (definitionLines) {
+  console.log(`  ${definitionLines} line(s) of link reference definitions, left out of the comparison by name:`);
+  console.log('      the editor draws a definition as its source and the renderer draws nothing, on purpose');
+}
 if (threw) console.log(`  ${threw} document(s) threw`);
 if (undrawn) {
   console.log(`  ${undrawn} line(s) the editor could not draw, which is the instrument rather than the renderer:`);

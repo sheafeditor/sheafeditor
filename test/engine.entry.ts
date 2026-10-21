@@ -3,6 +3,7 @@ import { EditorView } from '@codemirror/view';
 import { languages } from '@codemirror/language-data';
 import { forceParsing } from '@codemirror/language';
 import { sheafMarkdown } from '../src/webview/markdownDialect';
+import { fencedCode } from '../src/webview/fencedCode';
 import { sheafMarkdownLanguage } from '../src/webview/markdownLanguage';
 import { livePreview } from '../src/webview/livePreview';
 import { revealField, setLivePreviewConfig } from '../src/webview/revealState';
@@ -27,7 +28,7 @@ export function run(text: string, { reveal = false }: { reveal?: boolean } = {})
     state: EditorState.create({
       doc: text,
       extensions: [
-        sheafMarkdown({ base: sheafMarkdownLanguage, codeLanguages: languages }),
+        sheafMarkdown({ base: sheafMarkdownLanguage, extensions: fencedCode(languages) }),
         livePreview,
         notionTheme,
         EditorView.lineWrapping,
@@ -69,13 +70,17 @@ export function run(text: string, { reveal = false }: { reveal?: boolean } = {})
  * showing. The answer is the granularity the specification's Part 2 has to state, and deriving it is
  * the alternative to reading it out of the modules, which is how Part 1 came to be wrong three times.
  *
- * **A line is showing its Markdown when the text drawn on it equals the text in the file.** That is
- * the reading, and it is construct-independent on purpose. The first version asked whether the line
- * held a `.tok-mark`, which is the class the live preview leaves on a marker it has not hidden, and
- * that was blind to every construct whose marker carries a different class: a quote, a table and a
- * fence all reported showing nothing with the caret inside them, which reads exactly like a reveal
- * rule that skips them. Comparing drawn text against source text cannot be blind to a class nobody
- * thought of.
+ * **A line's reveal is a change in the text drawn on it.** That is the reading, and it is
+ * construct-independent on purpose. The first version asked whether the line held a `.tok-mark`,
+ * which is the class the live preview leaves on a marker it has not hidden, and that was blind to
+ * every construct whose marker carries a different class: a quote, a table and a fence all reported
+ * showing nothing with the caret inside them, which reads exactly like a reveal rule that skips
+ * them. Comparing drawn text cannot be blind to a class nobody thought of.
+ *
+ * The version after that compared `drawn` against `source`, which is a different question: whether
+ * the line shows **everything** in the file. That one is blind in its own way, and `readAll` below
+ * carries the case, because it reported the same three constructs as revealing nothing and for a
+ * reason just as easy to mistake for a finding.
  *
  * Three states rather than two, because a block widget replaces its lines rather than drawing them,
  * and "no line element" is not the same answer as "drawn without its markers". `widget` is reported
@@ -103,7 +108,7 @@ export function revealMap(
        * field the Edit Markdown command reads costs the fourteen checks that use `run` nothing. The
        * obstacle I described did not exist.
        */
-      extensions: [sheafMarkdown({ base: sheafMarkdownLanguage, codeLanguages: languages }), livePreview, revealField, notionTheme, EditorView.lineWrapping],
+      extensions: [sheafMarkdown({ base: sheafMarkdownLanguage, extensions: fencedCode(languages) }), livePreview, revealField, notionTheme, EditorView.lineWrapping],
     }),
     parent,
   });
@@ -119,11 +124,34 @@ export function revealMap(
    * exactly when they do not. So the count is checked and a mismatch is reported rather than paired
    * over, which is the difference between a reading and a guess.
    */
-  const readAll = (): LineShows[] => {
+  /*
+   * The drawn text is kept beside the three-state label, and it is the drawn text that decides
+   * whether a line changed.
+   *
+   * The label alone cannot answer that, and the gap is not a corner case: it is silent on exactly
+   * the two constructs whose granularity was in doubt. `source` versus `drawn` asks whether the
+   * line is showing **everything** in the file, and a construct with a marker Sheaf hides on every
+   * line, the caret's included, can never say `source`. A quote's `>` is hidden deliberately (the
+   * indent has already paid for its width, so drawing it moved the words 14px), and so is a nested
+   * item's leading whitespace, for the same reason at a bigger number. So a quote line going from
+   * `A quote with bold,` to `A quote with **bold**,` reads `drawn` both times and reported as
+   * revealing nothing, which is indistinguishable from a reveal rule that skips quotes. It is the
+   * shape the three-state reading was introduced to catch, one level down: "showing less than the
+   * whole file" joins "showing none of its markup" to "showing all of it but the one marker that
+   * never shows".
+   *
+   * The text comparison has no such blind spot, because it compares what a reader reads with the
+   * caret elsewhere against what they read with the caret here. The label stays, because it is what
+   * tells a line that never reveals from one that is always showing its source.
+   */
+  const readAll = (): { shows: LineShows[]; text: (string | null)[] } => {
     const els = [...view.dom.querySelectorAll('.cm-content > .cm-line')];
     const count = view.state.doc.lines;
-    if (els.length !== count) return Array.from({ length: count }, () => 'widget' as LineShows);
-    return els.map((el, i) => ((el.textContent ?? '') === view.state.doc.line(i + 1).text ? 'source' : 'drawn'));
+    if (els.length !== count) {
+      return { shows: Array.from({ length: count }, () => 'widget' as LineShows), text: Array.from({ length: count }, () => null) };
+    }
+    const text = els.map((el) => el.textContent ?? '');
+    return { shows: text.map((t, i) => (t === view.state.doc.line(i + 1).text ? 'source' : 'drawn')), text };
   };
   /*
    * What the caret changes, rather than what each line is showing.
@@ -152,7 +180,8 @@ export function revealMap(
   }
   if (!restingAt) throw new Error('revealMap needs a blank line to rest the caret on, and this text has none.');
   view.dispatch({ selection: { anchor: view.state.doc.line(restingAt).from } });
-  const resting = readAll();
+  const atRest = readAll();
+  const resting = atRest.shows;
 
   /*
    * The caret is one route and `render.reveal-on-line` R3 names another: "every block a selection
@@ -181,13 +210,16 @@ export function revealMap(
      * first reads as the previous row's block still showing.
      */
     if (how === 'command') toggleBlockReveal(view);
-    const shows = readAll();
+    const here = readAll();
     if (how === 'command') {
       view.dispatch({ selection: { anchor: view.state.doc.line(restingAt).from } });
       toggleBlockReveal(view);
       toggleBlockReveal(view);
     }
-    rows.push({ line: n, changed: shows.map((v, i) => (v === resting[i] ? 0 : i + 1)).filter(Boolean), shows });
+    const changed = here.shows
+      .map((v, i) => (v === resting[i] && here.text[i] === atRest.text[i] ? 0 : i + 1))
+      .filter(Boolean);
+    rows.push({ line: n, changed, shows: here.shows });
   }
   view.destroy();
   parent.remove();
@@ -260,7 +292,7 @@ export function drawMap(text: string): { line: number; source: string; drawn: st
   const view = new EditorView({
     state: EditorState.create({
       doc: text,
-      extensions: [sheafMarkdown({ base: sheafMarkdownLanguage, codeLanguages: languages }), livePreview, revealField, notionTheme, EditorView.lineWrapping],
+      extensions: [sheafMarkdown({ base: sheafMarkdownLanguage, extensions: fencedCode(languages) }), livePreview, revealField, notionTheme, EditorView.lineWrapping],
     }),
     parent,
   });

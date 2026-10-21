@@ -34,7 +34,7 @@ const REPO = join(dirname(fileURLToPath(import.meta.url)), '..');
 const BASELINE = join(REPO, 'scripts', 'bundle-size.json');
 
 /** The budgets, decided 2026-10-01, in gzipped bytes a consumer downloads for that profile. */
-const BUDGETS = { document: 250 * 1024, notes: 90 * 1024, field: 60 * 1024 };
+const BUDGETS = { document: 250 * 1024, notes: 90 * 1024, field: 60 * 1024, render: 32 * 1024 };
 
 /*
  * Whether the number about to be committed describes a commit.
@@ -289,12 +289,36 @@ const PROFILE_FLOORS = {
     why: 'over by 4 KB today, and the ratchet already refuses growth, which is the part that can be held to',
     note: 'the dialect inside CodeMirror, which every profile needs and nothing can remove',
   },
+  /*
+   * **The one row that is enforced, and it is enforced because it can be.** Its floor is built from
+   * the real entry, its budget is decided and it is inside it, so a failure here means somebody made
+   * the render path bigger than it is allowed to be. On the other three a failure would mean a
+   * profile that has no entry point is over a budget nothing can meet yet, which is a fact to report
+   * rather than a landing to stop.
+   *
+   * 32 KB against a 22 KB floor, decided 2026-10-05. Above the floor rather than at it, because a
+   * budget equal to a floor fails on the first line of real work and teaches people to raise
+   * budgets. The number is an order of magnitude under `document`'s 250 KB, which is the comparison
+   * the render path's whole argument rests on.
+   *
+   * **It is provisional, and the thing that will move it is named rather than left to be
+   * discovered.** It was sized the same afternoon, for a render path scoped to the two smaller
+   * profiles, and that scope was withdrawn hours later: the path serves all three, tables included.
+   * A table renderer is cheap — the dialect already parses `TableHeader`, `TableRow` and
+   * `TableCell`, so emitting `<table>` costs about what emitting `<ul><li>` costs, and the editable
+   * grid is the expensive half with nobody typing in a render path — but cheap is not free, and
+   * 10 KB of headroom is what it has to come out of. Maths and emoji are in too and cost 636 and
+   * 228 eager bytes, their libraries being behind dynamic imports.
+   *
+   * So a failure here on the commit that adds tables is this number needing to move, not that
+   * commit being wrong. Raise it with a reading of the new floor beside it.
+   */
   render: {
     floor: 'render',
-    enforce: false,
+    enforce: true,
     about: 'the profile',
     instrument: 'built from `renderMarkdown` itself, so a change to what the render path carries moves this number rather than invalidating it',
-    why: 'no budget decided, so there is nothing to enforce against',
+    why: '',
     note: 'the render path rather than a profile: it owes the same numbers because being small is its whole argument',
   },
 };
@@ -419,11 +443,37 @@ const METAFILE = join(REPO, '.claude', 'scratch', 'webview-metafile.json');
  * anything. They were all eager until 2026-10-02, 139 KB of them, because `@codemirror/lang-markdown`
  * imports `@codemirror/lang-html` for the HTML a Markdown document may hold, and that brings CSS and
  * JavaScript with it. `src/webview/noEmbeddedHtml.ts` says what was done about it; this is the line
- * that notices if it comes undone. `@lezer/html` and `@lezer/css` are left out on purpose: they are
- * reached through their `@codemirror/lang-*` package, so naming that one is enough, and a list that
- * repeats itself invites a reader to think the shorter entries are the weaker ones.
+ * that notices if it comes undone.
+ *
+ * **Both halves of each grammar are named, the `@codemirror/lang-*` wrapper and the `@lezer/*`
+ * parser under it.** This list held the three wrappers alone until 2026-10-02, on the reasoning
+ * that each `@lezer` grammar is reached through its wrapper so naming the wrapper is enough, and
+ * that a list repeating itself suggests the shorter entries matter less. The first half of that is
+ * true of the dependency graph as it stands and is not true of the route: a package can import
+ * `@lezer/html` for the parser alone, without the editor integration, and then the wrapper never
+ * appears.
+ *
+ * What settles it is which check objects. Measured, with a bare `import { parser } from
+ * '@lezer/html'` in `src/webview/main.ts`: against the three-wrapper list the assertion below said
+ * nothing and the failure came from the size ratchet, "document grew by 41012 raw bytes". That is a
+ * ratchet, so `--accept` in the same commit silences it, and 14 KB of grammar would be eagerly
+ * loaded with the paragraph above still claiming otherwise. With `@lezer/html` named, the same
+ * import fails the assertion instead, which has no tolerance and cannot be accepted. Since this
+ * file's whole argument is that the assertion matters more than the bytes, the entry belongs here
+ * rather than being left to the ratchet.
+ *
+ * On the second half: the entries are equals and none is weaker, which is what the layout now says
+ * by giving each its own line.
  */
-const FORBIDDEN_EAGER = ['mermaid', '@codemirror/lang-html', '@codemirror/lang-css', '@codemirror/lang-javascript', '@lezer/javascript'];
+const FORBIDDEN_EAGER = [
+  'mermaid',
+  '@codemirror/lang-html',
+  '@codemirror/lang-css',
+  '@codemirror/lang-javascript',
+  '@lezer/html',
+  '@lezer/css',
+  '@lezer/javascript',
+];
 
 let packageProblems = [];
 const packageReport = [];

@@ -327,6 +327,59 @@ export const ANSWERS = {
   dataFileEdited: 'dataFileEdit',
 } as const satisfies Partial<Record<ToWebviewType, FromWebviewType>>;
 
+/**
+ * A request: a message the editor sends that carries a required `id`.
+ *
+ * The id is the address an answer is sent back to, so carrying one is what makes a message a
+ * question rather than a statement. The set is read off `FromWebview` here rather than listed,
+ * which is the point: a request added to the wire joins it on the next compile with nobody
+ * remembering to.
+ *
+ * `selection` carries an *optional* id and is excluded by that, correctly. It is a notification
+ * the editor sends whenever the caret moves, which carries an id only on the occasions it is
+ * also answering the host's `getSelection`. A host owes it nothing.
+ */
+export type IdRequestType = Extract<FromWebview, { id: string }>['type'];
+
+/** The requests `ANSWERS` pairs with the message that answers them. */
+export type AnsweredRequestType = (typeof ANSWERS)[keyof typeof ANSWERS];
+
+/**
+ * Requests that carry an id and deliberately have no paired answer, with the reason beside each.
+ *
+ * Empty today, and an empty escape hatch rather than no escape hatch because the alternative is
+ * that the first legitimate exception is made by weakening the check. Add a member as
+ * `| 'theRequest' // why nothing answers it` and the reason lands in the same diff as the
+ * exemption.
+ */
+export type UnpairedRequestType = never;
+
+/*
+ * The two assertions that make the pairing above a check rather than a record.
+ *
+ * `satisfies Partial<Record<…>>` on `ANSWERS` checks that each entry *present* names real
+ * messages. It is partial on purpose, since most of what a host sends answers nothing, and
+ * partial is exactly why it cannot say that an entry is **missing**. Until 2026-10-15 it was
+ * written down as the thing that caught a request added with no answer, and the control said
+ * otherwise: a `zzControlB` request carrying a required id, with a duty and a browser-host
+ * decision so that the pairing was the only thing absent, compiled under both tsconfigs and
+ * passed 25 of 25 browser-host checks with nothing owed to it anywhere.
+ *
+ * Both directions are asserted. A stale exemption is as wrong as a missing pairing, and a
+ * ratchet that only ever tightens is the one that misses it.
+ */
+type MustBeNever<Why extends string, T extends never> = [Why, T];
+
+export type AnswersCoverEveryRequest = MustBeNever<
+  'this request carries an id and nothing answers it: pair it in ANSWERS, or name it in UnpairedRequestType with the reason',
+  Exclude<IdRequestType, AnsweredRequestType | UnpairedRequestType>
+>;
+
+export type AnswersPairOnlyRequests = MustBeNever<
+  'this ANSWERS value is not a request: it carries no required id, so no answer is owed to it',
+  Exclude<AnsweredRequestType, IdRequestType>
+>;
+
 /*
  * The arrangement a document carries, by kind: the one family of the host contract that is a store
  * rather than an action.

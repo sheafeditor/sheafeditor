@@ -717,4 +717,63 @@ export const scenarios = [
       return { ok: !!width, detail: `width written ${width ? width[1] : 'none'}; file ${j(disk)}` };
     },
   },
+  {
+    id: 'host.outside-change.edges.e27',
+    feature: 'host.outside-change',
+    name: 'A write landing as a save finishes, with the person still typing, leaves their sentence in the file once',
+    /*
+     * The one outcome the file may never hold is a line of somebody's prose twice, because the
+     * file is the store and a sentence that appears twice is content with no author.
+     *
+     * Two things write this document and neither waits for the other: the merge that keeps the
+     * typing a write could not have seen, and the next keystroke. Each works out where its text
+     * goes from the document as it reads at that moment, and a workspace edit takes a round trip
+     * to reach the document, so a keystroke inside that round trip is measured against a document
+     * the merge has already moved. Both then land, and the sentence goes in twice.
+     *
+     * The window is the length of that round trip, so this is intermittent by nature: run it
+     * several times with `--times`. Typing right through the write is what gives a keystroke a
+     * chance of falling inside the window, and it is also what the person was doing.
+     */
+    run: async (S) => {
+      const doc = 'Alpha line one.\n\nBravo line two.\n\nCharlie line three.\n';
+      const path = await S.fresh('double-text', doc);
+      const PHRASE = ' And a sentence the person wrote themselves.';
+      await S.caret('Bravo line two.', 'Bravo line two.'.length);
+      await S.type(PHRASE);
+      // Long enough for the auto-save debounce, so the write lands as that save finishes and
+      // carries the copy of the file its author read before it.
+      await S.sleep(620);
+      writeFileSync(path, doc.replace('Charlie line three.', 'A paragraph an agent added.\n\nCharlie line three.'));
+      // Long enough for the window to notice the file and start bringing the document into
+      // line with it, and no longer. Typing straight away instead leaves the document dirty
+      // before the window reloads it, and then the write never arrives at all: the first
+      // shape of this scenario reported the added paragraph missing in ten runs out of ten,
+      // which is a different fault from the one it is here to find.
+      await S.sleep(300);
+      // Then straight on typing, a keystroke every 15 ms, so the write's own round trip into
+      // the document is crossed by one of them.
+      await S.type(' More words typed right through it.');
+      await S.sleep(2800);
+      const disk = readFileSync(path, 'utf8');
+      const phrase = disk.split(PHRASE.trim()).length - 1;
+      const agent = disk.split('A paragraph an agent added.').length - 1;
+      const lines = disk.split('\n').filter((l) => l.trim());
+      const twice = lines.filter((l, i) => lines.indexOf(l) !== i);
+      /*
+       * The whole file, not a count. Both changes once and no line twice still passes on a
+       * file with a letter spliced into the middle of a word, which is the same race
+       * landing a character apart, and that is as much nobody's text as the doubling is.
+       */
+      const want =
+        'Alpha line one.\n\nBravo line two.' +
+        `${PHRASE} More words typed right through it.` +
+        '\n\nA paragraph an agent added.\n\nCharlie line three.\n';
+      const ok = disk === want;
+      return {
+        ok,
+        detail: `the person’s sentence appears ${phrase} time(s), the agent’s paragraph ${agent}; lines appearing twice ${j(twice)}; file ${j(disk)}`,
+      };
+    },
+  },
 ];

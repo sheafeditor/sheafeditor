@@ -1,5 +1,12 @@
 .vscode/**
 .claude/**
+# The marker a worktree carries for the role guard. Untracked, so nothing that reads git sees it,
+# and `vsce` reads the directory: it was in a `vsce ls` of a builder worktree.
+.claude-role
+# The library a consumer imports, written by the build beside `dist/` and `media/`. Nothing in VS
+# Code loads it, and it is 3 MB. Gitignored, which `vsce` does not read, so it has to be named here:
+# it was in the .vsix the first time this directory existed.
+lib/**
 .github/**
 src/**
 test/**
@@ -13,6 +20,7 @@ node_modules/**
 **/*.map
 **/tsconfig.json
 **/tsconfig.test.json
+**/tsconfig.lib.json
 esbuild.mjs
 
 .gitignore

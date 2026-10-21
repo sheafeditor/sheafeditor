@@ -238,3 +238,61 @@ export const demoHost: SheafHost = {
   writeClipboard(): void {},
   openLink(): void {},
 };
+
+/* -------------------------------------------------------------------------- */
+/* Which members are required, asserted rather than performed once.             */
+/* -------------------------------------------------------------------------- */
+
+/*
+ * **`value` and `applyEdit` are the only required members, and these four lines are what says so.**
+ *
+ * The header above describes the control that established it: add `export const emptyHost: SheafHost
+ * = {}`, watch it fail to compile, and remove it. That is a ritual rather than a check. It ran once,
+ * it proved the gate reads this file, and the day somebody marks `value` optional nothing objects.
+ *
+ * `@ts-expect-error` inverts it, so the assertion can stand in the file instead of being performed
+ * and deleted: the comment **requires** the next line to fail, and the compile breaks if it ever
+ * starts succeeding. Making either member optional therefore fails `npm run check-types:test` on the
+ * line that says why. This is the first use of the directive in the repository, and it is here
+ * because nothing else makes a type error into a standing claim.
+ *
+ * **The positive case below is not decoration.** `@ts-expect-error` is satisfied by *any* error on
+ * the line it guards, so three negative cases alone would pass just as well if the type name were
+ * misspelt or the import broke. `requiredOnlyHost` compiles with exactly the two methods, so the
+ * difference between it and each negative case is the required-ness of the member that was dropped
+ * and nothing else.
+ *
+ * `demoHost` above cannot do this job, and the distinction is worth keeping: it shows the optional
+ * members may be *omitted*, which is the other half of the requirement and the easier half.
+ */
+
+/** Neither required member. */
+// @ts-expect-error `value` and `applyEdit` are both required, so an empty host cannot satisfy the type.
+export const noRequiredMembers: SheafHost = {};
+
+/** `applyEdit` without `value`: a host that can be written to and cannot be read. */
+// @ts-expect-error `value` is required, so a host that only writes cannot satisfy the type.
+export const writeOnlyHost: SheafHost = {
+  applyEdit(): void {},
+};
+
+/** `value` without `applyEdit`: a host that can be read and cannot be written. */
+// @ts-expect-error `applyEdit` is required, so a host that only reads cannot satisfy the type.
+export const readOnlyHost: SheafHost = {
+  value(): string {
+    return '';
+  },
+};
+
+/**
+ * The two required members and nothing else, which must compile.
+ *
+ * This is the floor a consumer has to meet, and the library's own default in `src/lib/` is an
+ * in-memory host of exactly this shape.
+ */
+export const requiredOnlyHost: SheafHost = {
+  value(): string {
+    return '';
+  },
+  applyEdit(): void {},
+};

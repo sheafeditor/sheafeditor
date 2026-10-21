@@ -312,6 +312,38 @@ const cases = [
     const keys = rows.map((l) => l.slice(2, 3));
     return rows.length === 3 && new Set(keys).size === 3;
   }],
+  ['counting the lines no base had still lets through a line one side added and a line the merge built', () => {
+    /*
+     * The rule above used to count only the lines the base had, which left a hole: a line
+     * that exists in one side's version alone has nothing in the base, so a merge handing
+     * back two copies of a row the other program had just added was never looked at. The
+     * count now covers those too, since a line in no base that one side added once has
+     * asked for one.
+     *
+     * What cannot be driven from here is the hole itself. `multipliesALine` is reached only
+     * through `mergeOutsideChange`, and the line merge does not produce such a duplicate
+     * today, which is why it was a hole in a guard rather than a bug. So this is the other
+     * half, and it is the half that could go wrong: the limit it replaced was load-bearing,
+     * and the two kinds of line it has to keep letting through are these.
+     *
+     * Taking the limit off without the `mine === 0 && theirs === 0` skip refuses the second
+     * of them, which is the answer the character merge exists to produce: measured, that
+     * fails this check and "two changes inside one line are still put together, character
+     * by character".
+     */
+    // A whole paragraph only the other side has, which must come through once.
+    const addedBase = 'Intro\n\nAfter\n';
+    const added = mergeOutsideChange(addedBase, 'Intro typed in\n\nAfter\n', 'Intro\n\nA row an agent added.\n\nAfter\n');
+    // A cell built from both sides, in no base and in neither side, which must stand.
+    const cellBase = 'Notes\n\n| Login | Open | Sammy |\n\nAfter\n';
+    const cell = mergeOutsideChange(cellBase, cellBase.replace('Sammy', 'Sam'), cellBase.replace('Open', 'Done'));
+    return (
+      added.dropped === false &&
+      added.text === 'Intro typed in\n\nA row an agent added.\n\nAfter\n' &&
+      cell.dropped === false &&
+      cell.text === 'Notes\n\n| Login | Done | Sam |\n\nAfter\n'
+    );
+  }],
   ['nothing to put together when only one side changed, or both made the same change', () => {
     const base = 'Alpha\n';
     return (
@@ -1310,9 +1342,9 @@ async function outsideChangeThenKeystroke({ before, after, crlf, caretIn, typeIn
   const sync = new DocumentSync(doc.host);
   const writes = [];
   const applyEdit = doc.host.applyEdit;
-  doc.host.applyEdit = (start, end, replacement) => {
+  doc.host.applyEdit = (start, end, replacement, planned) => {
     writes.push({ start, end, replacement });
-    return applyEdit(start, end, replacement);
+    return applyEdit(start, end, replacement, planned);
   };
   const webview = bootWebview((m) => m.type === 'edit' && void sync.edit(m.text));
   webview.init(before);

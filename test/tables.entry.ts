@@ -20,6 +20,7 @@ import { revealField, setLivePreviewConfig } from '../src/webview/revealState';
 import { revealBlockAt } from '../src/webview/revealBlock';
 import { searchSupport, findNextMatch, findPreviousMatch } from '../src/webview/search';
 import { sheafMarkdown } from '../src/webview/markdownDialect';
+import { fencedCode } from '../src/webview/fencedCode';
 import { sheafMarkdownLanguage } from '../src/webview/markdownLanguage';
 import {
   tables,
@@ -79,7 +80,7 @@ function mkView(doc: string, extra: Extension[] = []): EditorView {
       doc,
       extensions: [
         // The webview's own dialect, so the suite parses what the editor parses.
-        sheafMarkdown({ base: sheafMarkdownLanguage, codeLanguages: languages }),
+        sheafMarkdown({ base: sheafMarkdownLanguage, extensions: fencedCode(languages) }),
         revealField,
         livePreview,
         tables,

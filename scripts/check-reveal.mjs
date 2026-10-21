@@ -15,9 +15,18 @@
  * and a fence all came back showing nothing with the caret inside them, which reads exactly like a
  * reveal rule that skips them.
  *
- * It reports rather than asserts. The output is the table Part 2 needs, and a rule nobody has
- * written down yet cannot be checked against; once the document states it, this is what a check
- * would compare against.
+ * A line whose markup it reveals and a line whose markup it hides can both read `drawn`, so the
+ * comparison is against the **drawn text** and not against that label. A quote's `>` is hidden on
+ * every line, the caret's included, and so is a nested item's leading whitespace, both deliberately:
+ * the computed indent has already paid for their width. So neither line can ever read `source`, and
+ * a label comparison reported the quote and the nested item as revealing nothing from any caret
+ * position, which is the same report a reveal rule that skipped them would produce. The label is
+ * still printed beside each row, because it is what separates a line that never reveals from one
+ * that is always showing its source.
+ *
+ * It reports rather than asserts, and the engine suite is where the assertions live: `para.*`,
+ * `quote.*`, `item.*` and `fence.*` in `test/engine.test.mjs` pin the sets this prints, so a change
+ * to the granularity fails a suite rather than waiting for somebody to read a table.
  *
  * **One limitation, and it decides which rows of the output are usable.** This runs under jsdom, which
  * has no layout, so a construct drawn as a block widget may not mount at all. The pipe table's first
@@ -28,12 +37,22 @@
  * table below: it keeps its pipes and hides only the emphasis inside the cells, which is the row
  * drawn as prose rather than as a grid.
  *
+ * **This builds the editor it reads, every run.** It used to require `test/bundle.cjs`, which a
+ * suite writes and this never did, so it answered about whatever state of `src/` that suite last
+ * saw. Restoring a base file and re-running printed the fixed table, because the bundle was twelve
+ * minutes older than the restored source; rebuilding first gave the real base table. The same source
+ * tree gave two opposite answers and the file that decided between them was one nobody looked at.
+ *
+ * The build is 58 ms, measured, inside a run of 0.38 s, so the whole script costs about what it did
+ * when it was reading a bundle somebody else had built.
+ *
  *   node scripts/check-reveal.mjs
  */
 import { JSDOM } from 'jsdom';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { bundleExports } from './lib/bundle.mjs';
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -44,13 +63,31 @@ for (const key of ['getComputedStyle', 'NodeFilter', 'Node', 'HTMLElement', 'DOM
 }
 if (!globalThis.ResizeObserver) globalThis.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} };
 if (!globalThis.IntersectionObserver) globalThis.IntersectionObserver = class { observe() {} unobserve() {} disconnect() {} };
+/*
+ * The global `Window`, which jsdom does not export.
+ *
+ * `drawMap` runs CodeMirror's measure pass, and that pass asks `instanceof Window`, so without this
+ * the second table ends in `ReferenceError: Window is not defined` after the reveal tables have
+ * printed. The failure reads as the instrument half-working rather than as a missing global, and it
+ * took the whole script's exit code with it. The same line is in `scripts/check-render.mjs`,
+ * `scripts/check-render-agrees.mjs` and `scripts/lib/editorDom.mjs`, which are the other three that
+ * drive a measure pass under jsdom; this was the one that did the same work without it.
+ */
+if (!globalThis.Window && window.Window) globalThis.Window = window.Window;
 globalThis.window = window;
 globalThis.document = window.document;
 Object.defineProperty(globalThis, 'navigator', { value: window.navigator, configurable: true });
 globalThis.requestAnimationFrame = (cb) => setTimeout(() => cb(Date.now()), 0);
 globalThis.cancelAnimationFrame = (id) => clearTimeout(id);
 
-const { revealMap, drawMap } = createRequire(import.meta.url)(join(REPO, 'test', 'bundle.cjs'));
+/*
+ * `revealMap` and `drawMap` are the engine suite's own entry, bundled here rather than taken from
+ * the copy that suite leaves under `test/`. Built after the DOM above is in place only because the
+ * require below needs it; esbuild itself does not care.
+ */
+const { revealMap, drawMap } = createRequire(import.meta.url)(
+  await bundleExports(REPO, { 'revealMap, drawMap': 'test/engine.entry' }, 'check-reveal')
+);
 
 /*
  * One of each construct, with **markup on every line of every multi-line one**.

@@ -16,6 +16,16 @@ import { EditorState } from '@codemirror/state';
 import { sheafMarkdownLanguage } from '../src/webview/markdownLanguage';
 import { blockMathRanges } from '../src/webview/maths';
 
+/*
+ * The render path, which is the dialect's other consumer and needs no editor either.
+ *
+ * Exported here so its cases run in the same suite as the grammar they read: a render rule is a
+ * statement about what a construct becomes, and it is only worth asserting against the parse the
+ * editor shares. `TAGS`, `HANDLERS` and `PROFILE_TABLE` are exported mutable so a case can remove
+ * one and watch the result move, which is the only way to show a rule is what produces an answer.
+ */
+export { renderMarkdown, scopeOf, unimplemented, PROFILE_TABLE, TAGS, HANDLERS } from '../src/render/markdown';
+
 export interface Found {
   name: string;
   from: number;

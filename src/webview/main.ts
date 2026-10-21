@@ -35,7 +35,7 @@ import { coveredEnd } from './selectionExtent';
 import { buildRef, setCellRefSource, tableRowRef } from './refs';
 import { tableRowRefAt, setTableWidthsHost, handleTableWidths, setTableBoardsHost, handleTableBoards, setMoveToFile, setCreateView } from './tables';
 import { remeasureAllTables } from './columnLayout';
-import { viewBlocks, setDataFileHost, handleDataFile, handleDataFileCreated, handleDataFileEdited, moveBlockToFile, createViewOf } from './viewBlock';
+import { setDataFileHost, handleDataFile, handleDataFileCreated, handleDataFileEdited, moveBlockToFile, createViewOf } from './viewBlock';
 import { minimalEdit, toWebviewText } from '../textSync';
 import { outsideWrite } from './changeMarks';
 
@@ -678,7 +678,6 @@ function buildState(text: string): EditorState {
       editableCompartment.of(EditorView.editable.of(true)),
       csvMode ? fenceGuard : [],
       editorExtensions(shortcutsOverlay.toggle),
-      viewBlocks,
       // Report user edits back to the host, and keep the toolbar's buttons current.
       EditorView.updateListener.of((update) => {
         if (update.docChanged && !applyingRemote && !update.transactions.some((tr) => tr.annotation(remoteAnnotation))) {

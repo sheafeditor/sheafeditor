@@ -19,20 +19,31 @@
  * What makes the two comparable is that the editor's rule, written down as Part 2 of the
  * specification, has exactly two mechanisms and no third. **A marker is either hidden, leaving the
  * text around it, or replaced by something the file does not contain.** `HIDDEN` below is the first
- * and `TAGS` is the second, and every construct is in one or the other. The comparison that proves
- * they agree is per-line against `drawMap`, which reads the real editor under jsdom.
+ * and `TAGS` and `HANDLERS` are the second, and every construct is in one or the other. The
+ * comparison that proves they agree is per-line against `drawMap`, which reads the real editor under
+ * jsdom.
  *
  * ## Profiles
  *
- * `field` carries the six inline constructs a title field has; `notes` adds the block constructs a
- * comment box has. Anything else — tables, images, maths, fenced code, diagrams — belongs to the
- * `document` profile, and this **names it in `outOfScope` and leaves its source as text** rather
- * than rendering it wrongly or dropping it. A consumer that gets back an empty `outOfScope` knows
- * everything in its input was understood; one that gets a list knows exactly what was not, which is
- * the answer a silent fallback cannot give.
+ * There are three, `field`, `notes` and `document`, and **`PROFILE_TABLE` is the one place this file
+ * says which constructs each carries.** It mirrors the specification's "What each profile carries"
+ * table row for row. Whether a construct is drawn is read from that table and from nothing else, so
+ * a decision that widens a profile reaches this renderer as a changed row rather than as a change to
+ * some other list that happens to decide the same thing.
+ *
+ * A construct this render does not draw comes back inside an element that names it, is listed in
+ * `outOfScope`, and carries a `reason` that separates two situations calling for opposite actions:
+ *
+ *   - `profile`: the profile does not carry it. This is a decision. A richer profile may.
+ *   - `unimplemented`: the profile carries it and this renderer has no drawing for it yet. This is
+ *     a defect in the renderer, and a richer profile would not help.
+ *
+ * A consumer that gets back an empty `outOfScope` knows everything in its input was understood; one
+ * that gets a list knows exactly what was not, and whether to upgrade the profile or file a bug.
  */
 import { parser } from '@lezer/markdown';
-import type { SyntaxNode } from '@lezer/common';
+import type { SyntaxNode, Tree } from '@lezer/common';
+import type { Text } from '@codemirror/state';
 import { markdownDialect } from '../dialect/markdown';
 /*
  * Reaching into `src/webview/` for one rule, which is the wrong direction and is deliberate.
@@ -44,15 +55,36 @@ import { markdownDialect } from '../dialect/markdown';
  * direction, which is the CTO's.
  */
 import { frontMatterEnd } from '../webview/frontMatter';
+/*
+ * The editor's own rule for which inline HTML pairs are drawn, rather than a second one here.
+ *
+ * `inlineHtml.ts` imports only types, so it costs this path no editor, and it is where "a matched
+ * pair of a short list of tags, no attributes but an abbreviation's title, on one line" is defined.
+ * A copy of that rule would drift the first time the list changed.
+ */
+import { inlineHtmlPairAt } from '../webview/inlineHtml';
+import type { InlineHtmlPair } from '../webview/inlineHtml';
 
-/** Which constructs exist, from `docs/14-editor-as-components.md`. */
+/** The two profiles a mounted surface can be. */
 export type Profile = 'field' | 'notes';
 
-/** A construct this profile does not carry, left as source and named. */
+/** Every profile the render path serves. `document` is the one the editor extension runs. */
+export type RenderProfile = Profile | 'document';
+
+/** Why a construct came back as source: a decision about the profile, or a gap in this renderer. */
+export type Reason = 'profile' | 'unimplemented';
+
+/** A construct this render did not draw, left as source and named. */
 export interface OutOfScope {
   construct: string;
   from: number;
   to: number;
+  /**
+   * `profile` when the profile does not carry the construct, which a richer profile may.
+   * `unimplemented` when it does carry it and this renderer has no drawing for it, which no profile
+   * will fix.
+   */
+  reason: Reason;
 }
 
 export interface RenderResult {
@@ -68,6 +100,86 @@ export interface RenderResult {
  * it to say which constructs a compared line held.
  */
 export const dialectParser = parser.configure(markdownDialect);
+
+const ALL: readonly RenderProfile[] = ['field', 'notes', 'document'];
+const NOTES_UP: readonly RenderProfile[] = ['notes', 'document'];
+const DOCUMENT: readonly RenderProfile[] = ['document'];
+const NEVER: readonly RenderProfile[] = [];
+
+/**
+ * Which profiles carry each construct, transcribed from the specification's "What each profile
+ * carries" table.
+ *
+ * **This is the only statement in this file of what a profile carries.** It is not derived from
+ * `TAGS` or from `HANDLERS`, because those say what this renderer can draw and the question here is
+ * what it owes. Reading one off the other made an omission look like a decision: a construct with no
+ * tag read as outside every profile, so a gap and a choice were the same answer.
+ *
+ * Keys are the dialect's node names, with two exceptions that are not nodes: `Callout`, which the
+ * editor recognises in its drawing layer, and `InlineMathMark`, listed because the table lists it.
+ * A construct absent from this table is carried by no profile. That is the default direction the
+ * specification takes for anything undecided: adding to a profile later breaks no consumer, and
+ * removing from one breaks them silently.
+ *
+ * Exported mutable so a check can add or remove a row and watch the result move, which is the only
+ * way to show the property that matters here: a change to this table is the whole change.
+ */
+export const PROFILE_TABLE: Record<string, readonly RenderProfile[]> = {
+  Paragraph: ALL,
+  Emphasis: ALL,
+  StrongEmphasis: ALL,
+  EmphasisMark: ALL,
+  Strikethrough: ALL,
+  StrikethroughMark: ALL,
+  Highlight: ALL,
+  HighlightMark: ALL,
+  InlineCode: ALL,
+  CodeMark: ALL,
+  Link: ALL,
+  LinkMark: ALL,
+  URL: ALL,
+  Autolink: ALL,
+  Entity: ALL,
+  Emoji: ALL,
+  Escape: ALL,
+
+  HardBreak: NOTES_UP,
+  SetextHeading1: NOTES_UP,
+  SetextHeading2: NOTES_UP,
+  LinkLabel: NOTES_UP,
+  LinkReference: NOTES_UP,
+  LinkTitle: NOTES_UP,
+  HTMLTag: NOTES_UP,
+  BulletList: NOTES_UP,
+  OrderedList: NOTES_UP,
+  ListItem: NOTES_UP,
+  ListMark: NOTES_UP,
+  Task: NOTES_UP,
+  TaskMarker: NOTES_UP,
+  Blockquote: NOTES_UP,
+  QuoteMark: NOTES_UP,
+  ATXHeading1: NOTES_UP,
+  ATXHeading2: NOTES_UP,
+  ATXHeading3: NOTES_UP,
+  ATXHeading4: NOTES_UP,
+  ATXHeading5: NOTES_UP,
+  ATXHeading6: NOTES_UP,
+  HeaderMark: NOTES_UP,
+  FencedCode: NOTES_UP,
+  CodeBlock: NOTES_UP,
+  FootnoteReference: NOTES_UP,
+  FootnoteDefinition: NOTES_UP,
+  HorizontalRule: NOTES_UP,
+
+  Table: DOCUMENT,
+  Image: DOCUMENT,
+  Callout: DOCUMENT,
+  InlineMath: DOCUMENT,
+  InlineMathMark: DOCUMENT,
+
+  // Drawn as written in every profile, which is the specification's answer for raw HTML blocks.
+  HTMLBlock: NEVER,
+};
 
 /**
  * Markers the editor hides, which here means emitting nothing for them.
@@ -101,6 +213,30 @@ const HIDDEN = new Set([
  * 4,512 lines where the editor left the source alone and this path changed it.
  */
 const HIDDEN_IN_LINK = new Set(['URL', 'LinkTitle', 'LinkMark']);
+
+/*
+ * Named by the profile table and drawn as part of the construct that holds them.
+ *
+ * A link's marks, label and title are read by the link, the image and the definition, and nothing
+ * draws any of them on its own, so they have no handler. Listing them keeps the table a row-for-row
+ * copy of the specification's without making them read as gaps. `URL` is not here: a bare address
+ * standing alone is an autolink and wants a drawing of its own.
+ */
+const PARTS = new Set(['LinkMark', 'LinkLabel', 'LinkTitle']);
+
+/** Nodes whose content is a line of text, so an element a construct is wrapped in there is inline. */
+const INLINE_HOSTS = new Set([
+  'Paragraph',
+  'ATXHeading1',
+  'ATXHeading2',
+  'ATXHeading3',
+  'ATXHeading4',
+  'ATXHeading5',
+  'ATXHeading6',
+  'SetextHeading1',
+  'SetextHeading2',
+  'TableCell',
+]);
 
 /*
  * A block marker takes the space after it with it.
@@ -138,8 +274,31 @@ export const TAGS: Record<string, string> = {
   ATXHeading6: 'h6',
 };
 
-/** The six a `field` carries. Everything else in `TAGS` is `notes` and above. */
-const FIELD_ONLY = new Set(['StrongEmphasis', 'Emphasis', 'Strikethrough', 'InlineCode', 'Highlight', 'Link', 'Paragraph']);
+/** Whether `profile` carries `name`, and if it does, whether this renderer can draw it. */
+export type Scope = 'rendered' | 'unimplemented' | 'profile';
+
+/**
+ * What a construct is to a profile: drawn, owed and not drawn, or not the profile's at all.
+ *
+ * The middle answer is the one this exists to give. `unimplemented` means the profile's own list
+ * names the construct and nothing here draws it, which is a bug to file. `profile` means the list
+ * does not name it, which is a decision a richer profile may have made differently.
+ */
+export function scopeOf(name: string, profile: RenderProfile): Scope {
+  const carriedBy = PROFILE_TABLE[name];
+  if (!carriedBy || !carriedBy.includes(profile)) return 'profile';
+  return name in TAGS || name in HANDLERS || HIDDEN.has(name) || PARTS.has(name) ? 'rendered' : 'unimplemented';
+}
+
+/**
+ * The constructs `profile` carries that this renderer cannot draw, in the table's order.
+ *
+ * This is the number the profile's requirement to cover everything it carries is measured by, and
+ * it is computed rather than counted by hand so it moves when a row or a handler does.
+ */
+export function unimplemented(profile: RenderProfile): string[] {
+  return Object.keys(PROFILE_TABLE).filter((name) => scopeOf(name, profile) === 'unimplemented');
+}
 
 /*
  * Escaped on the way out, never on the way in.
@@ -152,6 +311,15 @@ const FIELD_ONLY = new Set(['StrongEmphasis', 'Emphasis', 'Strikethrough', 'Inli
  */
 const escape = (s: string): string =>
   s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c] as string);
+
+/**
+ * A destination without the angle brackets CommonMark lets it be written in.
+ *
+ * One definition, used by `safeDestination` for the address that goes into an `href` and by a link
+ * with no text for the address it shows, so the two cannot disagree about where the brackets end.
+ * The scheme rule is still decided inside `safeDestination`, on what this returns.
+ */
+const unangle = (raw: string): string => (raw.length > 1 && raw.startsWith('<') && raw.endsWith('>') ? raw.slice(1, -1) : raw);
 
 /**
  * The schemes a destination may carry. Everything else is refused.
@@ -202,6 +370,8 @@ const SAFE_SCHEMES = new Set(['http', 'https', 'mailto']);
  * only because a browser cannot resolve `<javascript:...` either. Take the brackets off first in a
  * separate pass and the allow-list is satisfied by a destination that no longer exists, with
  * `javascript:` in the `href`. Doing both in one function is what makes that mistake unavailable.
+ * `unangle` is that strip and is shared with the address a link with no words shows as text; no
+ * `href` is built from it except through this function.
  *
  * What is deliberately not done is unescaping `\<` and `\>` inside the brackets. The editor does not
  * either — it draws the bytes the file holds — and a second difference would be a second thing for
@@ -209,7 +379,7 @@ const SAFE_SCHEMES = new Set(['http', 'https', 'mailto']);
  */
 function safeDestination(raw: string): string | null {
   // Delimiters off before anything reads the destination, including the scheme test below.
-  const dest = raw.length > 1 && raw.startsWith('<') && raw.endsWith('>') ? raw.slice(1, -1) : raw;
+  const dest = unangle(raw);
   const probe = dest.replace(/[\u0000- ]/g, '');
   const scheme = /^([a-zA-Z][a-zA-Z0-9+.-]*):/.exec(probe);
   if (!scheme) return dest;
@@ -222,7 +392,579 @@ function childText(node: SyntaxNode, name: string, text: string): string | null 
   return null;
 }
 
-export function renderMarkdown(markdown: string, profile: Profile = 'notes'): RenderResult {
+/*
+ * The named references this path decodes, and the rule for every numeric one.
+ *
+ * **This is a short table on purpose and the editor's is not.** The editor asks the browser's own HTML
+ * parser, which knows all 2,231 names; this path runs in Node with no DOM, and carrying the full table
+ * would be several times the whole renderer's budget for names that appear in a specification about
+ * entities and almost nowhere else. A name not in this list is left as written, with its ampersand
+ * escaped, which is what the editor does with a name the browser does not know. So the two disagree
+ * only on a real but uncommon name, and the disagreement is visible text rather than a lost character.
+ *
+ * A `Map` rather than an object, because a document can write `&constructor;` and an object answers
+ * that with a function.
+ */
+const ENTITIES = new Map(
+  Object.entries({
+    amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", AMP: '&', LT: '<', GT: '>', QUOT: '"',
+    nbsp: ' ', copy: '©', COPY: '©', reg: '®', REG: '®', trade: '™',
+    hellip: '…', mdash: '—', ndash: '–', lsquo: '‘', rsquo: '’',
+    ldquo: '“', rdquo: '”', laquo: '«', raquo: '»', bull: '•', middot: '·',
+    times: '×', divide: '÷', deg: '°', plusmn: '±', micro: 'µ', para: '¶',
+    sect: '§', cent: '¢', pound: '£', yen: '¥', euro: '€', larr: '←',
+    rarr: '→', uarr: '↑', darr: '↓', harr: '↔', hearts: '♥', check: '✓',
+    frac12: '½', frac14: '¼', frac34: '¾', iexcl: '¡', iquest: '¿', sup1: '¹',
+    sup2: '²', sup3: '³', not: '¬', shy: '­', macr: '¯', acute: '´',
+    uml: '¨', cedil: '¸', ordf: 'ª', ordm: 'º', curren: '¤', brvbar: '¦',
+    sbquo: '‚', bdquo: '„', lsaquo: '‹', rsaquo: '›', dagger: '†', Dagger: '‡',
+    permil: '‰', prime: '′', Prime: '″', infin: '∞', ne: '≠', le: '≤',
+    ge: '≥', asymp: '≈', sum: '∑', minus: '−', radic: '√', part: '∂',
+    nabla: '∇', isin: '∈', cap: '∩', cup: '∪', int: '∫', there4: '∴',
+    lArr: '⇐', rArr: '⇒', hArr: '⇔', spades: '♠', clubs: '♣', diams: '♦',
+    alpha: 'α', beta: 'β', gamma: 'γ', delta: 'δ', lambda: 'λ', mu: 'μ',
+    pi: 'π', sigma: 'σ', omega: 'ω', Delta: 'Δ', Omega: 'Ω',
+  })
+);
+
+/**
+ * What an entity reference stands for, or the reference itself when it stands for nothing this path
+ * knows. Numeric references follow CommonMark: zero, a surrogate and anything past U+10FFFF are the
+ * replacement character.
+ */
+function decodeEntity(raw: string): string {
+  const m = /^&(?:#(\d{1,7})|#[xX]([0-9a-fA-F]{1,6})|([A-Za-z][A-Za-z0-9]*));$/.exec(raw);
+  if (!m) return raw;
+  if (m[3] !== undefined) return ENTITIES.get(m[3]) ?? raw;
+  const code = m[1] !== undefined ? parseInt(m[1], 10) : parseInt(m[2], 16);
+  return code === 0 || code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff) ? '�' : String.fromCodePoint(code);
+}
+
+/**
+ * Which labels are the same label: whatever the case, and with a run of spaces or a line break the
+ * same as one space. The editor's index normalises the same way. An empty label matches nothing, so
+ * a `[]` refers to no definition and `[a][]` falls back to its own text.
+ */
+const labelKey = (label: string): string => label.trim().replace(/\s+/g, ' ').toLowerCase();
+
+/** The blocks a definition may sit in, besides the top of the document. */
+const DEFINITION_HOSTS = new Set(['Blockquote', 'BulletList', 'OrderedList', 'ListItem']);
+
+/** A footnote label's key. Labels match whatever their case, as the editor's index has them. */
+const footnoteKey = (label: string): string => label.toLowerCase();
+
+interface Footnotes {
+  /** The first definition of each label: where it starts, and its note as one line for a tooltip. */
+  defs: Map<string, { from: number; note: string }>;
+  /** Each referenced label's number, counted in order of first reference. */
+  numbers: Map<string, number>;
+}
+
+/**
+ * Which footnote references resolve and what number each takes.
+ *
+ * The same rules `src/webview/footnotes.ts` applies in the editor, which this file cannot import
+ * because that module draws with CodeMirror: the first definition of a label counts, a reference
+ * with no definition stays as written, and numbers are counted in order of first reference among
+ * the references that resolve. A definition nothing refers to has no number and stays as written.
+ */
+function footnoteIndex(tree: Tree, md: string): Footnotes {
+  const refs: string[] = [];
+  const defs = new Map<string, { from: number; note: string }>();
+  tree.iterate({
+    enter: (ref) => {
+      if (ref.name !== 'FootnoteReference' && ref.name !== 'FootnoteDefinition') return;
+      const label = ref.node.getChild('FootnoteLabel');
+      if (!label) return;
+      const key = footnoteKey(md.slice(label.from, label.to));
+      if (ref.name === 'FootnoteReference') {
+        refs.push(key);
+        return;
+      }
+      if (defs.has(key)) return;
+      let from = label.to + 2;
+      while (from < ref.to && (md[from] === ' ' || md[from] === '\t')) from++;
+      defs.set(key, { from: ref.from, note: md.slice(from, ref.to).replace(/\s+/g, ' ').trim() });
+    },
+  });
+  const numbers = new Map<string, number>();
+  for (const key of refs) if (defs.has(key) && !numbers.has(key)) numbers.set(key, numbers.size + 1);
+  return { defs, numbers };
+}
+
+/**
+ * The text a node stands for with every marker gone, for an image's description.
+ *
+ * An `alt` attribute is plain text, so emphasis marks, link brackets and the like have no place in
+ * it and an escape or an entity is what it stands for rather than what it is written as.
+ */
+function plainText(node: SyntaxNode, md: string): string {
+  if (node.name === 'Escape') return md.slice(node.from + 1, node.to);
+  if (node.name === 'Entity') return decodeEntity(md.slice(node.from, node.to));
+  let out = '';
+  let pos = node.from;
+  for (let c = node.firstChild; c; c = c.nextSibling) {
+    out += md.slice(pos, c.from);
+    if (!HIDDEN.has(c.name) && !PARTS.has(c.name) && !(HIDDEN_IN_LINK.has(c.name) && (node.name === 'Link' || node.name === 'Image'))) out += plainText(c, md);
+    pos = c.to;
+  }
+  return out + md.slice(pos, node.to);
+}
+
+/**
+ * What a handler is given: the document, the labels it defines, and the walk itself.
+ *
+ * Handlers are module-level so that `scopeOf` can ask whether one exists without rendering
+ * anything, and so a check can remove one and watch a construct move from drawn to owed.
+ */
+interface Ctx {
+  md: string;
+  profile: RenderProfile;
+  /** Reference definitions by label, lower-cased, to the destination exactly as written. */
+  defined: Map<string, string>;
+  notes: Footnotes;
+  /** The inline HTML pairs this document draws: opening tags by position, and the closing tags' positions. */
+  pairs: { open: Map<number, InlineHtmlPair>; close: Set<number> };
+  render(node: SyntaxNode): string;
+  inner(node: SyntaxNode): string;
+  /**
+   * A construct named in `outOfScope` and emitted as its own source inside an element that says so.
+   * The reason defaults to what the profile table says about the construct, and a handler that has
+   * looked at one instance and found it outside the profile says so itself.
+   */
+  refuse(construct: string, node: SyntaxNode, reason?: Reason): string;
+}
+
+/** An anchor for `dest`, or only the words when the destination may not be one. */
+function anchor(dest: string, words: string): string {
+  const safe = safeDestination(dest);
+  return safe === null ? words : `<a href="${escape(safe)}">${words}</a>`;
+}
+
+/**
+ * The anchor for an address that is its own text: a bare URL, one in angle brackets, an email.
+ *
+ * Where the address names no scheme it gets the one a reader would assume, `http` for `www.` and
+ * `mailto` for an email. A scheme the text already carries goes to `safeDestination` as it stands,
+ * so `javascript:alert(1)@x.com` is refused for its scheme and not accepted as an email.
+ */
+function autolink(url: string): string {
+  const hasScheme = /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(url);
+  const dest = hasScheme ? url : /^www\./i.test(url) ? `http://${url}` : url.includes('@') ? `mailto:${url}` : url;
+  return anchor(dest, escape(url));
+}
+
+/**
+ * What a `Link` node holds: the mark that closes the brackets, whether an opening parenthesis follows,
+ * and the address written after it.
+ *
+ * The parser calls every bracket run a link. Which ones are is a question about the marks and not
+ * about what is inside them: `[a](b)` has a parenthesis and an address, `[a][b]` and `[a]` have
+ * neither and are links only if a definition says so. An address anywhere else in the node is text.
+ */
+function linkParts(
+  node: SyntaxNode,
+  md: string
+): { close: SyntaxNode | null; paren: boolean; destination: string | null; empty: boolean } {
+  let open: SyntaxNode | null = null;
+  let close: SyntaxNode | null = null;
+  let paren = false;
+  let destination: string | null = null;
+  for (let ch = node.firstChild; ch; ch = ch.nextSibling) {
+    if (ch.name === 'LinkMark') {
+      if (md[ch.from] === '[' && !open) open = ch;
+      else if (md[ch.from] === ']' && !close) close = ch;
+      else if (md[ch.from] === '(') paren = true;
+    } else if (ch.name === 'URL' && paren && destination === null) destination = md.slice(ch.from, ch.to);
+  }
+  // Nothing at all between the brackets, as in `[](address)`. A space is text and does not count.
+  return { close, paren, destination, empty: !!open && !!close && open.to === close.from };
+}
+
+/**
+ * Brackets that are not a link, drawn as written.
+ *
+ * **The brackets are text and the content between them is drawn like any other text.** The editor's
+ * rule reads "brackets that are not a link render as written", and this path took that to cover the
+ * whole run, so `[_note_]` came back with its underscores showing, in a title as much as in a
+ * document. The marks of the bracket pair and of a reference's second pair stay as typed; everything
+ * inside goes through the walk, so emphasis, code, escapes and entities are drawn.
+ */
+function writtenBrackets(node: SyntaxNode, c: Ctx): string {
+  let out = '';
+  let pos = node.from;
+  for (let ch = node.firstChild; ch; ch = ch.nextSibling) {
+    out += escape(c.md.slice(pos, ch.from));
+    if (ch.name === 'LinkMark' || ch.name === 'LinkLabel') out += escape(c.md.slice(ch.from, ch.to));
+    else if (ch.name === 'URL') out += autolink(c.md.slice(ch.from, ch.to));
+    else out += c.render(ch);
+    pos = ch.to;
+  }
+  return out + escape(c.md.slice(pos, node.to));
+}
+
+/** A code node's text: every `CodeText` piece, which leaves out a quote's or a list item's own prefix. */
+const codeText = (node: SyntaxNode, md: string): string =>
+  node.getChildren('CodeText').map((t) => md.slice(t.from, t.to)).join('');
+
+type Handler = (node: SyntaxNode, ctx: Ctx) => string;
+
+/**
+ * The constructs drawn by something more than `<tag>inner</tag>`.
+ *
+ * A handler wins over `TAGS` for the same name, so a construct can keep its principal element in
+ * `TAGS` for the safety check's allow-list and still have a drawing rule of its own here.
+ */
+export const HANDLERS: Record<string, Handler> = {
+  Link(node, c) {
+    const { md } = c;
+    const { close, paren, destination, empty } = linkParts(node, md);
+    /*
+     * **A bracketed label with no address is not a link, and the editor draws its brackets.**
+     *
+     * The parser makes `[1.9.4]` in a changelog heading a `Link`, because it cannot see whether a
+     * definition exists anywhere in the document and a reference link looks exactly like this.
+     * Treating that as a link deleted the brackets from every such line, which was most of the
+     * 4,512 lines where the editor left the source and this path changed it. With no address there
+     * is nothing to link to, so the honest answer is the characters the file holds.
+     *
+     * **The address is the one after the opening parenthesis and no other.** A bare address inside
+     * the brackets is text that happens to be an autolink, and `[see https://e.com]` used to be
+     * taken for a link to that address with the words before it as its label.
+     */
+    if (!close || (paren && destination === null)) return writtenBrackets(node, c);
+    let target = destination;
+    if (target === null) {
+      /*
+       * A reference link, if this document defines its label. `[a][ref]` names it in a second
+       * bracket pair, `[a][]` and `[a]` use their own text, and an undefined one is not a link at
+       * all: the editor draws its brackets, so this does too.
+       */
+      const labels = [];
+      for (let ch = node.firstChild; ch; ch = ch.nextSibling) if (ch.name === 'LinkLabel') labels.push(md.slice(ch.from + 1, ch.to - 1));
+      const own = md.slice(node.from + 1, close.from);
+      const label = labelKey(labels[labels.length - 1] || own);
+      if (!c.defined.has(label)) return writtenBrackets(node, c);
+      // A definition's destination is checked like any other. It is the nastier form of the two,
+      // because the payload sits at the bottom of the document away from the words that carry it.
+      target = c.defined.get(label) ?? '';
+    }
+    /*
+     * Only the label, not the destination. A link's children are `[`, its words, `](`, the address,
+     * an optional title and `)`, and the text between those last four is ordinary text as far as
+     * the walk is concerned: hiding the address alone left the space before a title in the output,
+     * so `[a](b "T")` drew as `a ` with a stray gap. The label ends at the mark that closes the
+     * brackets, and nothing after it is content.
+     */
+    let label = '';
+    let pos = node.from;
+    for (let ch = node.firstChild; ch && ch.from < close.from; ch = ch.nextSibling) {
+      label += escape(md.slice(pos, ch.from));
+      // An address before the closing bracket is part of the words, not the destination: it is
+      // written out as text, since an anchor inside an anchor is not valid HTML.
+      label += ch.name === 'URL' ? escape(md.slice(ch.from, ch.to)) : c.render(ch);
+      pos = ch.to;
+    }
+    // The words are the text before the closing mark, and stopping without taking them emptied every
+    // plain `[words](address)` in the corpus.
+    label += escape(md.slice(pos, close.from));
+    /*
+     * **A link with no words is its address.** `[](address)` has nothing to read or click, and an
+     * anchor with no content is in the page, counts as a link and cannot be seen: the same failure
+     * as a link that points at a fragment nothing defines, present, well formed and useless. The
+     * specification's rule is that nothing stands in for the destination, so it stands for itself,
+     * and the editor does this. Only the inline form: `[][label]` has a definition to take words
+     * from and the editor draws it without.
+     *
+     * The angle brackets of `<address>` are delimiters and are not shown, as they are not in the
+     * `href`.
+     */
+    if (empty && paren && destination !== null) label = escape(unangle(destination));
+    /*
+     * A refused destination drops the anchor and keeps the words.
+     *
+     * The alternative is an anchor with no `href`, which reads as a link, invites a click and does
+     * nothing — the failure mode already filed once as a defect on this path. Text that was never
+     * a link is the honest output, and the document is unchanged either way: this path writes
+     * nothing back.
+     */
+    return anchor(target, label);
+  },
+
+  /*
+   * **One space comes off each end of a code span that begins and ends with one, unless the span is
+   * all spaces.** That is CommonMark's rule and the editor's, and it exists because it is the only
+   * way to write a span whose content starts or ends with a backtick: `` ` `` is a backtick, and its
+   * two spaces are syntax. Kept, they put a space inside every such span, where the element's
+   * whitespace is visible.
+   *
+   * Three details are the whole of the correctness. One space, not all of them: two on each side
+   * leaves one. Both ends, since a span padded on one side is content. And not all spaces, which is
+   * the clause easiest to drop: `` ` ` `` is a single space and stays one. A line ending counts as a
+   * space for the test, as CommonMark has it after turning line endings into spaces, and is stripped
+   * as one; an interior line ending is left alone, because a browser folds it anyway and the output
+   * keeps the source's lines.
+   */
+  InlineCode(node, c) {
+    const marks = node.getChildren('CodeMark');
+    const open = marks[0];
+    const close = marks.length > 1 ? marks[marks.length - 1] : null;
+    if (!open || !close) return `<code>${c.inner(node)}</code>`;
+    let code = c.md.slice(open.to, close.from);
+    const asSpaces = code.replace(/\r\n|\r|\n/g, ' ');
+    if (asSpaces.length >= 2 && asSpaces.startsWith(' ') && asSpaces.endsWith(' ') && asSpaces.trim() !== '') {
+      code = code.replace(/^(?:\r\n|[ \r\n])/, '').replace(/(?:\r\n|[ \r\n])$/, '');
+    }
+    return `<code>${escape(code)}</code>`;
+  },
+
+  /*
+   * A task's checkbox is the one replacement in scope: `[x]` leaves the text and something the
+   * file does not contain stands in its place. It is a `Task` wrapping the marker and the words,
+   * inside the `ListItem`, rather than a property of the item.
+   */
+  Task(node, c) {
+    const marker = childText(node, 'TaskMarker', c.md) ?? '[ ]';
+    return `<input type="checkbox" disabled${/[xX]/.test(marker) ? ' checked' : ''}>${c.inner(node)}`;
+  },
+
+  /*
+   * A callout is a quote that opens `> [!NOTE]`, and it belongs to the `document` profile.
+   *
+   * It is not in the grammar at all: the editor recognises the marker in its drawing layer, so the
+   * tree here is an ordinary `Blockquote` and nothing would stop this rendering it as one. That is
+   * the quiet wrong answer this path exists to avoid, because the editor draws a titled panel and
+   * this would draw a quote whose first line reads `!NOTE`. Named and left as source instead.
+   */
+  Blockquote(node, c) {
+    const first = c.md.slice(node.from, node.to).split('\n', 1)[0];
+    if (/^\s*>?\s*\[![\w-]+\]/.test(first)) return c.refuse('Callout', node);
+    return `<blockquote>${c.inner(node)}</blockquote>`;
+  },
+
+  /*
+   * A paragraph inside a list item draws as the item's own line rather than as a block of its
+   * own, which is both what the editor shows and what a tight list means. Wrapping it would put
+   * a `<p>` in the output that the comparison against `drawMap` has nothing to match.
+   */
+  Paragraph(node, c) {
+    return node.parent?.name === 'ListItem' ? c.inner(node) : `<p>${c.inner(node)}</p>`;
+  },
+
+  /*
+   * **An ordered list is numbered by the renderer, from the first item's own number.**
+   *
+   * This emitted the file's literal markers and suppressed the browser's, on the reasoning that
+   * a number the file does not contain is content the file does not contain. That conflated two
+   * jobs. The editor keeps the characters because it is an editor over the bytes; a renderer
+   * renders what the document *means*, and CommonMark says an ordered list means "start at the
+   * first item's number and count". So `1.` three times means 1, 2, 3, which is what GitHub
+   * shows and what anybody hand-writing a list expects — and it is the most common way they are
+   * written. Emitting the markers gave 1, 1, 1.
+   */
+  OrderedList(node, c) {
+    const first = /^\s*(\d+)/.exec(c.md.slice(node.from, node.to));
+    const start = first ? Number(first[1]) : 1;
+    return `<ol${start === 1 ? '' : ` start="${start}"`}>${c.inner(node)}</ol>`;
+  },
+
+  /*
+   * Both Setext spellings are headings and are drawn as the ATX ones are. The content runs to the
+   * line before the underline, so what `inner` returns ends in the newline that separates them.
+   * That newline stays: HTML collapses it, and it keeps the output the same number of lines as the
+   * source, which is what lets `check-render-agrees.mjs` compare the two a line at a time.
+   */
+  SetextHeading1: (node, c) => `<h1>${c.inner(node)}</h1>`,
+  SetextHeading2: (node, c) => `<h2>${c.inner(node)}</h2>`,
+
+  /*
+   * A definition has no drawing. It is bookkeeping for the links that name it, and CommonMark takes
+   * it out of the document, so the output holds nothing for it. The editor draws it as the source
+   * line it is, because a person editing needs to see it, and that is the one construct where the
+   * two paths differ on purpose; `check-render-agrees.mjs` leaves those lines out by name.
+   *
+   * What it leaves behind is whitespace only: the text around a definition is kept as it is for
+   * every other node, so the output stays the source's number of lines.
+   */
+  LinkReference: () => '',
+
+  HorizontalRule: () => '<hr>',
+
+  // The node covers the marker and the newline that follows it, so the newline is written back.
+  HardBreak: () => '<br>\n',
+
+  // A backslash before punctuation: the punctuation is the text and the backslash is gone.
+  Escape: (node, c) => escape(c.md.slice(node.from + 1, node.to)),
+
+  Entity: (node, c) => escape(decodeEntity(c.md.slice(node.from, node.to))),
+
+  /*
+   * **The language word becomes a class only when it is a word.** The info string is whatever
+   * follows the opening fence, so it is document text going into an attribute. Escaping would keep
+   * it inside the attribute, and the pattern keeps it to the characters a language name uses, so a
+   * string meant to be something else yields no class at all instead of a strange one.
+   */
+  FencedCode(node, c) {
+    const word = (childText(node, 'CodeInfo', c.md) ?? '').trim().split(/\s+/)[0];
+    const cls = /^[A-Za-z0-9_+#.-]+$/.test(word) ? ` class="language-${word}"` : '';
+    const text = codeText(node, c.md);
+    /*
+     * One output line for each source line, the fences' two included. A browser drops a newline that
+     * comes straight after `<pre>`, so the opening fence's line costs nothing on screen, and the
+     * newline before the closing tag is the one CommonMark writes after the last line of code. What
+     * is left over is counted rather than assumed, because an unclosed fence has no closing line and
+     * an empty one has no code.
+     */
+    const lines = (s: string): number => s.split('\n').length - 1;
+    const pad = '\n'.repeat(Math.max(0, lines(c.md.slice(node.from, node.to)) - (1 + lines(text))));
+    return `<pre>\n<code${cls}>${escape(text)}${pad}</code></pre>`;
+  },
+
+  CodeBlock: (node, c) => `<pre><code>${escape(codeText(node, c.md))}</code></pre>`,
+
+  Autolink(node, c) {
+    const url = childText(node, 'URL', c.md);
+    return url === null ? escape(c.md.slice(node.from, node.to)) : autolink(url);
+  },
+
+  // A bare address in running text. One inside a link is hidden before it gets here.
+  URL: (node, c) => autolink(c.md.slice(node.from, node.to)),
+
+  /*
+   * An image is its address and its description. The address goes through the same allow-list a
+   * link's does, because `src` fetches whatever it names and a `javascript:` or `data:` address is
+   * refused here for the same reason it is on a link. A refused image keeps its description as
+   * text, which is the honest remainder: the words were the document's, the picture was not
+   * permitted. The description is plain text with its marks gone, since an attribute has no
+   * emphasis.
+   */
+  Image(node, c) {
+    const { md } = c;
+    const marks = node.getChildren('LinkMark');
+    const open = marks[0];
+    const close = marks.find((m) => md[m.from] === ']');
+    if (!open || !close) return escape(md.slice(node.from, node.to));
+    let alt = '';
+    let pos = open.to;
+    for (let ch = open.nextSibling; ch && ch.from < close.from; ch = ch.nextSibling) {
+      alt += md.slice(pos, ch.from) + plainText(ch, md);
+      pos = ch.to;
+    }
+    alt += md.slice(pos, close.from);
+    let dest = childText(node, 'URL', md);
+    if (dest === null) {
+      // `![alt][ref]`, `![alt][]` and `![alt]` name their definition the way a reference link does.
+      const label = node.getChild('LinkLabel');
+      const key = labelKey(label && label.to - label.from > 2 ? md.slice(label.from + 1, label.to - 1) : md.slice(open.to, close.from));
+      if (!c.defined.has(key)) return writtenBrackets(node, c);
+      dest = c.defined.get(key) ?? '';
+    }
+    const safe = safeDestination(dest);
+    return safe === null ? escape(alt) : `<img src="${escape(safe)}" alt="${escape(alt)}">`;
+  },
+
+  /*
+   * A table is its header, its alignment row and its body. The dialect parses the whole structure,
+   * so this reads cells off the delimiters rather than splitting the source on `|`, which would
+   * split an escaped pipe and a pipe inside a cell's own markup.
+   *
+   * Alignment is the `align` attribute rather than a style, because a consumer's content-security
+   * policy may forbid inline styles and this path has no business depending on one that does not.
+   * A row shorter than the header is padded and a longer one is cut at it, as GFM says.
+   */
+  Table(node, c) {
+    const { md } = c;
+    const cellsOf = (row: SyntaxNode): string[] => {
+      const text = md.slice(row.from, row.to);
+      const segments: { from: number; to: number; cell: SyntaxNode | null }[] = [];
+      let cur: { from: number; to: number; cell: SyntaxNode | null } = { from: row.from, to: row.to, cell: null };
+      for (let ch = row.firstChild; ch; ch = ch.nextSibling) {
+        if (ch.name === 'TableDelimiter') {
+          cur.to = ch.from;
+          segments.push(cur);
+          cur = { from: ch.to, to: row.to, cell: null };
+        } else if (ch.name === 'TableCell') cur.cell = ch;
+      }
+      segments.push(cur);
+      // The empty segment outside a leading or trailing pipe is not a cell.
+      if (/^\s*\|/.test(text) && md.slice(segments[0].from, segments[0].to).trim() === '') segments.shift();
+      if (/\|\s*$/.test(text) && segments.length && md.slice(segments[segments.length - 1].from, segments[segments.length - 1].to).trim() === '') segments.pop();
+      return segments.map((s) => (s.cell ? c.inner(s.cell).trim() : ''));
+    };
+    const header = node.getChild('TableHeader');
+    const rule = node.getChild('TableDelimiter');
+    if (!header || !rule) return c.refuse('Table', node, 'unimplemented');
+    const heads = cellsOf(header);
+    const aligns = md
+      .slice(rule.from, rule.to)
+      .split('|')
+      .map((s) => s.trim())
+      .filter((s, i, all) => !(s === '' && (i === 0 || i === all.length - 1)))
+      .map((s) => (s.startsWith(':') && s.endsWith(':') ? 'center' : s.endsWith(':') ? 'right' : s.startsWith(':') ? 'left' : ''));
+    const cell = (tag: string, i: number, html: string): string => `<${tag}${aligns[i] ? ` align="${aligns[i]}"` : ''}>${html}</${tag}>`;
+    const head = `<thead><tr>${heads.map((h, i) => cell('th', i, h)).join('')}</tr></thead>`;
+    const rows = node.getChildren('TableRow').map((row) => {
+      const cells = cellsOf(row);
+      return `<tr>${heads.map((_, i) => cell('td', i, cells[i] ?? '')).join('')}</tr>`;
+    });
+    // A newline wherever the source has one, the alignment row's included, so that the output is
+    // the source's number of lines. The browser sees whitespace between elements and ignores it.
+    return `<table>${head}\n${rows.length ? `\n<tbody>${rows.join('\n')}</tbody>` : ''}</table>`;
+  },
+
+  /*
+   * A footnote reference is drawn where it stands, as the editor draws it: a superscript number with
+   * the note for a tooltip. Gathering the notes into a list at the foot of the output is the
+   * convention on a page, and the editor has no foot of the page, so both draw the definition where
+   * it was written. A reference or a definition that does not resolve stays as written.
+   */
+  FootnoteReference(node, c) {
+    const label = childText(node, 'FootnoteLabel', c.md);
+    const key = label === null ? '' : footnoteKey(label);
+    const n = c.notes.numbers.get(key);
+    if (n === undefined) return escape(c.md.slice(node.from, node.to));
+    return `<sup class="md-footnote-ref" title="${escape(c.notes.defs.get(key)?.note ?? '')}">${n}</sup>`;
+  },
+
+  FootnoteDefinition(node, c) {
+    const label = childText(node, 'FootnoteLabel', c.md);
+    const key = label === null ? '' : footnoteKey(label);
+    const n = c.notes.numbers.get(key);
+    // Only the first definition of a label counts, and one nothing refers to has no number.
+    if (n === undefined || c.notes.defs.get(key)?.from !== node.from) return escape(c.md.slice(node.from, node.to));
+    let body = '';
+    let pos = -1;
+    for (let ch = node.firstChild; ch; ch = ch.nextSibling) {
+      if (ch.name === 'FootnoteMark' || ch.name === 'FootnoteLabel') continue;
+      // The text between two of the note's blocks is kept, so a note of several paragraphs is the
+      // source's number of lines.
+      if (pos >= 0) body += escape(c.md.slice(pos, ch.from));
+      body += pos < 0 && ch.name === 'Paragraph' ? c.inner(ch) : c.render(ch);
+      pos = ch.to;
+    }
+    return `<div class="md-footnote-def"><sup class="md-footnote-num">${n}</sup> ${body}</div>`;
+  },
+
+  /*
+   * An inline HTML pair is drawn as its content with a class, and the document's own tag is never
+   * written out. That is the specification's rule and `check-render-safety.mjs` is what holds it:
+   * passing a tag through would make this a sanitiser, which is a component somebody owns for ever.
+   * The opening tag becomes a `span` carrying the editor's class and the closing tag closes it.
+   *
+   * Which tags and which pairs is `inlineHtmlPairAt`'s answer, found for the whole document before
+   * the walk, so a tag it does not pair (one with an attribute, an unmatched one, a tag on another
+   * line) is a construct this profile does not draw and comes back as source.
+   */
+  HTMLTag(node, c) {
+    if (c.pairs.close.has(node.from)) return '</span>';
+    const pair = c.pairs.open.get(node.from);
+    if (!pair) return c.refuse('HTMLTag', node, 'profile');
+    const title = pair.title === undefined ? '' : ` title="${escape(pair.title.replace(/&(?:#\d+|#[xX][0-9a-fA-F]+|[A-Za-z][A-Za-z0-9]*);/g, decodeEntity))}"`;
+    return `<span class="${escape(pair.cls)}"${title}>`;
+  },
+};
+
+export function renderMarkdown(markdown: string, profile: RenderProfile = 'notes'): RenderResult {
   const tree = dialectParser.parse(markdown);
   const outOfScope: OutOfScope[] = [];
 
@@ -236,39 +978,49 @@ export function renderMarkdown(markdown: string, profile: Profile = 'notes'): Re
    * one missing rule.
    */
   /*
+   * What a profile carries decides whether a pass over the tree is worth making, and what a
+   * construct does. Asked here because the definitions below are the first thing that needs it.
+   */
+  const carries = (name: string): boolean => PROFILE_TABLE[name]?.includes(profile) ?? false;
+
+  /*
    * The labels this document defines, so a reference link can be told from a bracketed phrase.
    *
    * Read off the tree's own `LinkReference` nodes rather than by matching `[x]:` with a pattern,
    * because what counts as a definition is the parser's question and a second answer here would be
-   * the kind that drifts. Labels match whatever their case, as CommonMark says.
+   * the kind that drifts. Labels match as `labelKey` says, the first definition of a label is the
+   * one that counts, and a definition can sit in a list item or a quote as well as at the top, which
+   * is where the editor looks for them too.
+   *
+   * A profile that does not carry definitions defines nothing, so in a `field` a reference link has
+   * nothing to resolve to and is text. Nothing could define a label there: a field is one line.
    */
   const defined = new Map<string, string>();
-  for (let n = tree.topNode.firstChild; n; n = n.nextSibling) {
-    if (n.name !== 'LinkReference') continue;
-    let label: string | null = null;
-    let url = '';
-    for (let c = n.firstChild; c; c = c.nextSibling) {
-      if (c.name === 'LinkLabel') label = markdown.slice(c.from + 1, c.to - 1).toLowerCase();
+  const collect = (parent: SyntaxNode): void => {
+    for (let n = parent.firstChild; n; n = n.nextSibling) {
+      if (DEFINITION_HOSTS.has(n.name)) collect(n);
+      if (n.name !== 'LinkReference') continue;
+      const label = n.getChild('LinkLabel');
+      if (!label) continue;
+      const key = labelKey(markdown.slice(label.from + 1, label.to - 1));
       // The definition's address, which is the whole point of reading these: a reference link that
       // resolves to its own label is a styled, clickable link pointing at a fragment nothing defines,
       // and it looks correct until somebody clicks it.
-      if (c.name === 'URL') url = markdown.slice(c.from, c.to);
+      if (key !== '' && !defined.has(key)) defined.set(key, childText(n, 'URL', markdown) ?? '');
     }
-    if (label !== null) defined.set(label, url);
-  }
+  };
+  if (carries('LinkReference')) collect(tree.topNode);
 
   const lines = markdown.split('\n');
   const matterEnd = frontMatterEnd({ lines: lines.length, line: (n) => ({ text: lines[n - 1] ?? '' }) });
   let matterTo = -1;
   if (matterEnd > 0) {
     matterTo = lines.slice(0, matterEnd).join('\n').length;
-    outOfScope.push({ construct: 'FrontMatter', from: 0, to: matterTo });
+    outOfScope.push({ construct: 'FrontMatter', from: 0, to: matterTo, reason: 'profile' });
   }
 
-  const carried = (name: string): boolean => (profile === 'field' ? FIELD_ONLY.has(name) : name in TAGS || name === 'Link');
-
   /**
-   * A construct this profile does not carry, named in `outOfScope` and emitted as its own source
+   * A construct this render does not draw, named in `outOfScope` and emitted as its own source
    * inside an element that says what it is.
    *
    * Three answers were available and two of them are worse. **Dropping it** makes a table that
@@ -288,17 +1040,21 @@ export function renderMarkdown(markdown: string, profile: Profile = 'notes'): Re
    * **Which of the two depends on where the construct sits, and that is about valid HTML rather than
    * about meaning.** A `div` inside a `p` ends the paragraph, and an out-of-scope construct is not
    * always a block: an image or a run of inline maths sits inside a paragraph, so a `div` there would
-   * produce output a browser restructures. Anything under a `Paragraph` is wrapped in a `span`;
-   * everything else, which is the block case a table is the example of, in a `div`.
+   * produce output a browser restructures. Anything under a `Paragraph`, a heading or a table cell
+   * is wrapped in a `span`; everything else, which is the block case a table is the example of, in a
+   * `div`. A `field` is one
+   * line of inline content wherever a consumer puts it, so every wrapper in one is a `span`: a
+   * heading marker typed into a title is a construct the field does not carry, and it must not
+   * become a block in the middle of a line.
    *
    * The source is escaped, as it already was. A construct whose text contains `</div>` is the input
    * shaped to close the wrapper from inside, and `escape` turns its angle brackets into entities
    * before it reaches an element at all.
    */
-  const unrendered = (construct: string, node: SyntaxNode): string => {
-    outOfScope.push({ construct, from: node.from, to: node.to });
-    let inline = false;
-    for (let p = node.parent; p; p = p.parent) if (p.name === 'Paragraph') inline = true;
+  const unrendered = (construct: string, node: SyntaxNode, reason: Reason): string => {
+    outOfScope.push({ construct, from: node.from, to: node.to, reason });
+    let inline = profile === 'field';
+    for (let p = node.parent; p; p = p.parent) if (INLINE_HOSTS.has(p.name)) inline = true;
     const el = inline ? 'span' : 'div';
     return `<${el} class="sheaf-unrendered" data-construct="${escape(construct)}">${escape(markdown.slice(node.from, node.to))}</${el}>`;
   };
@@ -308,7 +1064,9 @@ export function renderMarkdown(markdown: string, profile: Profile = 'notes'): Re
     let out = '';
     let pos = node.from;
     for (let c = node.firstChild; c; c = c.nextSibling) {
-      out += escape(markdown.slice(pos, c.from));
+      // An indented code block's node starts after its indentation, so the gap before it ends in the
+      // four spaces that made it code. Left in, they would sit in the output in front of the `pre`.
+      out += escape(c.name === 'CodeBlock' ? markdown.slice(pos, c.from).replace(/[ \t]+$/, '') : markdown.slice(pos, c.from));
       out += render(c);
       pos = c.to;
       if (BLOCK_MARKS.has(c.name)) while (pos < node.to && (markdown[pos] === ' ' || markdown[pos] === '\t')) pos++;
@@ -316,144 +1074,69 @@ export function renderMarkdown(markdown: string, profile: Profile = 'notes'): Re
     return out + escape(markdown.slice(pos, node.to));
   };
 
+  /*
+   * What footnotes resolve and which inline HTML pairs are drawn, found for the whole document before
+   * the walk because each needs to see nodes that come later: a reference is numbered by where it
+   * stands among the others, and an opening tag is paired with a closing one further along. A
+   * profile that does not carry the construct skips the pass, since it would be reading nodes that
+   * are about to be refused.
+   */
+  const notes = carries('FootnoteReference') ? footnoteIndex(tree, markdown) : { defs: new Map(), numbers: new Map() };
+  const pairs = { open: new Map<number, InlineHtmlPair>(), close: new Set<number>() };
+  if (carries('HTMLTag')) {
+    const doc = {
+      sliceString: (from: number, to?: number) => markdown.slice(from, to),
+      lineAt: (pos: number) => {
+        const end = markdown.indexOf('\n', pos);
+        return { to: end < 0 ? markdown.length : end };
+      },
+    } as unknown as Text;
+    tree.iterate({
+      enter: (tag) => {
+        if (tag.name !== 'HTMLTag') return;
+        const pair = inlineHtmlPairAt(tag.node, doc);
+        if (!pair) return;
+        pairs.open.set(pair.openFrom, pair);
+        pairs.close.add(pair.closeFrom);
+      },
+    });
+  }
+
+  const ctx: Ctx = {
+    md: markdown,
+    profile,
+    defined,
+    notes,
+    pairs,
+    render: (n) => render(n),
+    inner,
+    refuse: (construct, node, reason) =>
+      unrendered(construct, node, reason ?? (scopeOf(construct, profile) === 'profile' ? 'profile' : 'unimplemented')),
+  };
+
   const render = (node: SyntaxNode): string => {
     const name = node.name;
     // Inside the front matter, which is metadata rather than prose: its own bytes, nothing else.
     if (matterTo >= 0 && node.from < matterTo && name !== 'Document') return escape(markdown.slice(node.from, Math.min(node.to, matterTo)));
 
-
+    if (name === 'Document') return inner(node);
     if (HIDDEN.has(name)) return '';
-
     if (HIDDEN_IN_LINK.has(name) && node.parent?.name === 'Link') return '';
 
-    if (name === 'Link' && carried('Link')) {
-      const href = childText(node, 'URL', markdown);
-      /*
-       * **A bracketed label with no address is not a link, and the editor draws its brackets.**
-       *
-       * The parser makes `[1.9.4]` in a changelog heading a `Link`, because it cannot see whether a
-       * definition exists anywhere in the document and a reference link looks exactly like this.
-       * Treating that as a link deleted the brackets from every such line, which was most of the
-       * 4,512 lines where the editor left the source and this path changed it. With no address there
-       * is nothing to link to, so the honest answer is the characters the file holds.
-       */
-      if (href === null) {
-        /*
-         * A reference link, if this document defines its label. `[a][ref]` names it in a second
-         * bracket pair, `[a][]` and `[a]` use their own text, and an undefined one is not a link at
-         * all: the editor draws its brackets, so this does too.
-         */
-        const labels = [];
-        for (let c = node.firstChild; c; c = c.nextSibling) if (c.name === 'LinkLabel') labels.push(markdown.slice(c.from + 1, c.to - 1));
-        const own = markdown.slice(node.from + 1, markdown.indexOf(']', node.from));
-        const label = (labels[labels.length - 1] || own).toLowerCase();
-        if (!defined.has(label)) return escape(markdown.slice(node.from, node.to));
-        const target = defined.get(label) ?? '';
-        let text = '';
-        let at = node.from;
-        for (let c = node.firstChild; c; c = c.nextSibling) {
-          if (c.name === 'LinkMark' && markdown[c.from] === ']') {
-            text += escape(markdown.slice(at, c.from));
-            break;
-          }
-          text += escape(markdown.slice(at, c.from)) + render(c);
-          at = c.to;
-        }
-        // A definition's destination is checked like any other. It is the nastier form of the two,
-        // because the payload sits at the bottom of the document away from the words that carry it.
-        const safeTarget = safeDestination(target);
-        return safeTarget === null ? text : `<a href="${escape(safeTarget)}">${text}</a>`;
-      }
-      /*
-       * Only the label, not the destination. A link's children are `[`, its words, `](`, the address,
-       * an optional title and `)`, and the text between those last four is ordinary text as far as
-       * the walk is concerned: hiding the address alone left the space before a title in the output,
-       * so `[a](b "T")` drew as `a ` with a stray gap. The label ends at the mark that opens the
-       * destination, and nothing after it is content.
-       */
-      let label = '';
-      let pos = node.from;
-      for (let c = node.firstChild; c; c = c.nextSibling) {
-        if (c.name === 'LinkMark' && markdown[c.from] === ']') {
-          // The words are the text before this mark, and breaking without taking them emptied every
-          // plain `[words](address)` in the corpus.
-          label += escape(markdown.slice(pos, c.from));
-          break;
-        }
-        label += escape(markdown.slice(pos, c.from));
-        label += render(c);
-        pos = c.to;
-      }
-      /*
-       * A refused destination drops the anchor and keeps the words.
-       *
-       * The alternative is an anchor with no `href`, which reads as a link, invites a click and does
-       * nothing — the failure mode already filed once as a defect on this path. Text that was never
-       * a link is the honest output, and the document is unchanged either way: this path writes
-       * nothing back.
-       */
-      const safeHref = safeDestination(href);
-      return safeHref === null ? label : `<a href="${escape(safeHref)}">${label}</a>`;
-    }
-
     /*
-     * A task's checkbox is the one replacement in scope: `[x]` leaves the text and something the
-     * file does not contain stands in its place. It is a `Task` wrapping the marker and the words,
-     * inside the `ListItem`, rather than a property of the item.
-     */
-    if (name === 'Task' && profile !== 'field') {
-      const marker = childText(node, 'TaskMarker', markdown) ?? '[ ]';
-      return `<input type="checkbox" disabled${/[xX]/.test(marker) ? ' checked' : ''}>${inner(node)}`;
-    }
-
-    /*
-     * A callout is a quote that opens `> [!NOTE]`, and it belongs to the `document` profile.
+     * Out of scope, and said so rather than guessed at, with the reason it is.
      *
-     * It is not in the grammar at all: the editor recognises the marker in its drawing layer, so the
-     * tree here is an ordinary `Blockquote` and nothing would stop this rendering it as one. That is
-     * the quiet wrong answer this path exists to avoid, because the editor draws a titled panel and
-     * this would draw a quote whose first line reads `!NOTE`. Named and left as source instead.
+     * The profile table decides, and the renderer's own ability to draw only splits the answer: a
+     * construct the profile does not name is a decision, and one it names that nothing here draws is
+     * a gap. Before that split an omission and a decision were the same value.
      */
-    if (name === 'Blockquote') {
-      const first = markdown.slice(node.from, node.to).split('\n', 1)[0];
-      if (/^\s*>?\s*\[![\w-]+\]/.test(first)) return unrendered('Callout', node);
-    }
+    const scope = scopeOf(name, profile);
+    if (scope !== 'rendered') return unrendered(name, node, scope);
 
+    const handler = HANDLERS[name];
+    if (handler) return handler(node, ctx);
     const tag = TAGS[name];
-    if (tag && carried(name)) {
-      /*
-       * A paragraph inside a list item draws as the item's own line rather than as a block of its
-       * own, which is both what the editor shows and what a tight list means. Wrapping it would put
-       * a `<p>` in the output that the comparison against `drawMap` has nothing to match.
-       */
-      if (name === 'Paragraph' && node.parent?.name === 'ListItem') return inner(node);
-      /*
-       * **An ordered list is numbered by the renderer, from the first item's own number.**
-       *
-       * This emitted the file's literal markers and suppressed the browser's, on the reasoning that
-       * a number the file does not contain is content the file does not contain. That conflated two
-       * jobs. The editor keeps the characters because it is an editor over the bytes; a renderer
-       * renders what the document *means*, and CommonMark says an ordered list means "start at the
-       * first item's number and count". So `1.` three times means 1, 2, 3, which is what GitHub
-       * shows and what anybody hand-writing a list expects — and it is the most common way they are
-       * written. Emitting the markers gave 1, 1, 1.
-       */
-      if (name === 'OrderedList') {
-        const first = /^\s*(\d+)/.exec(markdown.slice(node.from, node.to));
-        const start = first ? Number(first[1]) : 1;
-        return `<ol${start === 1 ? '' : ` start="${start}"`}>${inner(node)}</ol>`;
-      }
-      return `<${tag}>${inner(node)}</${tag}>`;
-    }
-
-    /*
-     * Out of scope, and said so rather than guessed at.
-     *
-     * There used to be two branches here, one testing `node.firstChild === null` and one not, with
-     * the same body. The second subsumes the first, so the first never decided anything; collapsed
-     * rather than left as a distinction a reader would look for a reason behind.
-     */
-    if (name !== 'Document' && !tag) return unrendered(name, node);
+    if (tag) return `<${tag}>${inner(node)}</${tag}>`;
     return inner(node);
   };
 

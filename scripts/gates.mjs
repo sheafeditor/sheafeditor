@@ -6,6 +6,16 @@
  *   npm run gates            stops at the first failure, for a person at a terminal
  *   npm run gates -- --all   runs every gate and reports all of them, which is what CI does
  *
+ * The list of gates is in `lib/gateSteps.mjs`, with the reasoning for each one beside it and, for
+ * the expensive ones, the mapping that says which changes they can have something to say about.
+ *
+ * **Which of them run is derived from the diff, and never chosen.** A handful of these hold almost
+ * all of the wall clock, and one of them runs when the change can reach what it covers. The
+ * reasoning is in `lib/gateTier.mjs`; the short version is that an opt-in quick tier means the full
+ * run stops happening and an opt-in full tier means the expensive gates stop happening, and both
+ * failures are silent. `--all` turns selection off rather than selecting a wider tier, which is
+ * what CI and the release check run.
+ *
  * One command rather than several chained together, because a chain of shell
  * commands is harder for both people and tooling to approve, and because the
  * steps must not overlap: `npm test` and `npm run build` both drive esbuild over
@@ -17,167 +27,49 @@
  * reached, because "all gates passed" is the same sentence whether that was nine or
  * twenty-three.
  *
- * A step that *skips* is not a step that passed. Five of these are browser-driven,
+ * A step that *skips* is not a step that passed. **Fourteen** of these are browser-driven,
  * and each one skips and exits 0 when it cannot find Chrome or `playwright-core`.
- * Those five are the whole layout half of the bar, and jsdom can see none of what
- * they cover, so one missing dependency used to take all five out at once and the
+ * Those fourteen are the whole layout half of the bar, and jsdom can see none of what
+ * they cover, so one missing dependency used to take all of them out at once and the
  * run still said "All gates passed". This reads each step's output for the line the
  * scripts already print and refuses to claim success when one appears.
+ *
+ * This said "five" until 2026-10-07, when it was counted rather than remembered:
+ * run the gates with `PLAYWRIGHT_CORE` pointing at a path that does not exist and
+ * `SHEAF_ALLOW_SKIPPED_GATES=1`, and exactly twelve printed `skipped` — Table widths,
+ * Diagrams, Caret at markers, Paging, Sticky header, Frame children, Touch layout,
+ * Indent and rhythm, Board drag, Hover bar, Cell source, Code colours. They were 336s
+ * of a 551s run. `Mounted click` and `Field height` were both added the same day and
+ * are the thirteenth and fourteenth, so the twelve and the 336s are from before them
+ * and neither number has been taken again. **This count is a thing to re-derive with
+ * the command above rather than to increment**, which is how it came to say five.
+ * **Four gates in the same stretch need no browser at all**, and one
+ * of them, `Editing matrix`, is 90s on its own, so anyone moving "the browser block"
+ * to a nightly on the strength of where these sit in the list would leave it behind.
  *
  * Reading the output rather than checking whether Chrome is installed, on purpose:
  * it detects the event rather than predicting its cause, so a future reason to skip
  * is caught without this file knowing about it.
+ *
+ * Every run is also timed, per gate, and the timings are both printed and appended to
+ * `.claude/scratch/gate-timings.jsonl`. See **Timing** at the bottom of this file for
+ * what is recorded and why, and `scripts/gate-timings.mjs` for reading it back. The
+ * timing lives here rather than in the loop so that nothing about which gates run, in
+ * what order, or what any of them checks passes through it: it wraps `run` and reads
+ * the same output the loop already captured.
  */
 
-import { spawn } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
+import { appendFileSync, mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { runGates } from './lib/gateRun.mjs';
+import { readVerdict, complaintFor } from './lib/gateOutput.mjs';
+import { STEPS } from './lib/gateSteps.mjs';
+import { CHEAP_ONLY, changedPaths, coveredBy, patternsFor, selectSteps } from './lib/gateTier.mjs';
 
 const REPO = dirname(dirname(fileURLToPath(import.meta.url)));
-const bin = (name) => join(REPO, 'node_modules', '.bin', name);
 
-const STEPS = [
-  // First because it is the cheapest, and because a page that should not ship
-  // is worth hearing about in a second rather than after the suites.
-  ['Docs', process.execPath, [join(REPO, 'scripts', 'check-docs.mjs')]],
-  // The same private terms as the docs check, across everything that ships rather than `docs/`
-  // alone. Two tracker ids had shipped in comments outside `docs/`, which is the only reason
-  // they survived: the rule that would have caught them was already written down.
-  ['Private terms', process.execPath, [join(REPO, 'scripts', 'check-private-terms.mjs')]],
-  // Also cheap, and a clash here makes every later result untrustworthy: two scenarios
-  // under one id means a run reports one of them and the other is never asked for.
-  ['Scenario ids', process.execPath, [join(REPO, 'scripts', 'check-scenarios.mjs')]],
-  // Cheap too, and it catches the quietest kind of drift: a feature documented for a reader
-  // who then has nothing in the corpus to open. Four features shipped that way before this
-  // existed, because nothing was comparing the two directories.
-  ['Feature samples', process.execPath, [join(REPO, 'scripts', 'check-samples.mjs')]],
-  // Cheap as well, and the one generated file in `src/`: the emoji table is written
-  // from gemoji and committed, so an upgrade of that dependency that nobody
-  // regenerated after would otherwise ship a table quietly older than the lock file.
-  ['Emoji table', process.execPath, [join(REPO, 'scripts', 'gen-emoji.mjs'), '--check']],
-  // Cheap and static: a padding written for an editor line in the stylesheet, without naming
-  // `.cm-line`, loses to CodeMirror's own rule and never reaches the screen. One had been losing
-  // silently, so a reader of the stylesheet believed a number the product ignored.
-  ['Line padding', process.execPath, [join(REPO, 'scripts', 'check-css-line-padding.mjs')]],
-  /*
-   * The dialect may not reach an editor. Cheap, static, and ahead of the type check because it is
-   * about what a module is allowed to import rather than about whether it compiles: a grammar that
-   * pulls `@codemirror/view` type-checks perfectly and costs every consumer 70 KB.
-   */
-  ['Dialect imports', process.execPath, [join(REPO, 'scripts', 'check-dialect-imports.mjs')]],
-  ['Field imports', process.execPath, [join(REPO, 'scripts', 'check-field-imports.mjs')]],
-  ['Render safety', process.execPath, [join(REPO, 'scripts', 'check-render-safety.mjs')]],
-  ['Type check', bin('tsc'), ['--noEmit']],
-  /*
-   * The suites' own TypeScript, which until 2026-10-02 nothing compiled: `tsconfig.json` includes
-   * `src` alone, and esbuild strips types without checking them, so a type error in any of the 74
-   * `.ts` files under `test/` was invisible unless it also broke at runtime. Two configs rather than
-   * one include, because the build's `rootDir` is `src` and its `outDir` is `dist`, and this must
-   * not change a byte of what ships.
-   */
-  ['Type check (tests)', bin('tsc'), ['-p', join(REPO, 'tsconfig.test.json')]],
-  ['Tests', process.execPath, [join(REPO, 'scripts', 'run-tests.mjs')]],
-  // The jsdom half of the real-editor scenarios: every area, about half a minute.
-  // It fails on any failing scenario, so the count it reports is the whole of it.
-  ['Editor scenarios (jsdom)', process.execPath, [join(REPO, 'test', 'real-editor', 'run-unit.mjs')]],
-  ['Build', process.execPath, [join(REPO, 'esbuild.mjs'), '--production']],
-  /*
-   * What a consumer downloads to start editing, against the size committed beside it. A gate rather
-   * than part of `npm test`, for one reason: it measures the built files, and `npm test` runs before
-   * the build. Reading an older build would be worse than not reading one, because the number would
-   * be real and about the wrong tree.
-   *
-   * It ratchets rather than gates: being over budget is reported on every run and only growth fails,
-   * so a kilobyte added without a word in the diff stops the landing and a deliberate increase is a
-   * line somebody reads.
-   */
-  ['Bundle size', process.execPath, [join(REPO, 'scripts', 'check-bundle-size.mjs')]],
-  /*
-   * The site demo's host against the wire it implements. It is the third host and the only one no
-   * type reaches: hand-written JavaScript in a repository that does not depend on this one, so a
-   * message added here is a compile error in two hosts and silence in the third.
-   *
-   * It skips, loudly, when the site checkout is not beside this one, so a clone of this repository
-   * passes its gates on its own.
-   */
-  ['Demo host', process.execPath, [join(REPO, 'scripts', 'check-demo-host.mjs')]],
-  // The corpus read through the editor's own live preview: a construct that quietly falls
-  // back to showing its Markdown is a regression a person sees and no unit check does. It
-  // costs about a second. It was not here before, and that is exactly why its own
-  // known-gaps list went stale: footnotes shipped, the list still called them unrendered,
-  // and the script had been saying so to nobody for days.
-  ['Rendered corpus', process.execPath, [join(REPO, 'scripts', 'check-render.mjs')]],
-  // The same corpus question asked of keystrokes rather than of documents: what every
-  // gesture, at every caret position an arrow walk reaches, does to the drawn page. It
-  // holds a ledger of what fails today and fails when a count moves in either direction,
-  // so it catches a regression and an unrecorded fix alike. About a minute, and it needs
-  // the larger heap for the same reason the suites do: it mounts eleven thousand editors.
-  ['Editing matrix', process.execPath, ['--max-old-space-size=8192', join(REPO, 'scripts', 'check-editing.mjs')]],
-  // After the build, because it serves the built files, and last because it is the
-  // only step that needs a browser. Without one it says so and passes: a missing
-  // Chrome is not a broken document.
-  ['Touch layout', process.execPath, [join(REPO, 'scripts', 'check-touch.mjs')]],
-  // Beside it, and for the same reason: whether a page of document comes back to where it
-  // started is a question about how tall each drawn line is, so jsdom cannot answer it and
-  // no suite here can. It went wrong once and only a person reading noticed.
-  ['Paging', process.execPath, [join(REPO, 'scripts', 'check-paging.mjs')]],
-  // And beside those two: which of a line's two identical-looking positions an arrow key
-  // lands on, read from what the next keystroke wrote to the file. The markers are hidden
-  // by decorations, so the question is geometric and jsdom cannot ask it. One keystroke
-  // used to destroy a heading.
-  ['Caret at markers', process.execPath, [join(REPO, 'scripts', 'check-caret.mjs')]],
-  // And beside those: where a line's words start, across every marker and every nesting
-  // level. A marker is drawn by a decoration and the indent is a computed padding, so what
-  // a reader has is a drawn position and jsdom has no layout to read it from. Every
-  // horizontal position in the editor used to be decided separately, nine of them, no two
-  // agreeing, and a wrapped list line returned to the margin.
-  // Both axes: where a line's words start, and how far apart one line sits from the next.
-  ['Indent and rhythm', process.execPath, [join(REPO, 'scripts', 'check-indent.mjs')]],
-  // And beside it: whether code in a fenced block is coloured at all. Syntax colouring is the
-  // one feature that can be entirely absent while looking present, because the grammars attach,
-  // every token gets a class, and a palette that resolves to one grey throws all of it away.
-  // Five token types shipped drawn in body-text grey.
-  ['Code colours', process.execPath, [join(REPO, 'scripts', 'check-code-colours.mjs')]],
-  // And beside it: whether a table's hover bar can be pressed from any direction. The bar
-  // floats clear of the table, so a button's middle is over the line above, and whether it was
-  // alive depended on where the pointer had come from. Nothing about that is visible in the
-  // drawing: the bar and the button are both drawn and the geometry is right.
-  ['Hover bar', process.execPath, [join(REPO, 'scripts', 'check-hover-bar.mjs')]],
-  // And the one part of diagrams no jsdom scenario can reach, because they all replace
-  // the loader: working out where the editor's own files are, which is what splitting
-  // the bundle into modules silently broke in every host.
-  ['Diagrams', process.execPath, [join(REPO, 'scripts', 'check-diagrams.mjs')]],
-  // And what typing in a table cell does to the columns beside it, which is a drawn width
-  // and so invisible to jsdom, and which no suite could reach anyway: createColumnLayout
-  // is exported to no test entry.
-  ['Table widths', process.execPath, [join(REPO, 'scripts', 'check-table-widths.mjs')]],
-  // And whether Edit Markdown in an open cell shows that cell's source rather than the whole
-  // table's. The rendered and revealed readings are the same text with and without its
-  // markers, so the question is what is drawn, and the cell below has to stay drawn to tell
-  // one cell's reveal from the table's.
-  ['Cell source', process.execPath, [join(REPO, 'scripts', 'check-cell-source.mjs')]],
-  // And whether a card dragged across a board is carried while the pointer is down. The file
-  // ends up right either way, which is the whole difficulty: the defect lived entirely in the
-  // half-second between the press and the release, so every reading it takes is taken mid-drag.
-  ['Board drag', process.execPath, [join(REPO, 'scripts', 'check-board-drag.mjs')]],
-  // And whether a tall table's held header stays in one place while the document scrolls past
-  // it. Every frame of a flicker is individually correct and only the sequence is wrong, so
-  // this reads a run of states rather than a state.
-  ['Sticky header', process.execPath, [join(REPO, 'scripts', 'check-sticky-header.mjs')]],
-  // And whether every child of a table's frame lines up with the table inside it. A frame wide
-  // enough to use the pane escapes the writing column by negative margins, so each of its children
-  // starts at the pane's edge unless it takes that inset back. Four findings in one week were four
-  // children that did not, each found by somebody noticing it looked wrong, and a fifth was in the
-  // tree throughout. The obligation is stated nowhere in the stylesheet, so it is stated here.
-  ['Frame children', process.execPath, [join(REPO, 'scripts', 'check-wrap-children.mjs')]],
-  // And whether a resource fetched after the editor is running recovers from one failure. Both the
-  // emoji table and KaTeX discarded the rejection and left `pending` holding a settled promise, so
-  // a single flake meant that editor never drew an emoji or an equation again, silently. The
-  // obvious check for it cannot fail — a blocked fetch drawing nothing is correct — so this drives a
-  // loader that fails once and then succeeds, and asserts on the second attempt.
-  ['Lazy retry', process.execPath, [join(REPO, 'scripts', 'check-lazy-retry.mjs')]],
-];
 
 /**
  * Run one step, passing its output straight through as it arrives so nothing is
@@ -207,7 +99,7 @@ function run(cmd, args) {
  * `SHEAF_ALLOW_SKIPPED_GATES=1` forgives every skip, which is the blunt instrument and is
  * kept for a local run somebody is deliberately doing without a browser. A runner needs
  * something narrower: the private-terms list lives outside the repository on purpose, so it
- * can never exist there and that one step can never run, while the five browser checks
+ * can never exist there and that one step can never run, while the browser-driven checks
  * skipping on a runner is a real gap and has to keep failing. Forgiving all of them to get
  * past one would put back exactly the hole `A skipped gate is not a passed gate` closed.
  *
@@ -245,12 +137,222 @@ const forgiven = (label) => ALLOWED.includes('1') || ALLOWED.includes(label);
  */
 const ALL = process.argv.includes('--all') || process.env.SHEAF_GATES_ALL === '1';
 
-const { status } = await runGates({
-  steps: STEPS,
-  run,
+/*
+ * **The tier**, derived from the diff and printed before anything runs.
+ *
+ * Printed rather than quietly applied, and printed in both halves: which expensive gates were
+ * selected and by which changed path, and which were left out. A run that is shorter than the last
+ * one has to say why on its own face, because the alternative is somebody reading `All 28 of 28
+ * gates passed` and having no way to tell a tiered run from a shrinking bar.
+ *
+ * **An unclaimed changed path stops the run here, before any gate.** A file nothing claims runs
+ * the cheap tier alone, which is an expensive gate silently not running, so it is a failure on the
+ * day the file is added rather than a thing discovered later. `scripts/check-gate-tiers.mjs` is the
+ * same question asked of the whole tree, and it is a gate; this is the one asked of the diff, and
+ * it is cheaper than starting the gates to find out.
+ */
+const selection = ALL
+  ? { run: STEPS, selected: [], everything: true, all: true }
+  : (() => {
+      const { base, why, paths } = changedPaths(REPO);
+      const expensive = STEPS.filter((s) => Array.isArray(s[3])).flatMap(([, , , covers]) => patternsFor(covers));
+      const cheap = CHEAP_ONLY.flatMap((c) => c.patterns);
+      const loose = paths.filter(
+        (p) => /^(src|media|test)\//.test(p) && !coveredBy(expensive, p) && !coveredBy(cheap, p)
+      );
+      if (loose.length) {
+        process.stderr.write(
+          `\nNo gate claims ${loose.length === 1 ? 'a path' : 'paths'} this change touches, so the tier cannot be derived:\n` +
+            loose.map((p) => `  - ${p}\n`).join('') +
+            '\nA path nothing claims runs the cheap tier alone, which is an expensive gate not running\n' +
+            'and a green run. Put each one inside a subject in scripts/lib/gateTier.mjs, so the gates\n' +
+            'that read it run when it changes, or in CHEAP_ONLY with a sentence saying why nothing in\n' +
+            'the expensive tier can see it. Run with --all to reach every gate meanwhile.\n'
+        );
+        process.exit(1);
+      }
+      return { ...selectSteps({ steps: STEPS, changed: paths, base, repo: REPO }), base, why, changed: paths.length };
+    })();
+
+{
+  const lines = [];
+  if (selection.all) {
+    lines.push(`\n--- gate tier: every gate, --all given ---`);
+  } else if (selection.everything) {
+    lines.push(`\n--- gate tier: every gate ---`);
+    lines.push(`  ${selection.selected[0]?.because ?? 'the tier could not be derived'}`);
+    if (selection.base === null) lines.push(`  ${selection.why}`);
+  } else {
+    lines.push(`\n--- gate tier: ${selection.run.length} of ${STEPS.length} gates ---`);
+    lines.push(`  ${selection.changed} path${selection.changed === 1 ? '' : 's'} changed against ${selection.base.slice(0, 9)} (${selection.why})`);
+    /*
+     * Said out loud, because it is the one state where a short run means nothing was checked
+     * rather than that little was at risk. A tree level with its base and clean selects the cheap
+     * tier, and that is what a clone of `main` looks like: `scripts/release.mjs` passes `--all`
+     * for exactly this reason, and anybody else in that position needs to know they are in it.
+     */
+    if (selection.changed === 0) {
+      lines.push(
+        '  Nothing changed against that base, so this is the cheap tier over a tree the base already\n' +
+          '  covers. A clone of the integration branch looks like this. Use --all to mean the whole bar.'
+      );
+    }
+    for (const s of selection.selected) {
+      lines.push(
+        s.by
+          ? `  runs     ${s.label}: ${s.by} is covered by ${s.because}`
+          : `  left out ${s.label}: nothing this change touches is covered by it`
+      );
+    }
+    lines.push('  Gate tiers checks the mapping itself, and runs whatever the tier is. --all reaches every gate.');
+  }
+  process.stdout.write(`${lines.join('\n')}\n`);
+}
+
+/*
+ * **Timing.** What each gate costs, printed at the end of every run and appended to a record so a
+ * week of runs accumulates. It exists because the only evidence about which gates are expensive
+ * was an impression of which runs felt long, and a proposal to run the cheap ones first, or to
+ * move the expensive ones to a nightly, is a decision about numbers nobody had.
+ *
+ * It is measurement and nothing else. Which gates run, in what order, and what each one checks
+ * are decided above and in `lib/gateRun.mjs`, and none of that is reachable from here: this wraps
+ * the `run` the loop is handed, returns the loop's own result untouched, and reads the output the
+ * loop had already captured. A gate cannot pass or fail differently because it was timed.
+ *
+ * Two things about reading the numbers afterwards.
+ *
+ * **A run that overlapped another is not comparable.** Several of these gates drive Chromium, and
+ * two concurrent runs on one machine contend over it badly enough to roughly triple each other's
+ * wall clock. So each run records whether another `gates.mjs` was alive when it started, and
+ * `scripts/gate-timings.mjs` leaves those runs out by default. The detection is one `ps` and a
+ * walk up the process's own ancestors, which is cheap and is the whole of it: an overlap that
+ * begins *after* this run does is not detected, and nothing here pretends otherwise.
+ *
+ * **A skipped gate's duration is not that gate's cost.** A browser check that cannot find Chrome
+ * prints `skipped` and exits in a second, against minutes when it runs, so the status is recorded
+ * beside the duration and the reader separates them rather than taking a median across both.
+ *
+ * What it costs: per gate, two `hrtime` reads and a second pass of `readVerdict` over output the
+ * run already holds in memory, which is a fraction of a millisecond. Per run, one `ps`, one
+ * `git rev-parse` and one append, which is the whole of the fixed cost and is dominated by the
+ * `ps`. Time those two commands on this machine and you have the number; against a run measured
+ * in minutes it does not reach a tenth of a percent.
+ */
+const TIMINGS_FILE = join(REPO, '.claude', 'scratch', 'gate-timings.jsonl');
+
+/** The label a `run(cmd, args)` call belongs to. Each step's command and arguments are distinct. */
+const LABELS = new Map(STEPS.map(([label, cmd, args]) => [[cmd, ...args].join('\u0000'), label]));
+
+/**
+ * Whether another gates run was already going when this one started.
+ *
+ * `ps` once, then up this process's own ppid chain, because `npm run gates` puts a shell between
+ * npm and node whose command line carries this script's path too, and that ancestor is not
+ * another run. Anything that cannot be read is reported as no overlap rather than as an error:
+ * a failure to measure contention must not fail the gates.
+ */
+function overlapping() {
+  try {
+    const rows = execFileSync('/bin/ps', ['-ax', '-o', 'pid=,ppid=,command='], { encoding: 'utf8' })
+      .split('\n')
+      .map((l) => /^\s*(\d+)\s+(\d+)\s+(.*)$/.exec(l))
+      .filter(Boolean)
+      .map((m) => ({ pid: Number(m[1]), ppid: Number(m[2]), command: m[3] }));
+    const byPid = new Map(rows.map((r) => [r.pid, r]));
+    const mine = new Set();
+    for (let p = process.pid; p && !mine.has(p); p = byPid.get(p)?.ppid) mine.add(p);
+    return rows.some((r) => !mine.has(r.pid) && /(^|[/\s])gates\.mjs(\s|$)/.test(r.command));
+  } catch {
+    return false;
+  }
+}
+
+/** What this run's timings are about. Unknown rather than wrong when git cannot be asked. */
+function commit() {
+  try {
+    return execFileSync('git', ['rev-parse', 'HEAD'], { cwd: REPO, encoding: 'utf8' }).trim();
+  } catch {
+    return null;
+  }
+}
+
+/** pass, fail or skip, read the way the loop reads it, so the two never disagree. */
+function statusOf(r, label) {
+  if (r.status !== 0) return 'fail';
+  const verdict = readVerdict(r.seen);
+  if (verdict.skipped.length) return 'skip';
+  return complaintFor(label, verdict) ? 'fail' : 'pass';
+}
+
+/** Every gate the loop reached, in the order it reached them. */
+const timings = [];
+
+/** `run`, timed. Returns exactly what `run` returned. */
+async function timedRun(cmd, args) {
+  const label = LABELS.get([cmd, ...args].join('\u0000')) ?? args[args.length - 1] ?? cmd;
+  const started = process.hrtime.bigint();
+  const r = await run(cmd, args);
+  const ms = Number(process.hrtime.bigint() - started) / 1e6;
+  timings.push({ name: label, ms: Math.round(ms), status: statusOf(r, label) });
+  return r;
+}
+
+const secs = (ms) => `${(ms / 1000).toFixed(1)}s`;
+
+const startedAt = process.hrtime.bigint();
+const overlapped = overlapping();
+/* Read before the run rather than after it, so the record names the tree that was measured. */
+const headCommit = commit();
+
+const { status, failures } = await runGates({
+  steps: selection.run,
+  run: timedRun,
   all: ALL,
   forgiven,
   out: (s) => process.stdout.write(s),
   err: (s) => process.stderr.write(s),
 });
+
+const totalMs = Math.round(Number(process.hrtime.bigint() - startedAt) / 1e6);
+
+/*
+ * The table, slowest first, and the one caveat a reader needs in front of the numbers. It comes
+ * after everything the run already printed, so a failing run still ends at its own report of what
+ * failed: the last line here names it again rather than leaving a table as the final word.
+ */
+{
+  const width = Math.max(0, ...timings.map((t) => t.name.length));
+  /* `---` rather than the `===` a gate's own heading uses, so this block is not read as a gate. */
+  const lines = ['\n--- gate timings ---'];
+  for (const t of [...timings].sort((a, b) => b.ms - a.ms)) {
+    lines.push(`  ${secs(t.ms).padStart(8)}  ${t.name.padEnd(width)}  ${t.status}`);
+  }
+  lines.push(`  ${secs(totalMs).padStart(8)}  total across ${timings.length} gate${timings.length === 1 ? '' : 's'}`);
+  lines.push(
+    overlapped
+      ? '  Another gates run was already going when this one started, so these durations are not comparable.'
+      : '  A run that overlapped another gates run is not comparable; no other run was going when this one started.'
+  );
+  lines.push(`  Appended to ${TIMINGS_FILE.slice(REPO.length + 1)}; read it back with node scripts/gate-timings.mjs`);
+  if (failures.length) {
+    lines.push(`  Timing only. What failed is ${failures.map((f) => f.label).join(', ')}, reported in full above.`);
+  }
+  process.stdout.write(`${lines.join('\n')}\n`);
+}
+
+/*
+ * The record. A failure to write it is said once and changes nothing else: a gates run that
+ * passed must not go red because a scratch directory was not writable.
+ */
+try {
+  mkdirSync(dirname(TIMINGS_FILE), { recursive: true });
+  appendFileSync(
+    TIMINGS_FILE,
+    `${JSON.stringify({ at: new Date().toISOString(), commit: headCommit, totalMs, overlapped, gates: timings })}\n`
+  );
+} catch (err) {
+  process.stderr.write(`\nCould not append to ${TIMINGS_FILE}: ${err.message}\n`);
+}
+
 process.exit(status);

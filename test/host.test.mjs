@@ -82,6 +82,28 @@ function makeWindow({ user = {}, workspace = {} } = {}) {
   const changeListeners = new Set();
   /** Every replacement written into a document through `applyEdit`, in order. */
   const applied = [];
+  /**
+   * How long a workspace edit takes to reach the document, and whether edits are held.
+   *
+   * A real `vscode.workspace.applyEdit` is a round trip to the main thread: the document
+   * is not changed in the turn the call is made, and anything else the extension host
+   * does meanwhile sees the document as it was. The stand-in changes it on the spot,
+   * which is a stronger promise than VS Code makes, and no check could see what happens
+   * to an edit planned inside somebody else's round trip. Both of these are off unless a
+   * check asks, so nothing already here changes meaning.
+   */
+  let applyEditDelay = 0;
+  let holdGate;
+  let heldEdits = 0;
+  /**
+   * Whether a document's change is reported in a later turn than the edit's reply.
+   *
+   * The edit and the notice that the document changed travel back from the main thread
+   * as two messages, and nothing in the API promises which arrives first. The stand-in
+   * reports the change inside the call, which is the favourable order; this is the other
+   * one, so a claim that only holds while the call is outstanding can be seen to fail.
+   */
+  let changeAfterTheReply = false;
   /** The files a workspace search finds, and every search that was run: `{ include, exclude, maxResults }` each. */
   const workspaceFiles = [];
   const searches = [];
@@ -255,13 +277,19 @@ function makeWindow({ user = {}, workspace = {} } = {}) {
       },
       /** Apply an edit the way VS Code does, against the document it names. */
       applyEdit: async (edit) => {
+        if (holdGate) {
+          heldEdits++;
+          await holdGate;
+        }
+        if (applyEditDelay > 0) await new Promise((r) => setTimeout(r, applyEditDelay));
         for (const { uri, range, text } of edit.edits) {
           const doc = documents.find((d) => d.uri.path === uri.path);
           if (!doc) return false;
           doc.text = doc.text.slice(0, range.start.offset) + text + doc.text.slice(range.end.offset);
           doc.isDirty = true;
           applied.push({ path: uri.path, start: range.start.offset, end: range.end.offset, text });
-          changed(doc);
+          if (changeAfterTheReply) setTimeout(() => changed(doc), 0);
+          else changed(doc);
         }
         return true;
       },
@@ -465,6 +493,33 @@ function makeWindow({ user = {}, workspace = {} } = {}) {
       executed.filter(([command]) => command === 'vscode.open').map(([, uri]) => uri.path),
     /** Every replacement Sheaf wrote into a document: `{ path, start, end, text }` each. */
     applied,
+    /** Make a workspace edit take this long to reach the document, as a round trip does. */
+    applyEditTakes: (ms) => {
+      applyEditDelay = ms;
+    },
+    /**
+     * Hold every workspace edit from here on before it reaches the document; the result
+     * lets them all go, in the order they were asked for.
+     *
+     * This is the round trip held open on purpose, so a check about two writes planned
+     * against one document is a statement about the code rather than about a timer.
+     */
+    holdApplyEdits: () => {
+      let open;
+      holdGate = new Promise((resolve) => {
+        open = resolve;
+      });
+      return () => {
+        holdGate = undefined;
+        open();
+      };
+    },
+    /** How many workspace edits have been held, so a check can assert it held two. */
+    heldApplyEdits: () => heldEdits,
+    /** Report a document's change in a later turn than the edit's reply, as VS Code may. */
+    changeAfterTheReply: () => {
+      changeAfterTheReply = true;
+    },
     /**
      * The document's text changed from outside Sheaf: another editor, an agent, a pull.
      * Those who asked are told, as VS Code tells them.
@@ -2028,6 +2083,299 @@ async function hostCases() {
     return {
       ok: onDisk === BOTH_CHANGES,
       detail: `file ${JSON.stringify(onDisk)}; the page was shown ${JSON.stringify(shown)}; notices ${JSON.stringify(win.warnings)}`,
+    };
+  });
+
+  /*
+   * A sentence in the file twice, which is the one outcome this area has a named guard
+   * against: the file is the store, and a sentence that appears twice is content with no
+   * author. It was reported from use as text appearing twice with part of it marked as
+   * having arrived from outside.
+   *
+   * Three things write this document and they used to do it without waiting for each
+   * other: the keystroke queue in `DocumentSync`, the merge that keeps typing a write
+   * could not have seen, and the merge that reads the file back before a save. Each works
+   * out where its text goes from the document as it reads when it plans, and a workspace
+   * edit takes a round trip to reach the document, so an edit planned inside another's
+   * round trip is measured against a document that has already moved. Both land, and the
+   * second writes text the first has already put in.
+   *
+   * The next five checks are that from both ends: the interleave held open on purpose, the
+   * same thing at an ordinary round trip, the same write with its change reported after the
+   * reply rather than before, and the two controls that say a single write still merges and
+   * that a second write arriving mid-flight is not swallowed.
+   */
+  /** The auto-save debounce, which these checks have to wait out. */
+  const AUTOSAVE = 700;
+  const A_DOCUMENT = 'Alpha line one.\n\nBravo line two.\n\nCharlie line three.\n';
+  const THE_PERSONS_SENTENCE = ' And a sentence the person wrote themselves.';
+  const THE_AGENTS_PARAGRAPH = 'A paragraph an agent added.';
+  const WITH_THE_AGENTS_PARAGRAPH = A_DOCUMENT.replace(
+    'Charlie line three.',
+    `${THE_AGENTS_PARAGRAPH}\n\nCharlie line three.`
+  );
+
+  /** How many times `needle` is in `text`. */
+  const times = (text, needle) => String(text ?? '').split(needle).length - 1;
+
+  /** Every non-blank line `text` holds more than once. */
+  const linesTwice = (text) => {
+    const seen = new Map();
+    for (const line of String(text ?? '').split('\n')) {
+      if (line.trim()) seen.set(line, (seen.get(line) ?? 0) + 1);
+    }
+    return [...seen].filter(([, n]) => n > 1).map(([line]) => line);
+  };
+
+  /**
+   * Somebody typing a sentence, their own save landing, a write arriving from outside in
+   * that moment, and one more keystroke while the merge is on its way to the document.
+   *
+   * The real webview is behind the panel, because the keystroke has to be typed into
+   * whatever the page is holding by then. Driven with a literal string instead, the page
+   * would be posting text that ignores the merge it was just sent, which is not a thing a
+   * webview does and reads as the write being lost rather than as text being doubled.
+   */
+  const writeCrossingASave = async ({ hold = false, roundTrip = 0, lead = 15, typeInFlight = false } = {}) => {
+    const { win, document, panel, webview } = await openWithWebview(A_DOCUMENT, 1);
+    win.applyEditTakes(roundTrip);
+    webview.click(A_DOCUMENT.indexOf('Bravo line two.') + 'Bravo line two.'.length);
+    webview.type(THE_PERSONS_SENTENCE);
+    await settle();
+    let release;
+    /*
+     * Whether the write this scenario is about ever happened.
+     *
+     * `afterSave` fires once, and only if a save lands inside the pause below. When it does
+     * not, nothing writes the paragraph and its absence from the file at the end is the setup
+     * never running rather than the product losing a write. **Those two are the same bytes and
+     * opposite findings**, and the scenario could not tell them apart: one of its failures read
+     * `the paragraph 0` and was filed as possibly the worst outcome this product has, with no
+     * way to rule out that the save was merely late.
+     *
+     * So the precondition is recorded rather than assumed, the way the one above it is.
+     */
+    let wroteFromOutside = false;
+    /*
+     * The precondition, read at the moment of the keystroke and while it is still true:
+     * the merge had not reached the document, so the keystroke is the second writer and
+     * there is something here for the queue to be about. Without this a drive where the
+     * merge had already landed, which cannot double anything, reads the same as one that
+     * was protected.
+     *
+     * Read as the person's sentence, not as the agent's paragraph. VS Code reloaded the
+     * document from the file, so the paragraph is in it from that moment; what the merge
+     * write carries is the sentence the reload took out, and that is what is still on its
+     * way. Asserted on the paragraph, this said false in every drive and was reporting
+     * the reload rather than the write.
+     */
+    let mergeStillOnItsWay = false;
+    const theKeystroke = () => {
+      mergeStillOnItsWay = !document.getText().includes(THE_PERSONS_SENTENCE.trim());
+      webview.type(' More.');
+    };
+    document.afterSave = () => {
+      document.afterSave = null; // Once: one write, not a write per save.
+      if (hold) release = win.holdApplyEdits();
+      // A tool that read the file before that save, adding a paragraph of its own.
+      wroteFromOutside = true;
+      win.writeFromOutside(document, WITH_THE_AGENTS_PARAGRAPH);
+      /*
+       * `typeInFlight` puts the keystroke here, in the same turn as the write that starts
+       * the merge, which is what makes the drive reach the race by construction instead of
+       * by luck. The merge cannot have landed yet: `applyEditTakes` gives it a real timer
+       * and no timer has had a turn to fire between the line above and this one.
+       *
+       * It exists because the alternative, waiting out `AUTOSAVE + lead` and typing when
+       * the pause returns, needs the keystroke to land inside a window the width of the
+       * round trip, 8ms. A `setTimeout` that overshoots by more than that misses the race
+       * entirely, and the drive then reports a correct file as a failure. That is what it
+       * did: nine consecutive CI runs failed here, all of them `the merge was still on its
+       * way false` with the sentence once, the paragraph once and nothing twice, and
+       * `npm run test:host` was 235/235 on the same bytes on a developer machine. Raising
+       * `lead` from 16 to 60 locally reproduces the runner's output byte for byte, which
+       * is what identified the overshoot rather than the product.
+       */
+      if (typeInFlight) setTimeout(theKeystroke, 0);
+    };
+    await pause(AUTOSAVE + lead);
+    if (!typeInFlight) theKeystroke();
+    await settle();
+    const held = win.heldApplyEdits();
+    release?.();
+    await pause(AFTER_THE_PAUSE * 2);
+    const onDisk = win.fileBehind(document);
+    const shown = webview.doc();
+    webview.close();
+    panel.close();
+    return {
+      held,
+      wroteFromOutside,
+      mergeStillOnItsWay,
+      onDisk,
+      shown,
+      warnings: win.warnings,
+      sentence: times(onDisk, THE_PERSONS_SENTENCE.trim()),
+      paragraph: times(onDisk, THE_AGENTS_PARAGRAPH),
+      twice: linesTwice(onDisk),
+    };
+  };
+
+  check('outside write: a merge and a keystroke planned against one document leave the sentence in the file once', async () => {
+    /*
+     * The interleave held open rather than waited for, so this is a statement about the
+     * code and not about a timer. Both edits are stopped before they reach the document,
+     * which is the round trip held still, and then let go in the order they were asked
+     * for. Before the queue the file read `Bravo line two. And a sentence the person wrote
+     * themselves. More. And a sentence the person wrote themselves.` and no notice fired.
+     *
+     * The precondition is asserted rather than assumed: the merge had not reached the
+     * document when the keystroke was typed. A drive where it had cannot double anything
+     * and would pass without having looked at the situation at all.
+     */
+    const out = await writeCrossingASave({ hold: true });
+    return {
+      ok: out.mergeStillOnItsWay && out.sentence === 1 && out.paragraph === 1 && out.twice.length === 0,
+      detail:
+        `the merge was still on its way ${out.mergeStillOnItsWay}; ${out.held} edits held; ` +
+        `the sentence appears ${out.sentence} time(s), the paragraph ${out.paragraph}; ` +
+        `lines twice ${JSON.stringify(out.twice)}; file ${JSON.stringify(out.onDisk)}; page ${JSON.stringify(out.shown)}`,
+    };
+  });
+
+  check('outside write: the same two writes at an ordinary round trip leave the sentence in the file once', async () => {
+    /*
+     * The same situation at a real round trip rather than with the edits held still. The
+     * round trip is 8ms, which is an ordinary one for a call into the main thread and much
+     * less than one over a remote link, and the merge is genuinely in flight on a timer
+     * while the keystroke is typed. What is held still is only *when* the keystroke is
+     * typed, which `typeInFlight` puts in the same turn as the write that starts the merge.
+     *
+     * Measured on the tree before the queue, with the keystroke landing at a spread of
+     * times across 80ms: 4 of 30 drives wrote the sentence twice, every one of them with
+     * the keystroke between 9ms and 23ms after the save, which is the width of the round
+     * trip. At a round trip of 0, which is what the stand-in used to be, none of 30 did,
+     * so the harness as it stood could not see this at all.
+     *
+     * **That spread is also why this cannot be reached by waiting.** The window is the
+     * width of the round trip, and a `setTimeout` on a loaded machine overshoots it, so
+     * the drive leaves the race untested and reports a correct file as a failure. It is
+     * not a flake that would settle down: it failed 9 of 9 on CI runners over six days
+     * while passing 235/235 locally on identical bytes. The precondition below is what
+     * keeps that from being a silent pass instead, and it must stay a conjunct: a drive
+     * that missed the race proves nothing and must not be allowed to say otherwise.
+     */
+    const out = await writeCrossingASave({ roundTrip: 8, lead: 16, typeInFlight: true });
+    return {
+      ok:
+        out.wroteFromOutside &&
+        out.mergeStillOnItsWay &&
+        out.sentence === 1 &&
+        out.paragraph === 1 &&
+        out.twice.length === 0,
+      detail:
+        `the outside write happened ${out.wroteFromOutside}; ` +
+        `the merge was still on its way ${out.mergeStillOnItsWay}; ` +
+        `the sentence appears ${out.sentence} time(s), the paragraph ${out.paragraph}; ` +
+        `lines twice ${JSON.stringify(out.twice)}; file ${JSON.stringify(out.onDisk)}`,
+    };
+  });
+
+  check('outside write: one write and nobody typing afterwards still merges into the file', async () => {
+    /*
+     * The control that matters most here, and it is about the fix rather than the fault.
+     * A queue whose turn never comes, or a refusal that is never planned again, turns
+     * every later write from outside into a no-op that announces nothing, which is worse
+     * than the doubling because the doubling is at least visible in a diff.
+     *
+     * So: the same write, the same crossing of the same save, and no keystroke after it.
+     * Both changes have to be in the file.
+     */
+    const { win, document, panel, webview } = await openWithWebview(A_DOCUMENT, 1);
+    win.applyEditTakes(8);
+    webview.click(A_DOCUMENT.indexOf('Bravo line two.') + 'Bravo line two.'.length);
+    webview.type(THE_PERSONS_SENTENCE);
+    await settle();
+    document.afterSave = () => {
+      document.afterSave = null;
+      win.writeFromOutside(document, WITH_THE_AGENTS_PARAGRAPH);
+    };
+    await pause(AUTOSAVE + AFTER_THE_PAUSE * 2);
+    const onDisk = win.fileBehind(document);
+    webview.close();
+    panel.close();
+    return {
+      ok:
+        times(onDisk, THE_PERSONS_SENTENCE.trim()) === 1 &&
+        times(onDisk, THE_AGENTS_PARAGRAPH) === 1 &&
+        linesTwice(onDisk).length === 0,
+      detail: `file ${JSON.stringify(onDisk)}; notices ${JSON.stringify(win.warnings)}`,
+    };
+  });
+
+  check('outside write: a merge write whose change is reported after its reply is not merged a second time', async () => {
+    /*
+     * The other way through a claim held across a write, and it is about ordering rather
+     * than about two writers. A workspace edit and the notice that the document changed
+     * come back from the main thread as two messages, and nothing says the notice is
+     * first. If it is second, a claim that lasts only while the call is outstanding has
+     * already been given up by the time the change arrives, so the write is read as news
+     * from outside and worked through the merge again, against its own result.
+     *
+     * The stand-in reports the change inside the call, which is the favourable order and
+     * the only one it could produce. This drives the other one.
+     */
+    const { win, document, panel, webview } = await openWithWebview(A_DOCUMENT, 1);
+    win.changeAfterTheReply();
+    webview.click(A_DOCUMENT.indexOf('Bravo line two.') + 'Bravo line two.'.length);
+    webview.type(THE_PERSONS_SENTENCE);
+    await settle();
+    document.afterSave = () => {
+      document.afterSave = null;
+      win.writeFromOutside(document, WITH_THE_AGENTS_PARAGRAPH);
+    };
+    await pause(AUTOSAVE + AFTER_THE_PAUSE * 2);
+    const onDisk = win.fileBehind(document);
+    webview.close();
+    panel.close();
+    return {
+      ok:
+        times(onDisk, THE_PERSONS_SENTENCE.trim()) === 1 &&
+        times(onDisk, THE_AGENTS_PARAGRAPH) === 1 &&
+        linesTwice(onDisk).length === 0,
+      detail: `file ${JSON.stringify(onDisk)}; notices ${JSON.stringify(win.warnings)}`,
+    };
+  });
+
+  check('outside write: a second write arriving while the first is still on its way is merged too', async () => {
+    /*
+     * The other way a claim held across a write goes wrong. While a merge write is in
+     * flight every change is read as this editor's own, so a write that genuinely arrives
+     * in that moment could be swallowed with nothing said. Two writes, the second landing
+     * inside the first's round trip, and both have to be in the file.
+     */
+    const { win, document, panel, webview } = await openWithWebview(A_DOCUMENT, 1);
+    win.applyEditTakes(8);
+    webview.click(A_DOCUMENT.indexOf('Bravo line two.') + 'Bravo line two.'.length);
+    webview.type(THE_PERSONS_SENTENCE);
+    await settle();
+    document.afterSave = () => {
+      document.afterSave = null;
+      win.writeFromOutside(document, WITH_THE_AGENTS_PARAGRAPH);
+      setTimeout(() => {
+        win.writeFromOutside(document, WITH_THE_AGENTS_PARAGRAPH.replace('Alpha line one.', 'Alpha line one, and a word.'));
+      }, 4);
+    };
+    await pause(AUTOSAVE + AFTER_THE_PAUSE * 2);
+    const onDisk = win.fileBehind(document);
+    webview.close();
+    panel.close();
+    return {
+      ok:
+        times(onDisk, THE_AGENTS_PARAGRAPH) === 1 &&
+        times(onDisk, 'and a word.') === 1 &&
+        linesTwice(onDisk).length === 0,
+      detail: `file ${JSON.stringify(onDisk)}; notices ${JSON.stringify(win.warnings)}`,
     };
   });
 
@@ -3898,7 +4246,8 @@ async function hostCases() {
   const STAYS = [
     '.claude', '.github', '.vscode', '.gitattributes', '.gitignore', '.gitleaksignore',
     '.vscodeignore', 'CLAUDE.md', 'CONTRIBUTING.md', 'docs', 'esbuild.mjs', 'sample',
-    'scripts', 'src', 'test', 'tsconfig.json', 'tsconfig.test.json', 'package-lock.json',
+    'scripts', 'src', 'test', 'tsconfig.json', 'tsconfig.test.json', 'tsconfig.lib.json',
+    'package-lock.json',
   ];
   /* `vsce` drops this one itself, with `--no-dependencies`, so `.vscodeignore` never names it. */
   const DROPPED_BY_VSCE = ['package-lock.json'];

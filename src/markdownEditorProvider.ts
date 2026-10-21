@@ -357,8 +357,41 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
    * goes up about a write nobody made.
    */
   private readonly fileHasHeld: { text: string; at: number }[] = [];
-  /** True while a change read back from the file is being written into the document. */
-  private mergingOutsideChange = false;
+  /**
+   * How many writes of a change read back from the file are in flight right now.
+   *
+   * A count rather than a boolean, because two of these writes can be outstanding at
+   * once. A boolean is cleared by whichever finishes first: the other is still on its
+   * way, the document reports its change with nothing claiming it, and the merge is
+   * worked a second time against its own result. A count is only back to zero when the
+   * last of them has landed.
+   *
+   * Every site holds it in a `finally`, which is what keeps a count from being the worse
+   * failure. One never released would read every later write from outside as this
+   * editor's own and quietly drop it, and nothing would say so.
+   */
+  private mergeWritesInFlight = 0;
+  /**
+   * Everything this editor writes into the document, one at a time.
+   *
+   * Three paths write it: the keystroke queue in `DocumentSync`, the merge that keeps
+   * typing a write could not have seen, and the merge that reads the file back before a
+   * save. `DocumentSync` has a queue of its own and says why — "two edits may not be in
+   * flight over one document", because the second was planned against text the first has
+   * already replaced. The other two were outside that queue, so there were three writers
+   * and a queue covering one of them.
+   *
+   * What that cost is a sentence in the file twice. Both of the others work out where
+   * their text goes from the document as it reads when they plan, a workspace edit takes
+   * a round trip to reach the document, and an edit planned inside somebody else's round
+   * trip is measured against a document that has already moved. Both then land, and the
+   * second writes text the first has already put in.
+   *
+   * So each write waits for the one before it and plans inside its own turn. A plan made
+   * earlier is checked against the document when its turn comes and refused if the
+   * document has moved, which `DocumentSync` already answers by planning again.
+   */
+  private documentWrites: Promise<unknown> = Promise.resolve();
   /**
    * True once the file has been found to have moved under what VS Code noted about
    * it, which is what makes it refuse to write this document at all.
@@ -461,18 +494,32 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
     this.sync = new DocumentSync({
       getText: () => document.getText(),
       crlf: () => document.eol === vscode.EndOfLine.CRLF,
-      applyEdit: async (start, end, replacement) => {
-        const edit = new vscode.WorkspaceEdit();
-        // Replace only the changed region, to keep undo granular and cursor mapping
-        // sane for other open editors. The positions are resolved here rather than
-        // when the edit was planned, so they belong to the document as it reads now.
-        edit.replace(
-          document.uri,
-          new vscode.Range(document.positionAt(start), document.positionAt(end)),
-          replacement
-        );
-        return vscode.workspace.applyEdit(edit);
-      },
+      applyEdit: (start, end, replacement, planned) =>
+        this.queueDocumentWrite(async () => {
+          /*
+           * Refused when the document is no longer the text these offsets were read off.
+           *
+           * This waits its turn behind whatever else this editor is writing, and it is
+           * the waiting that makes the check necessary: a plan made before the write in
+           * front of it landed describes a document that no longer exists, and offsets
+           * from one text applied to another point somewhere else. `DocumentSync` plans
+           * again on a refusal, so the cost is one more turn and the gain is never
+           * writing at a position nothing worked out.
+           *
+           * Checked here rather than left to VS Code, which takes a workspace edit with
+           * no version on it at the offsets it is given.
+           */
+          if (document.isClosed || document.getText() !== planned) return false;
+          const edit = new vscode.WorkspaceEdit();
+          // Replace only the changed region, to keep undo granular and cursor mapping
+          // sane for other open editors.
+          edit.replace(
+            document.uri,
+            new vscode.Range(document.positionAt(start), document.positionAt(end)),
+            replacement
+          );
+          return vscode.workspace.applyEdit(edit);
+        }),
       setContent: (text, tookTypedText) => {
         this.webviewText = text;
         if (this.tooLarge) return;
@@ -1205,9 +1252,20 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
    * screen and from the file at once. What makes a change the echo of a save is that
    * it holds the text handed to that save, give or take a participant's trim, and
    * nothing else does.
+   *
+   * `mergeWritesInFlight` is a count rather than a flag, so that of two writes
+   * outstanding at once the first to finish cannot clear the claim out from under the
+   * second. Measured: with the count not consulted, two writes landing together put the
+   * added paragraph in the file twice and spliced a sentence into the middle of a word.
+   *
+   * The count covers the window between asking for the edit and the reply, and a change
+   * reported in a later turn than that reply falls outside it. What catches that one is
+   * the comparison against `webviewText` above: the merge is posted to the page before
+   * the document is written, so the late echo arrives holding exactly what the page has.
+   * Driven with the stand-in reporting changes after the reply, that is enough.
    */
   private cameFromOutsideTheWebview(text: string): boolean {
-    if (this.mergingOutsideChange || toWebviewText(text) === this.webviewText) {
+    if (this.mergeWritesInFlight > 0 || toWebviewText(text) === this.webviewText) {
       return false;
     }
     return !this.isOurSavesTrim(text);
@@ -1457,25 +1515,63 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
    * next save writes. So the merged text has to land here too, or the letter is kept on
    * screen and lost from the file with nothing said.
    *
-   * `mergingOutsideChange` is held across the edit so the change this causes is not read as
-   * news arriving from outside, which would work the merge a second time against itself.
+   * The write is claimed across the edit so the change it causes is not read as news
+   * arriving from outside, which would work the merge a second time against itself.
+   *
+   * It is also planned inside the queue rather than before joining it. This used to plan
+   * here and apply straight away, and a keystroke arriving inside its round trip to the
+   * document was planned against the text this write had already replaced, so both landed
+   * and the person's sentence went into the file twice. Planned in its turn, the only
+   * document it can be measured against is the one it will be applied to.
    */
-  private async writeMergedIntoDocument(document: vscode.TextDocument, merged: string): Promise<void> {
-    const plan = planEdit(document.getText(), toWebviewText(merged), document.eol === vscode.EndOfLine.CRLF);
-    if (!plan) {
-      return;
-    }
+  private writeMergedIntoDocument(document: vscode.TextDocument, merged: string): Promise<void> {
+    return this.queueDocumentWrite(async () => {
+      if (document.isClosed) {
+        return;
+      }
+      const plan = planEdit(document.getText(), toWebviewText(merged), document.eol === vscode.EndOfLine.CRLF);
+      if (!plan) {
+        // Already there, which a write queued behind one that merged the same change is.
+        return;
+      }
+      await this.writeClaimingItAsOurs(document, plan);
+    });
+  }
+
+  /**
+   * Run `write` after everything this editor has already asked to write into the document.
+   *
+   * The chain is kept whatever `write` does, failure included, so one write that throws
+   * cannot leave every later one waiting on a promise that never settles.
+   */
+  private queueDocumentWrite<T>(write: () => Promise<T>): Promise<T> {
+    const mine = this.documentWrites.then(write, write);
+    this.documentWrites = mine.catch(() => undefined);
+    return mine;
+  }
+
+  /**
+   * Apply a planned edit, claiming the change it causes as this editor's own while it is
+   * on its way to the document.
+   *
+   * The claim is given up in a `finally`, because a claim never given up would read every
+   * later write from outside as this editor's own and drop it, with nothing said.
+   */
+  private async writeClaimingItAsOurs(
+    document: vscode.TextDocument,
+    plan: { start: number; end: number; replacement: string }
+  ): Promise<void> {
     const edit = new vscode.WorkspaceEdit();
     edit.replace(
       document.uri,
       new vscode.Range(document.positionAt(plan.start), document.positionAt(plan.end)),
       plan.replacement
     );
-    this.mergingOutsideChange = true;
+    this.mergeWritesInFlight++;
     try {
       await vscode.workspace.applyEdit(edit);
     } finally {
-      this.mergingOutsideChange = false;
+      this.mergeWritesInFlight--;
     }
   }
 
@@ -1658,22 +1754,26 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
     // Knowing it now means the save can take the path that works rather than the one
     // that fails and says the person's changes are about to be lost.
     this.fileMovedUnderTheRecord = true;
-    const plan = planEdit(mine, together, document.eol === vscode.EndOfLine.CRLF);
-    if (!plan) {
-      return;
-    }
-    const edit = new vscode.WorkspaceEdit();
-    edit.replace(
-      document.uri,
-      new vscode.Range(document.positionAt(plan.start), document.positionAt(plan.end)),
-      plan.replacement
-    );
-    this.mergingOutsideChange = true;
-    try {
-      await vscode.workspace.applyEdit(edit);
-    } finally {
-      this.mergingOutsideChange = false;
-    }
+    // Planned in its turn behind anything else this editor is writing, for the reason
+    // `queueDocumentWrite` gives: a plan made outside the queue is measured against a
+    // document the write in front of it has already moved, and both then land.
+    await this.queueDocumentWrite(async () => {
+      if (document.isClosed || document.getText() !== mine) {
+        /*
+         * Moved while this waited its turn, so `together` describes a document that is
+         * gone and writing it would take back whatever moved it. What moved it is a write
+         * of this editor's own, and those carry the file's change in already; the next
+         * save reads the file again and settles anything left, which is how
+         * `writeOverTheMovedFile` answers the same situation.
+         */
+        return;
+      }
+      const plan = planEdit(mine, together, document.eol === vscode.EndOfLine.CRLF);
+      if (!plan) {
+        return;
+      }
+      await this.writeClaimingItAsOurs(document, plan);
+    });
   }
 
   /**

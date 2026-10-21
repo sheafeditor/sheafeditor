@@ -395,7 +395,16 @@ const own = (label, args) => {
   }
 };
 own('Installing from the lockfile', ['ci', '--no-audit', '--no-fund']);
-own('Running the gates', ['run', 'gates']);
+/*
+ * `--all`, as CI runs them, and for a second reason as well.
+ *
+ * Which gates run is derived from the diff against `origin/main`, and this clone is a clone of
+ * `main`: nothing has changed against it, so a plain `npm run gates` here would select the cheap
+ * tier and the expensive gates would not run at all. The check would pass in a quarter of the
+ * time, say every gate it reached had passed, and prove nothing about the half of the bar that
+ * needs a browser. That is the exact shape this whole file exists to refuse, one level up.
+ */
+own('Running the gates', ['run', 'gates', '--', '--all']);
 own('Building the package', ['run', 'package']);
 }
 

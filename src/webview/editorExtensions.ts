@@ -9,6 +9,7 @@ import { EditorView, keymap, drawSelection, dropCursor, highlightActiveLine } fr
 import { history, historyKeymap, defaultKeymap } from '@codemirror/commands';
 import { commonmarkLanguage, markdownKeymap, insertNewlineContinueMarkupCommand } from '@codemirror/lang-markdown';
 import { sheafMarkdown } from './markdownDialect';
+import { fencedCode } from './fencedCode';
 import { markdownDialect } from '../dialect/markdown';
 import { formatStateAt } from './formatState';
 import { languages } from '@codemirror/language-data';
@@ -34,6 +35,7 @@ import { blockEditing } from './blocks';
 import { pendingMarks } from './pendingMarks';
 import { changeMarks } from './changeMarks';
 import { linkComplete } from './linkComplete';
+import { viewBlocks } from './viewBlock';
 
 /**
  * Short fence names people write for common languages, mapped to a name the
@@ -151,7 +153,7 @@ export function editorExtensions(onShowShortcuts: () => void): Extension[] {
     // rules: Markdown's own reads any address-shaped text, so a clipboard holding several lines that
     // happen to start with a scheme is written into a destination that cannot hold them, and it
     // escapes nothing, so a bracket in the chosen words ends the label early.
-    sheafMarkdown({ base: commonmarkLanguage, codeLanguages: codeLanguageFor, extensions: markdownDialect }),
+    sheafMarkdown({ base: commonmarkLanguage, extensions: [markdownDialect, fencedCode(codeLanguageFor)] }),
     // Markdown's Enter and Backspace, at the high precedence markdown() would give
     // them, with Sheaf's Enter for an empty list item or quote line ahead of them.
     // Enter at the start of a block's text goes ahead of Markdown's own Enter, which
@@ -197,6 +199,26 @@ export function editorExtensions(onShowShortcuts: () => void): Extension[] {
     comments,
     frontMatterView,
     tables,
+    /*
+     * A `view` fence draws as a view here rather than in `main.ts`, beside everything else that
+     * draws a construct.
+     *
+     * It was composed one level up, in the array `main.ts` builds, which made the editor two things:
+     * what `editorExtensions` returns, and that plus whatever `main.ts` adds. Everything mounting
+     * the first drew a `view` fence as an ordinary code block — `test/harness.ts`, and so the prose
+     * scenarios, `check-render.mjs`, `check-render-agrees.mjs` and the jsdom half of the real-editor
+     * scenarios. `sample/views.md` has four of them and `check-render.mjs` reported it clean.
+     *
+     * `main.ts` is not the VS Code side of anything: it is the entry of `media/webview.js`, the one
+     * bundle both hosts load. So this was never host drift and both hosts drew views correctly. What
+     * it was is two definitions of the editor, one of which only the checks ever saw.
+     *
+     * Nothing has to be wired for it. `viewBlock.ts` asks the host for a data file through
+     * `setDataFileHost`, which `main.ts` sets and which already takes `null`: four call sites guard
+     * on it, and `test/tables.entry.ts` passes `null` deliberately. So a mount with no host draws a
+     * view of a block it can read and reports a file it cannot, which is what it should do.
+     */
+    viewBlocks,
     searchSupport,
     selectionToolbar,
     blockEditing,

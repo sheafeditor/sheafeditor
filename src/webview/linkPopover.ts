@@ -8,7 +8,7 @@
  * leaves, even while someone is typing in the field.
  */
 
-import { ChangeDesc, ChangeSpec, EditorSelection, MapMode, StateEffect } from '@codemirror/state';
+import { ChangeDesc, ChangeSpec, EditorSelection, Extension, MapMode, StateEffect } from '@codemirror/state';
 import { EditorView, TooltipView, ViewPlugin } from '@codemirror/view';
 import {
   floatingField,
@@ -396,8 +396,17 @@ function buildPopover(view: EditorView, isNew: boolean): TooltipView {
   };
 }
 
-/** Opens the popover when the pointer rests on a rendered link, and closes it when the pointer moves away. */
-export const linkHover = ViewPlugin.fromClass(
+/**
+ * Opens the popover when the pointer rests on a rendered link, and closes it when the pointer moves away.
+ *
+ * Annotated `Extension` rather than left inferred, and the annotation is the whole of why this line
+ * has a second paragraph. `ViewPlugin.fromClass(class { private … })` infers a `ViewPlugin` over an
+ * anonymous class, and TypeScript cannot write a declaration for a type it cannot name: with
+ * `declaration` on, every private member here is a `TS4094`, and `src/lib/` reaches this module
+ * through `livePreview`, so the package's type declarations did not emit at all. An extension is
+ * the only thing either caller treats it as.
+ */
+export const linkHover: Extension = ViewPlugin.fromClass(
   class {
     private openTimer: ReturnType<typeof setTimeout> | undefined;
     private closeTimer: ReturnType<typeof setTimeout> | undefined;

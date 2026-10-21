@@ -35,6 +35,12 @@ Select the cells and press Backspace or Delete. Every marked cell is cleared, an
 
 **Emptying a whole column keeps its name.** Select a column by its header and press Delete: the values go and the name stays. A column's name is how the rest of the document refers to it, so a view that shows, sorts or groups by that column goes on working. To clear the name as well, select the header cell on its own, with Up from the first row of the column, and press Delete. In a table with no rows there is nothing to tell the two apart, so the name clears.
 
+## Type over a selection
+
+Select cells and start typing. The character lands in the cell the selection started from, and you carry on editing that cell.
+
+**Typing with a column or the whole table selected keeps the column names.** Select a column by its header, or press Cmd+A, and type: the character goes into the first body cell and every name stays, the same way Delete and paste leave a name alone. To change a name from the keyboard, select the header cell on its own, with Up from the first row of the column, and type.
+
 ## Fill cells with one value
 
 Copy a single value, select the cells, and paste. The value fills every cell in the selection.

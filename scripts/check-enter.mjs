@@ -17,12 +17,18 @@
  * the second position against a document this script made rather than against the fixture. That is
  * the mistake that makes a derivation read as a cascade of unrelated behaviour.
  *
+ * **This builds the editor it reads, every run.** It used to require `test/prose.bundle.cjs`, which
+ * the prose suite writes and this never did, so the bytes it reported were whatever state of `src/`
+ * that suite last saw. An edit to a key handler then changed nothing here, and the table went on
+ * reading as a settled answer about the handler as it used to be.
+ *
  *   node scripts/check-enter.mjs
  */
 import { JSDOM } from 'jsdom';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { bundleExports } from './lib/bundle.mjs';
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -39,7 +45,13 @@ Object.defineProperty(globalThis, 'navigator', { value: window.navigator, config
 globalThis.requestAnimationFrame = (cb) => setTimeout(() => cb(Date.now()), 0);
 globalThis.cancelAnimationFrame = (id) => clearTimeout(id);
 
-const { keyMap } = createRequire(import.meta.url)(join(REPO, 'test', 'prose.bundle.cjs'));
+/*
+ * `keyMap` is the prose suite's own entry, bundled here rather than taken from the copy that suite
+ * leaves under `test/`.
+ */
+const { keyMap } = createRequire(import.meta.url)(
+  await bundleExports(REPO, { keyMap: 'test/prose.entry' }, 'check-enter')
+);
 
 /*
  * One of each block Enter is known to treat specially, and nothing else.

@@ -297,12 +297,19 @@ function lineCounts(text: string): Map<string, number> {
  * line and the other edits near it. The mover's line is inserted in its new place while the
  * edit keeps it in its old one, and the file ends with the row twice.
  *
- * Only lines that were in the base are counted, and that limit is the whole of what makes
- * this safe rather than a second bug. The character merge exists to build a line that is in
- * neither side: `| Login | Open | Sammy |` and `| Login | Done | Sam |` come together as
- * `| Login | Done | Sammy |`, which appears nowhere else and would look like an invention to
- * any rule that did not ask where it came from. What is never right is another copy of a
- * line the document already had.
+ * What is left out is the line the character merge built, and that limit is the whole of what
+ * makes this safe rather than a second bug. That merge exists to produce a line that is in
+ * neither side and in no base: `| Login | Open | Sammy |` and `| Login | Done | Sam |` come
+ * together as `| Login | Done | Sammy |`, which appears nowhere else and would look like an
+ * invention to any rule that did not ask where it came from. There is nothing to count such a
+ * line against, so it is skipped.
+ *
+ * Every other line is counted, whether or not the base had it. It used to be only the lines
+ * the base had, which left a hole: a line that exists in one side's version alone has
+ * `before === 0`, so a merge returning two copies of a line the other program added was never
+ * looked at. Asking for one copy and getting two is the same wrong answer whichever side
+ * asked, and the sum already says so, because a line in no base that one side added once has
+ * `asked === 1`.
  *
  * Blank lines are left out. A duplicated blank is not the harm here, and the spacing around
  * a block is exactly where both sides legitimately add one.
@@ -319,8 +326,12 @@ function multipliesALine(together: string, base: string, mine: string, theirs: s
   for (const [line, n] of got) {
     if (!line.trim()) continue;
     const before = was.get(line) ?? 0;
-    if (before === 0) continue;
-    const asked = (ours.get(line) ?? 0) + (other.get(line) ?? 0) - before;
+    const mineHas = ours.get(line) ?? 0;
+    const theirsHas = other.get(line) ?? 0;
+    // In no base and in neither side, so it is a line the character merge built and there
+    // is nothing to measure it against.
+    if (before === 0 && mineHas === 0 && theirsHas === 0) continue;
+    const asked = mineHas + theirsHas - before;
     if (n > Math.max(asked, 0)) return true;
   }
   return false;
@@ -501,8 +512,17 @@ export interface SyncHost {
   getText(): string;
   /** True when the document's lines end with CRLF. */
   crlf(): boolean;
-  /** Replace `[start, end)` with `replacement`. False when the editor refused the edit. */
-  applyEdit(start: number, end: number, replacement: string): Promise<boolean>;
+  /**
+   * Replace `[start, end)` with `replacement`. False when the editor refused the edit.
+   *
+   * `planned` is the document's text the offsets were worked out against, so a host can
+   * refuse an edit whose document has moved since rather than write at offsets that now
+   * point somewhere else. Refusing is the cheap half of that: the caller plans again
+   * against whatever the document moved to and the next attempt lands. Writing anyway
+   * puts the replacement at the wrong place, and where the replacement is text the
+   * document already holds, the result is a sentence in the file twice.
+   */
+  applyEdit(start: number, end: number, replacement: string, planned: string): Promise<boolean>;
   /**
    * Give the webview a whole document, in the webview's line endings, replacing what
    * it holds. `tookTypedText` is true when that document drops something the person
@@ -629,7 +649,11 @@ export class DocumentSync {
         merged = true;
         want = mergeOutsideChange(shownBase, text, shownNow).text;
       }
-      const plan = planEdit(this.host.getText(), want, this.host.crlf());
+      // Kept, because it is what the plan's offsets mean. The document can move between
+      // this plan and the edit reaching it, and an offset read off one text and applied
+      // to another points somewhere else; the host compares the two and refuses.
+      const planned = this.host.getText();
+      const plan = planEdit(planned, want, this.host.crlf());
       if (!plan) {
         // The document already holds it — an edit of ours that has landed, or an
         // outside write that happened to agree with the webview.
@@ -642,7 +666,7 @@ export class DocumentSync {
       // the edit is still in flight, and the claim is what keeps that echo from
       // being posted back to the webview as news.
       this.syncedText = plan.text;
-      const applied = await this.host.applyEdit(plan.start, plan.end, plan.replacement);
+      const applied = await this.host.applyEdit(plan.start, plan.end, plan.replacement, planned);
       if (applied) {
         replans = 0;
         this.host.onEdited();

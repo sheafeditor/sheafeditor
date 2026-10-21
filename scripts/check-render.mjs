@@ -10,6 +10,13 @@
  * through test/harness.ts, the way the unit scenarios do. No browser, no
  * install beyond the checkout's own dependencies.
  *
+ * **It builds the editor it mounts, every run**, from `src/` and `test/` as they
+ * are on disk. Said here because the scripts in this family split two ways and
+ * nothing used to mark which half a script was in: three of them read a bundle a
+ * suite had left behind, so a `src/` edit changed nothing in their output and the
+ * pass got written down as evidence. Every one of them builds now, and each says
+ * so where a reader looks first.
+ *
  * Code is never counted. Fenced and indented code, inline code spans and front
  * matter show their syntax on purpose, so their text is removed before checking.
  *
@@ -23,11 +30,11 @@
  *   node scripts/check-render.mjs --verbose         # every document, not just the ones with findings
  */
 
-import { readdirSync, readFileSync, statSync, mkdirSync, writeFileSync } from 'node:fs';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, dirname, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
-import { tmpdir } from 'node:os';
+import { bundleExports } from './lib/bundle.mjs';
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..');
 const VERBOSE = process.argv.includes('--verbose');
@@ -100,28 +107,21 @@ if (!docs.length) {
 /* --------------------------------------------------------------- the dom -- */
 
 const req = createRequire(join(REPO, 'package.json'));
-const esbuild = req('esbuild');
 const { JSDOM } = req('jsdom');
 
-const out = join(tmpdir(), 'sheaf-check-render');
-mkdirSync(out, { recursive: true });
-const entry = join(out, 'entry.ts');
-writeFileSync(
-  entry,
-  `export { mountProse } from ${JSON.stringify(join(REPO, 'test', 'harness'))};\n` +
-    `export { setLivePreviewConfig } from ${JSON.stringify(join(REPO, 'src', 'webview', 'revealState'))};\n` +
-    `export { forceParsing } from '@codemirror/language';\n`
+// Built through scripts/lib/bundle.mjs, which gives the run a temporary directory
+// of its own and applies the embedded-HTML redirect both real bundlers use. A
+// fixed output path is shared by every worktree on the machine, so two runs
+// overlapping could load a bundle built from another checkout's sources.
+const bundle = await bundleExports(
+  REPO,
+  {
+    mountProse: 'test/harness',
+    setLivePreviewConfig: 'src/webview/revealState',
+    forceParsing: '@codemirror/language',
+  },
+  'check-render'
 );
-const bundle = join(out, 'bundle.cjs');
-await esbuild.build({
-  entryPoints: [entry],
-  bundle: true,
-  format: 'cjs',
-  platform: 'browser',
-  outfile: bundle,
-  logLevel: 'warning',
-  nodePaths: [join(REPO, 'node_modules')],
-});
 
 // The same environment test/real-editor/run-unit.mjs gives the unit scenarios.
 const dom = new JSDOM('<!doctype html><html><body></body></html>', { pretendToBeVisual: true });

@@ -30,6 +30,7 @@
 import { spawn } from 'node:child_process';
 import { readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
+import { SUBJECTS } from './lib/gateTier.mjs';
 
 /*
  * How long the server gets to answer before this gives up and says so.
@@ -57,11 +58,22 @@ const START_MS = 20_000;
  * `git checkout` sets a file's time to now, so restoring a control's edit makes the sources
  * newer than the bundle and this will ask for a build. That is correct: the bundle really is
  * the broken one until it is rebuilt.
+ *
+ * **What each served file is built from comes from the gate subjects**, in `lib/gateTier.mjs`,
+ * rather than from a list here. This held its own copy, and the copy was narrower than the truth:
+ * it named `src/webview` and the stylesheet, while the editor bundle's closure also holds
+ * `src/dialect/`, `src/docLink.ts` and `src/textSync.ts`. An edit to the Markdown grammar left
+ * this satisfied, so these checks would have served a bundle from before it, which is the failure
+ * the paragraph above is about. `scripts/check-gate-tiers.mjs` compares those subjects against
+ * what esbuild actually pulled in, so reading them here puts this check behind that audit too.
  */
 const SERVES = [
-  { built: ['media', 'webview.js'], from: [['src', 'webview'], ['media', 'webview.css']] },
-  { built: ['dist', 'serve.js'], from: [['src', 'server']] },
+  { built: ['media', 'webview.js'], from: [...SUBJECTS.editor.patterns, ...SUBJECTS.stylesheet.patterns] },
+  { built: ['dist', 'serve.js'], from: SUBJECTS.server.patterns },
 ];
+
+/** A subject's pattern as a path to walk: a directory for `dir/**`, the file itself otherwise. */
+const asPath = (repo, pattern) => join(repo, pattern.endsWith('/**') ? pattern.slice(0, -3) : pattern);
 
 /** Every file under `dir`, or just `dir` when it is a file; missing paths contribute nothing. */
 function filesUnder(dir) {
@@ -91,7 +103,7 @@ function refuseStaleBundle(repo, whenAbsent) {
       process.exit(1);
     }
     const newer = from
-      .flatMap((parts) => filesUnder(join(repo, ...parts)))
+      .flatMap((pattern) => filesUnder(asPath(repo, pattern)))
       .filter((f) => f.at > at)
       .sort((a, b) => b.at - a.at);
     if (newer.length) {

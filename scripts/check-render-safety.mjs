@@ -72,6 +72,34 @@ const HOSTILE = [
   ['javascript in angle brackets', '[click](<javascript:alert(1)>)'],
   ['data in angle brackets, with a space', '[click](<data:text/html,<p>x >)'],
   ['a reference definition in angle brackets', '[click][r]\n\n[r]: <javascript:alert(1)>'],
+  /*
+   * An address in angle brackets standing alone. This was listed with the parser's own behaviour
+   * below, as inert, and it was inert for the wrong reason: the render path drew no autolink at all,
+   * so there was no anchor to be unsafe. The parser does make a link of it (`<javascript:alert(1)>` is
+   * an `Autolink` node), the render path now draws autolinks, and what keeps it from an anchor is the
+   * scheme rule, which is why it is here with the rest.
+   */
+  ['an address in angle brackets, javascript', '<javascript:alert(1)>'],
+  ['an address in angle brackets, data', '<data:text/html,x>'],
+  ['an address in angle brackets, vbscript', '<vbscript:msgbox(1)>'],
+];
+
+/**
+ * Image addresses, which `src` fetches and a `javascript:` or `data:` one must never reach. The
+ * assertion is that no `img` element carries them; the benign half is that an ordinary one does, so
+ * a render path that stopped drawing images would fail here rather than pass by drawing none.
+ */
+const IMAGE_HOSTILE = [
+  ['javascript', '![x](javascript:alert(1))'],
+  ['mixed case', '![x](JaVaScRiPt:alert(1))'],
+  ['data', '![x](data:text/html,<script>alert(1)</script>)'],
+  ['in angle brackets', '![x](<javascript:alert(1)>)'],
+  ['a reference definition', '![x][r]\n\n[r]: javascript:alert(1)'],
+];
+const IMAGE_BENIGN = [
+  ['an absolute address', '![x](https://example.com/p.png)', 'https://example.com/p.png'],
+  ['a relative path', '![x](./p.png)', './p.png'],
+  ['a reference definition', '![x][r]\n\n[r]: ../p.png', '../p.png'],
 ];
 
 /** Destinations a document in a repository legitimately uses, every one of which must survive. */
@@ -88,10 +116,7 @@ const BENIGN = [
 ];
 
 /** Inert because the parser declines the link, not because a destination was inspected. */
-const PARSER_BEHAVIOUR = [
-  ['a tab inside the scheme', '[click](java\tscript:alert(1))'],
-  ['an autolink', '<javascript:alert(1)>'],
-];
+const PARSER_BEHAVIOUR = [['a tab inside the scheme', '[click](java\tscript:alert(1))']];
 
 /**
  * Documents that try to put an element into the output, and ordinary ones that must not be refused.
@@ -107,6 +132,7 @@ const PARSER_BEHAVIOUR = [
  * specification allows such a pair to be *drawn* and not to be *emitted*, and those look identical
  * on screen. This check is what keeps them apart.
  */
+const DOCUMENT_ONLY = ['table', 'thead', 'tbody', 'tr', 'th', 'td'];
 const ELEMENT_CASES = [
   ['a script element', '<script>alert(1)</script>'],
   ['an event handler attribute', '<img src=x onerror=alert(1)>'],
@@ -132,7 +158,22 @@ const ELEMENT_CASES = [
    * attribute, so a name carrying a quote would break out of it. No grammar node is named with one,
    * which is why this watches the source rather than the name.
    */
-  ['a table whose cell closes the wrapper', '| </div><script>x</script> | "b" |\n|:--|--:|\n| 1 | 2 |'],
+  ['a table whose cell closes the wrapper', '| </div><script>x</script> | "b" |\n|:--|--:|\n| 1 | 2 |', DOCUMENT_ONLY],
+  /*
+   * The drawings added with the document profile each put document text next to markup, and each
+   * gets the input shaped to leave its element. A fourth item names the elements a case is entitled
+   * to produce beyond the base set, because a table or an image is a thing the document asked for in
+   * Markdown and the allow-list for the rest of the cases must not contain them: a document-supplied
+   * `<img>` or `<table>` has to be caught, and cannot be if every case may emit either.
+   */
+  ['a table cell holding markup of its own', '| <img src=x onerror=alert(1)> | <b>y</b> |\n|---|---|\n| <script>x</script> | 2 |', DOCUMENT_ONLY],
+  ['an image description holding markup', '![<script>x</script>"><img src=x onerror=y>](p.png)', ['img']],
+  ['an image address that tries to leave its attribute', '![x](a"onerror="alert(1))', ['img']],
+  ['a code fence whose info string is markup', '```"><script>alert(1)</script>\nx\n```'],
+  ['a footnote whose note is markup', 'a[^1]\n\n[^1]: <script>x</script> "><img src=x>'],
+  ['an abbreviation whose title is markup', '<abbr title="x&quot;><script>y</script>">z</abbr>'],
+  ['an entity that decodes to markup', '&lt;script&gt;alert(1)&lt;/script&gt;'],
+  ['a link whose text is markup', '[<img src=x onerror=y>](https://e.com)'],
 ];
 
 /** Ordinary documents, so the check is not simply refusing everything. */
@@ -182,10 +223,21 @@ const { renderMarkdown, TAGS } = module.exports;
  * with no `src`, no `href` and no event surface, so an unnoticed one does nothing. **If this list
  * ever grows past these four, that is the moment to ask whether it is still a tripwire or has become
  * a description of the output**, which would make it agree with the renderer by construction.
+ *
+ * **It has grown by four, and the four are inert in the same way `div` is.** Fenced code, rules,
+ * hard breaks and footnote numbers are drawn on every profile that carries them, so a document that
+ * supplied any of `pre`, `hr`, `br` or `sup` could no longer be told from one that asked for the
+ * construct. None has a `src`, an `href` or an event surface. What it costs is the same as before and
+ * it is named: if escaping ever stopped, those four would no longer be caught here.
+ *
+ * The elements with a surface are not on this list. `img`, and the table family a `document` draws,
+ * are named per case below, where a case that asked for the construct in Markdown is entitled to
+ * one. So a document-supplied `<img>` or `<table>` is still caught everywhere it was not requested.
  */
-const EMITTABLE = new Set([...Object.values(TAGS), 'a', 'input', 'span', 'div']);
+const EMITTABLE = new Set([...Object.values(TAGS), 'a', 'input', 'span', 'div', 'pre', 'hr', 'br', 'sup']);
 
 const hrefOf = (markdown) => /<a href="([^"]*)"/.exec(renderMarkdown(markdown).html)?.[1] ?? null;
+const srcOf = (markdown) => /<img src="([^"]*)"/.exec(renderMarkdown(markdown, 'document').html)?.[1] ?? null;
 
 const problems = [];
 let anchors = 0;
@@ -222,6 +274,30 @@ for (const [name, markdown, expected] of BENIGN) {
 }
 
 /*
+ * The same two assertions for an image, with the same empty case: the hostile addresses are measured
+ * against a render path that does draw an image from a benign one, so a path that stopped drawing
+ * images fails the benign half instead of passing the hostile one by drawing none.
+ */
+let images = 0;
+for (const [name, markdown] of IMAGE_HOSTILE) {
+  const src = srcOf(markdown);
+  if (src !== null) problems.push(`image, ${name}: emitted src="${src}", where the address should have been refused`);
+}
+for (const [name, markdown, expected] of IMAGE_BENIGN) {
+  const src = srcOf(markdown);
+  if (src === null) problems.push(`image, ${name}: emitted no image at all, so this address was refused`);
+  else {
+    images++;
+    if (src !== expected) problems.push(`image, ${name}: emitted src="${src}", expected "${expected}"`);
+  }
+}
+if (images === 0) {
+  console.error('check-render-safety: the render path drew no image for any benign address.');
+  console.error('  So the hostile image addresses prove nothing: a surface that draws no images has no unsafe ones.');
+  process.exit(1);
+}
+
+/*
  * The empty case. With no anchors from the benign set there is nothing for the hostile set to have
  * been measured against, and a clean report would mean only that the probe found no links.
  */
@@ -241,18 +317,28 @@ if (anchors === 0) {
  */
 const { JSDOM } = await import('jsdom');
 let elements = 0;
-for (const [name, markdown] of [...ELEMENT_CASES.map(([n, m]) => [n, m]), ...ORDINARY.map((m, i) => [`ordinary document ${i + 1}`, m])]) {
-  const { html } = renderMarkdown(markdown);
-  const body = new JSDOM(`<!doctype html><body>${html}`).window.document.body;
-  const seen = [...body.querySelectorAll('*')].map((el) => el.tagName.toLowerCase());
-  elements += seen.length;
-  const stray = [...new Set(seen.filter((tag) => !EMITTABLE.has(tag)))];
-  if (stray.length) problems.push(`${name}: emitted ${stray.map((t) => `<${t}>`).join(', ')}, which the renderer may not produce`);
-  // An event handler on an element Sheaf *is* allowed to emit would pass an element check, so the
-  // attributes are read too. This is the half the issue predicted it would get wrong.
-  for (const el of body.querySelectorAll('*')) {
-    const handlers = [...el.attributes].map((a) => a.name).filter((n) => n.toLowerCase().startsWith('on'));
-    if (handlers.length) problems.push(`${name}: emitted <${el.tagName.toLowerCase()}> carrying ${handlers.join(', ')}`);
+/*
+ * Every case under the smallest profile that draws blocks and under the one that draws the most.
+ * Running the document profile over the same inputs is what exercises the table and image drawings
+ * with hostile text in them; running notes as well is what shows those inputs still come back as a
+ * named wrapper where the profile does not carry the construct.
+ */
+for (const profile of ['notes', 'document']) {
+  const cases = [...ELEMENT_CASES.map(([n, m, extra]) => [n, m, extra ?? []]), ...ORDINARY.map((m, i) => [`ordinary document ${i + 1}`, m, []])];
+  for (const [name, markdown, extra] of cases) {
+    const { html } = renderMarkdown(markdown, profile);
+    const body = new JSDOM(`<!doctype html><body>${html}`).window.document.body;
+    const seen = [...body.querySelectorAll('*')].map((el) => el.tagName.toLowerCase());
+    elements += seen.length;
+    const allowed = new Set([...EMITTABLE, ...extra]);
+    const stray = [...new Set(seen.filter((tag) => !allowed.has(tag)))];
+    if (stray.length) problems.push(`${name} (${profile}): emitted ${stray.map((t) => `<${t}>`).join(', ')}, which the renderer may not produce`);
+    // An event handler on an element Sheaf *is* allowed to emit would pass an element check, so the
+    // attributes are read too. This is the half the issue predicted it would get wrong.
+    for (const el of body.querySelectorAll('*')) {
+      const handlers = [...el.attributes].map((a) => a.name).filter((n) => n.toLowerCase().startsWith('on'));
+      if (handlers.length) problems.push(`${name} (${profile}): emitted <${el.tagName.toLowerCase()}> carrying ${handlers.join(', ')}`);
+    }
   }
 }
 
@@ -274,7 +360,8 @@ if (problems.length) {
       '\n  A destination with no scheme, or http, https or mailto, is emitted. Anything else drops the' +
       '\n  anchor and keeps the words. See `safeDestination` in src/render/markdown.ts.' +
       '\n  Nothing a document supplies may become an element. The renderer emits its own `TAGS` plus' +
-      '\n  `a`, `input` and `span`, and a document\'s tags are text. See the walk in the same file.' +
+      '\n  the few it writes literally, listed in this file, and a document\'s tags are text. See the walk' +
+      '\n  in the same file.' +
       '\n\nIf this failed because a construct should now be drawn, drawing it is allowed and passing the' +
       "\ndocument's own tag through is not: apply a class to text, as the editor does."
   );
@@ -286,9 +373,13 @@ console.log(
     `${anchors} of ${BENIGN.length} benign destinations emitted unchanged.`
 );
 console.log(
+  `  ${IMAGE_HOSTILE.length} image addresses refused, ${images} of ${IMAGE_BENIGN.length} benign ones emitted unchanged.`
+);
+console.log(
   `  Nothing a document supplied became an element: ${elements} elements read as a tree across ` +
-    `${ELEMENT_CASES.length} hostile and ${ORDINARY.length} ordinary documents, all within the ` +
-    `${EMITTABLE.size} the renderer may emit, none carrying an event handler.`
+    `${ELEMENT_CASES.length} hostile and ${ORDINARY.length} ordinary documents under notes and under document, ` +
+    `all within the ${EMITTABLE.size} the renderer may emit (and, per case, the image or table it was asked for), ` +
+    `none carrying an event handler.`
 );
 console.log(
   `  parser behaviour rather than a filter, excluded from the verdict: ` +

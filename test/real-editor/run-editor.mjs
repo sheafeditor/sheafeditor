@@ -1,21 +1,31 @@
 // Run one area's scenarios in a real VS Code window.
 //
-//   node test/real-editor/run-editor.mjs <area> [id-substring]
+//   node test/real-editor/run-editor.mjs <area> [id-substring] [--times N]
 //
 // An area file editor/<area>.mjs exports `scenarios`: [{ id, feature, name, run }], and optionally `settings` for
 // the VS Code profile. `run(S)` receives the session from session.mjs and returns true, or { ok, detail } where
 // detail says what a person would have seen. A throw is a failure (a click on a covered target throws). Every
 // failure gets a screenshot. Results are written to results.json in the run folder, whose path is printed.
+//
+// `--times N` runs the selection N times in the one window and reports a rate per scenario.
+//
+// That is a different question from whether a scenario passes, and the only one that can answer
+// "was that a flake". A scenario failing one run in twenty and one failing one run in two read
+// identically from a single run, and both get called flaky and set aside. The rate is also what
+// a report to somebody else needs: "2 of 300" is a number they can act on, where "it failed once"
+// is a thing they have to reproduce before they can even weigh it. One window is what makes it
+// affordable, because launching VS Code is nearly all of the cost of a single scenario.
 import { execFileSync } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { session, REPO, RUNS } from './session.mjs';
 import { holdScreen, locklessRunners } from './screenLock.mjs';
 import { reapQuietly } from './reapRuns.mjs';
+import { parseArgs } from './args.mjs';
 
-const [area, only] = process.argv.slice(2);
-if (!area) {
-  console.error('usage: node test/real-editor/run-editor.mjs <area> [id-substring]');
+const { area, only, times, ok: argsOk, why } = parseArgs(process.argv.slice(2));
+if (!argsOk) {
+  console.error(`${why}\nusage: node test/real-editor/run-editor.mjs <area> [id-substring] [--times N]`);
   process.exit(2);
 }
 
@@ -160,6 +170,9 @@ const stamp = (complete) =>
         // heard from, and a finished one says how long it took.
         updatedAt: new Date().toISOString(),
         selected: selected.length,
+        // How many times the selection was run. A folder holding 300 results for one
+        // scenario and one holding 300 scenarios are different measurements.
+        times,
         done: results.length,
         // Empty on an ordinary run, including one that merely waited its turn. Anything here
         // means a failure below may belong to neither piece of work.
@@ -173,6 +186,23 @@ const stamp = (complete) =>
 
 const results = [];
 stamp(false);
+/*
+ * One screenshot per scenario rather than one per failure, because a repeat run of a scenario
+ * that fails half the time would otherwise write a hundred pictures of the same thing and fill
+ * the run folder that the reaper is there to keep small. The first failure is the one kept: it
+ * is the one taken while the rest of the run still lies ahead, so nothing else has touched the
+ * document yet.
+ */
+const shotFor = new Map();
+for (let attempt = 1; attempt <= times; attempt++) {
+  /*
+   * Every pass starts from the corpus the repository holds, which is what makes a rate a rate.
+   * Without it the 44 scenarios that open a corpus file inherit the previous pass's edits, and the
+   * first such scenario measured this way reported 15 failures in 16 passes over a product that
+   * was working: it passed on pass 1 and every later pass began from the document pass 1 had
+   * already changed. Skipped on a single pass so an ordinary run does the work it always did.
+   */
+  if (times > 1 && attempt > 1) S.resetWorkspace();
 for (const sc of selected) {
   let ok = false;
   let detail = '';
@@ -209,9 +239,14 @@ for (const sc of selected) {
   const state = surprise ? 'FIXED' : known ? 'KNOWN' : ok ? 'PASS' : 'FAIL';
   // A surprise is counted, and counted as a failure: the marker is wrong and someone must look.
   const counts = known ? false : ok;
-  if (!ok && !known) shot = await S.shot(`fail-${sc.id}`).catch(() => null);
+  if (!ok && !known && !shotFor.has(sc.id)) {
+    shot = await S.shot(`fail-${sc.id}`).catch(() => null);
+    shotFor.set(sc.id, shot);
+  } else if (!ok && !known) {
+    shot = shotFor.get(sc.id);
+  }
   const errors = await S.errors();
-  results.push({ id: sc.id, feature: sc.feature, name: sc.name, ok: counts, raw: ok, known, detail, errors, shot });
+  results.push({ id: sc.id, feature: sc.feature, name: sc.name, attempt, ok: counts, raw: ok, known, detail, errors, shot });
   const say = surprise
     ? `\n     it passes now, so either the bug is fixed or this marker is stale: take the marker off`
     : known
@@ -219,17 +254,28 @@ for (const sc of selected) {
       : ok
         ? ''
         : `\n     ${detail}`;
-  console.log(`${state} ${sc.id} ${sc.name}${say}${errors.length ? `\n     errors: ${errors.join(' | ')}` : ''}`);
+  // The pass number only where there is more than one, so an ordinary run reads as it did.
+  const which = times > 1 ? ` [${attempt}/${times}]` : '';
+  console.log(`${state}${which} ${sc.id} ${sc.name}${say}${errors.length ? `\n     errors: ${errors.join(' | ')}` : ''}`);
   // Written as they come in rather than at the end, so a run that is stopped
   // leaves what it actually measured instead of the last run's numbers.
   writeFileSync(join(S.run, 'results.json'), JSON.stringify(results, null, 2));
   stamp(false);
   await S.cleanup().catch(() => {});
 }
+}
 writeFileSync(join(S.run, 'results.json'), JSON.stringify(results, null, 2));
 stamp(true);
 const knownFailures = results.filter((r) => r.known && !r.raw);
 const surprises = results.filter((r) => r.known && r.raw);
+/*
+ * One id each in the two summary lines, however many passes there were. A repeat run has one
+ * result row per pass, so a single known failure printed its id twenty-five times in one sentence
+ * and the count read as twenty-five standing failures rather than one scenario run twenty-five
+ * times. The count of rows is still the honest number above it; what a reader needs on the line
+ * is which scenarios.
+ */
+const ids = (rs) => [...new Set(rs.map((r) => r.id))].join(', ');
 // A known failure is out of the count entirely, so a run with nothing but those left is green.
 // Counting it as red is exactly what makes a standing failure invisible.
 const counted = results.filter((r) => !(r.known && !r.raw));
@@ -239,17 +285,41 @@ const pass = counted.filter((r) => r.ok).length;
 // is already looking. `startedAt` above is what makes it a duration rather than a guess.
 const tookMs = Date.now() - new Date(startedAt).getTime();
 const took = tookMs < 90000 ? `${Math.round(tookMs / 1000)}s` : `${Math.floor(tookMs / 60000)}m ${Math.round((tookMs % 60000) / 1000)}s`;
+/*
+ * The rate per scenario, which is the whole output of a repeat run and replaces the pass count
+ * rather than sitting beside it. `9/10 scenarios passed` over ten passes of one scenario is a
+ * sentence nobody can use: it does not say which pass failed, and read quickly it says nine
+ * scenarios exist. A scenario that passed every time is printed too, because `0 of 300 failed`
+ * is the result when the question was whether something is intermittent, and leaving it out
+ * would make a clean sweep look like a run that measured nothing.
+ */
+const rates = times === 1 ? '' : (() => {
+  const byId = new Map();
+  for (const r of results) {
+    if (r.known && !r.raw) continue;
+    const e = byId.get(r.id) ?? { runs: 0, failed: [], name: r.name };
+    e.runs++;
+    if (!r.ok) e.failed.push(r.attempt);
+    byId.set(r.id, e);
+  }
+  const lines = [...byId.entries()].map(([id, e]) =>
+    `  ${String(e.failed.length).padStart(4)} of ${String(e.runs).padEnd(4)} failed  ${id}` +
+    (e.failed.length ? `\n       on pass ${e.failed.join(', ')}` : '')
+  );
+  return `\n\nover ${times} passes:\n${lines.join('\n')}`;
+})();
 console.log(
-  `\n${area}: ${pass}/${counted.length} scenarios passed in ${took}, ${scenarios.length} in the area (results in ${S.run})` +
+  `\n${area}: ${pass}/${counted.length} scenario runs passed in ${took}, ${scenarios.length} in the area (results in ${S.run})` +
+    rates +
     // On the line a person actually reads, because the warning printed before the run is at
     // the top of output that is read from the bottom.
     (sharedWith.length
       ? `\nSCREEN SHARED with ${sharedWith.length} run${sharedWith.length === 1 ? '' : 's'} holding no lock: a failure here may not be real`
       : '') +
     (knownFailures.length
-      ? `\n${knownFailures.length} known failure${knownFailures.length === 1 ? '' : 's'}, not counted: ${knownFailures.map((r) => r.id).join(', ')}`
+      ? `\n${knownFailures.length} known failure${knownFailures.length === 1 ? '' : 's'}, not counted: ${ids(knownFailures)}`
       : '') +
-    (surprises.length ? `\n${surprises.length} marked known and passing, which fails this run: ${surprises.map((r) => r.id).join(', ')}` : '')
+    (surprises.length ? `\n${surprises.length} marked known and passing, which fails this run: ${ids(surprises)}` : '')
 );
 await S.quit();
 process.exit(pass === counted.length ? 0 : 1);

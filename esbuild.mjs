@@ -160,16 +160,26 @@ rmSync(join(REPO, 'media', 'editor'), { recursive: true, force: true });
  * saying nothing about it.
  */
 const METAFILE = join(REPO, '.claude', 'scratch', 'webview-metafile.json');
-const writeMetafilePlugin = {
-  name: 'write-metafile',
+
+/**
+ * Write a build's metafile where a check can read it.
+ *
+ * One factory rather than a plugin per context: four builds now write one, because
+ * `scripts/check-gate-tiers.mjs` reads each artefact's closure to audit the gate tiering, and four
+ * copies of this would be four places for the directory to stop being created.
+ */
+const writeMetafile = (name, to) => ({
+  name: `write-metafile-${name}`,
   setup(build) {
     build.onEnd((result) => {
       if (!result.metafile) return;
-      mkdirSync(dirname(METAFILE), { recursive: true });
-      writeFileSync(METAFILE, JSON.stringify(result.metafile));
+      mkdirSync(dirname(to), { recursive: true });
+      writeFileSync(to, JSON.stringify(result.metafile));
     });
   },
-};
+});
+
+const writeMetafilePlugin = writeMetafile('webview', METAFILE);
 
 const webviewCtx = await esbuild.context({
   ...common,
@@ -197,6 +207,51 @@ const webviewCtx = await esbuild.context({
   plugins: [writeMetafilePlugin, embeddedHtmlPlugin],
 });
 
+/*
+ * The library a consumer installs and imports, which is a different artifact from the page.
+ *
+ * Three entry points in one build with splitting on, and every part of that sentence is doing work:
+ *
+ * **Three entries, because the `exports` map names three.** `lib/index.js` is `mount`,
+ * `lib/editor.js` is the editor it fetches on first focus, and `lib/render.js` is Markdown to HTML
+ * with no editor in it.
+ *
+ * **One build, because `index.ts` reaches the editor by `import('./editor')` and `editor.ts` is an
+ * entry point of the same build.** esbuild then points that dynamic import at `lib/editor.js`
+ * rather than inventing a chunk for it, so the file the consumer's bundler fetches for the editor is
+ * the file the map names.
+ *
+ * **Splitting on, because without it a dynamic import is inlined.** `splitting: false` would put
+ * CodeMirror inside `lib/index.js`, and the claim this whole arrangement rests on — a mounted
+ * surface is not an editor until it is focused — would be false while every test of it still passed.
+ * `scripts/check-package.mjs` reads the metafile below and fails when `@codemirror/view` reaches
+ * `lib/index.js`'s eager closure.
+ *
+ * Chunks go in `lib/chunks/`, and the `exports` map names that directory with a pattern, so the map
+ * is a complete list of what the package can serve rather than a list of what it means to promise.
+ *
+ * `media/webview.css` and `media/browser-theme.css` are the other half of what a consumer loads and
+ * are not built here: they are committed files, and the map names them.
+ */
+rmSync(join(REPO, 'lib'), { recursive: true, force: true });
+
+const LIB_METAFILE = join(REPO, '.claude', 'scratch', 'lib-metafile.json');
+const writeLibMetafilePlugin = writeMetafile('lib', LIB_METAFILE);
+
+const libCtx = await esbuild.context({
+  ...common,
+  entryPoints: ['src/lib/index.ts', 'src/lib/editor.ts', 'src/lib/render.ts'],
+  outdir: 'lib',
+  entryNames: '[name]',
+  chunkNames: 'chunks/[name]-[hash]',
+  splitting: true,
+  format: 'esm',
+  platform: 'browser',
+  target: 'es2020',
+  metafile: true,
+  plugins: [writeLibMetafilePlugin],
+});
+
 /**
  * Local server bundle — the `sheaf serve` command, run by Node from a terminal.
  *
@@ -217,6 +272,13 @@ const serverCtx = await esbuild.context({
   // and the bundler each have their own opinion about what to do with it.
   banner: { js: '#!/usr/bin/env node' },
   define: { __SHEAF_BUILD__: JSON.stringify(stamp) },
+  /*
+   * Which sources this bundle holds, for `scripts/check-gate-tiers.mjs`. Six browser-driven gates
+   * load their page from this server, so what it is built from decides whether a change to
+   * `src/server/` has to run them, and that set is read from the build rather than listed by hand.
+   */
+  metafile: true,
+  plugins: [writeMetafile('serve', join(REPO, '.claude', 'scratch', 'serve-metafile.json'))],
 });
 
 /**
@@ -234,9 +296,33 @@ const serverHostCtx = await esbuild.context({
   format: 'iife',
   platform: 'browser',
   target: 'es2020',
+  // The other half of what a browser-driven gate loads, and read for the same reason as above.
+  metafile: true,
+  plugins: [writeMetafile('serve-host', join(REPO, '.claude', 'scratch', 'serve-host-metafile.json'))],
 });
 
-const contexts = [extensionCtx, webviewCtx, serverCtx, serverHostCtx];
+const contexts = [extensionCtx, webviewCtx, libCtx, serverCtx, serverHostCtx];
+
+/*
+ * The library's type declarations, which esbuild cannot produce: it strips types without reading
+ * them. So the one build that produces the package produces both halves of it, rather than leaving
+ * the declarations to a separate script somebody has to remember.
+ *
+ * It is part of the build rather than part of the gates' type check because an `exports` map whose
+ * `types` condition points at a file the build did not write is a package that resolves for its
+ * author and for nobody else, which is the one failure `pkg.build` R4 is about.
+ *
+ * Skipped in watch mode: a declaration run per keystroke costs more than it is worth, and nothing a
+ * watch build serves reads them.
+ */
+function buildDeclarations() {
+  const tsc = join(REPO, 'node_modules', '.bin', 'tsc');
+  const r = spawnSync(tsc, ['-p', join(REPO, 'tsconfig.lib.json')], { cwd: REPO, stdio: 'inherit' });
+  if (r.status !== 0) {
+    console.error('[esbuild] the library declarations did not compile, so the package has no types');
+    process.exit(r.status ?? 1);
+  }
+}
 
 if (watch) {
   await Promise.all(contexts.map((ctx) => ctx.watch()));
@@ -244,5 +330,6 @@ if (watch) {
 } else {
   await Promise.all(contexts.map((ctx) => ctx.rebuild()));
   await Promise.all(contexts.map((ctx) => ctx.dispose()));
+  buildDeclarations();
   console.log('[esbuild] build complete');
 }

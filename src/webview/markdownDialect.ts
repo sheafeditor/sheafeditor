@@ -7,40 +7,24 @@
  */
 
 import { commonmarkLanguage } from '@codemirror/lang-markdown';
-import { Language, LanguageDescription, LanguageSupport, ParseContext } from '@codemirror/language';
-import { MarkdownExtension, MarkdownParser, parseCode } from '@lezer/markdown';
+import { Language, LanguageSupport } from '@codemirror/language';
+import { MarkdownExtension, MarkdownParser } from '@lezer/markdown';
 
 
-/** What `sheafMarkdown` takes, which is the three things Sheaf asks of a Markdown language. */
+/** What `sheafMarkdown` takes, which is the two things Sheaf asks of a Markdown language. */
 export interface SheafMarkdownConfig {
   /** The language to build on, for its parser and its language data. CommonMark by default. */
   base?: Language;
   /**
-   * The grammar for a fenced block: a lookup by the block's info string, or a list to match the
-   * info string against by name. Code is left unparsed when absent.
+   * Dialect extensions, usually `markdownDialect`.
+   *
+   * Highlighting inside a fenced block is one of these now, `fencedCode(...)` from
+   * `fencedCode.ts`, rather than a `codeLanguages` option here. It used to be installed on every
+   * caller whether they asked or not, and `parseCode` is a static import, so a surface that draws no
+   * code blocks paid 2.5 KB gzipped for mixed-language parsing with no parser to delegate to.
    */
-  codeLanguages?: ((info: string) => LanguageDescription | null) | readonly LanguageDescription[];
-  /** Dialect extensions, usually `markdownDialect`. */
   extensions?: MarkdownExtension;
 }
-
-/**
- * The grammar a fenced block's info string asks for, as `parseCode` wants it.
- *
- * A grammar that is already loaded is handed over; one that is not is loaded while the block stays
- * unparsed, which is what `getSkippingParser` is for and is why over a hundred grammars can sit
- * behind dynamic imports.
- */
-const codeParserFor =
-  (languages: NonNullable<SheafMarkdownConfig['codeLanguages']>) =>
-  (info: string) => {
-    // Whatever follows the first word is the block's own business: ```js twoslash is JavaScript.
-    const name = /\S*/.exec(info)?.[0] ?? '';
-    if (!name) return null;
-    const found = typeof languages === 'function' ? languages(name) : LanguageDescription.matchLanguageName(languages, name, true);
-    if (!found) return null;
-    return found.support ? found.support.language.parser : ParseContext.getSkippingParser(found.load());
-  };
 
 /**
  * Sheaf's Markdown language, assembled here rather than taken from `markdown()`.
@@ -64,11 +48,10 @@ const codeParserFor =
  * `pasteURLAsLink`, which `linkPaste.ts` answers with rules that escape what they write.
  */
 export function sheafMarkdown(config: SheafMarkdownConfig = {}): LanguageSupport {
-  const { base = commonmarkLanguage, codeLanguages, extensions } = config;
+  const { base = commonmarkLanguage, extensions } = config;
   const parser = base.parser;
   if (!(parser instanceof MarkdownParser)) throw new RangeError('sheafMarkdown needs a Markdown parser to build on');
   const exts: MarkdownExtension[] = extensions ? [extensions] : [];
-  exts.push(parseCode({ codeParser: codeLanguages ? codeParserFor(codeLanguages) : undefined }));
   // The base's own language data, so `commentTokens` and anything else it carries survive.
   return new LanguageSupport(new Language(base.data, parser.configure(exts), [], 'markdown'));
 }

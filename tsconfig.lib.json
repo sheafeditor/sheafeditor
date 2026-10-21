@@ -1,0 +1,27 @@
+/*
+ * Type declarations for the package's entries.
+ *
+ * A separate config rather than `declaration` on the main one, for the reason `tsconfig.test.json`
+ * is separate: the main config is what `npm run gates` type-checks with, `--noEmit`, and turning
+ * emit on there would have the type check writing files into the tree it is checking.
+ *
+ * `emitDeclarationOnly`, because esbuild builds the JavaScript. The two must not both write to
+ * `lib/`.
+ *
+ * `rootDir` stays `src`, so a declaration keeps the path its source has and
+ * `src/lib/index.ts` becomes `lib/types/lib/index.d.ts`. The alternative, rooting at `src/lib`,
+ * puts every file the entries import outside the root and does not compile.
+ */
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "emitDeclarationOnly": true,
+    "declaration": true,
+    "declarationMap": false,
+    "sourceMap": false,
+    "outDir": "lib/types",
+    "declarationDir": "lib/types"
+  },
+  "include": ["src/lib/index.ts", "src/lib/editor.ts", "src/lib/render.ts"]
+}

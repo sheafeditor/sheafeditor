@@ -12,7 +12,9 @@ import { createRequire } from 'node:module';
 import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-const { parse, constructs, nodesNamed, has, census, blockMaths } = createRequire(import.meta.url)('./dialect.bundle.cjs');
+const { parse, constructs, nodesNamed, has, census, blockMaths, renderMarkdown, scopeOf, unimplemented, PROFILE_TABLE, TAGS, HANDLERS } = createRequire(
+  import.meta.url
+)('./dialect.bundle.cjs');
 
 const j = (x) => JSON.stringify(x);
 
@@ -197,6 +199,489 @@ const cases = [
     },
   ],
 ];
+
+// ---- The render path: what each profile owes, and why a construct came back as source ------------
+
+/** Run `body` with one entry of an exported table changed, and put it back whatever happens. */
+const withEntry = (table, key, value, body) => {
+  const had = Object.prototype.hasOwnProperty.call(table, key);
+  const was = table[key];
+  if (value === undefined) delete table[key];
+  else table[key] = value;
+  try {
+    return body();
+  } finally {
+    if (had) table[key] = was;
+    else delete table[key];
+  }
+};
+
+/** What `outOfScope` says about `md` under `profile`, as `Construct/reason` strings. */
+const reported = (md, profile) => renderMarkdown(md, profile).outOfScope.map((o) => `${o.construct}/${o.reason}`);
+
+const reports = (md, profile, want) => {
+  const got = reported(md, profile);
+  return j(got) === j(want) ? true : `${j(md)} under ${profile} reported ${j(got)}, wanted ${j(want)}`;
+};
+
+/** Every profile must give the same answer, for a rule that does not depend on the profile. */
+const reportsInEvery = (md, want) => {
+  for (const profile of ['field', 'notes', 'document']) {
+    const got = reports(md, profile, want);
+    if (got !== true) return got;
+  }
+  return true;
+};
+
+const renderCases = [
+  [
+    'a construct only document carries comes back differently under notes and under document',
+    () => {
+      const notes = reports('a $x$ b', 'notes', ['InlineMath/profile']);
+      if (notes !== true) return notes;
+      return reports('a $x$ b', 'document', ['InlineMath/unimplemented']);
+    },
+  ],
+  [
+    'a construct the profile names and nothing draws is unimplemented, in every profile that names it',
+    () => reportsInEvery(':rocket:', ['Emoji/unimplemented']),
+  ],
+  ['a construct no profile names is a profile decision in every profile', () => reportsInEvery('<div>x</div>', ['HTMLBlock/profile'])],
+  [
+    'a block construct typed into a field is a profile decision and comes back in an inline element',
+    () => {
+      const out = renderMarkdown('# x', 'field');
+      const want = '<span class="sheaf-unrendered" data-construct="ATXHeading1"># x</span>';
+      if (out.html !== want) return `${j('# x')} under field came back as ${j(out.html)}, wanted ${j(want)}`;
+      return reports('# x', 'field', ['ATXHeading1/profile']);
+    },
+  ],
+  [
+    'CONTROL: a row added to the profile table is a reported gap with no other change',
+    () => {
+      const before = reports('a $x$ b', 'notes', ['InlineMath/profile']);
+      if (before !== true) return `before the row was added: ${before}`;
+      const added = withEntry(PROFILE_TABLE, 'InlineMath', ['notes', 'document'], () => reports('a $x$ b', 'notes', ['InlineMath/unimplemented']));
+      if (added !== true) return `with the row added: ${added}`;
+      return reports('a $x$ b', 'notes', ['InlineMath/profile']);
+    },
+  ],
+  [
+    'CONTROL: a tag removed from TAGS is a gap, where it used to read as a profile decision',
+    () => {
+      const present = reports('## x', 'notes', []);
+      if (present !== true) return `with the tag present: ${present}`;
+      const removed = withEntry(TAGS, 'ATXHeading2', undefined, () => reports('## x', 'notes', ['ATXHeading2/unimplemented']));
+      if (removed !== true) return `with the tag removed: ${removed}`;
+      return reports('## x', 'notes', []);
+    },
+  ],
+  [
+    'CONTROL: a handler removed is a gap too, and the construct it drew is listed by unimplemented()',
+    () => {
+      const present = reports('- [x] a', 'notes', []);
+      if (present !== true) return `with the handler present: ${present}`;
+      if (unimplemented('notes').includes('Task')) return 'unimplemented(notes) listed Task while its handler was present';
+      const removed = withEntry(HANDLERS, 'Task', undefined, () => {
+        const got = reports('- [x] a', 'notes', ['Task/unimplemented']);
+        if (got !== true) return got;
+        return unimplemented('notes').includes('Task') ? true : `unimplemented(notes) did not list Task with its handler removed: ${j(unimplemented('notes'))}`;
+      });
+      return removed;
+    },
+  ],
+  [
+    'the profile table names only profiles that exist',
+    () => {
+      const bad = Object.entries(PROFILE_TABLE).filter(([, ps]) => ps.some((p) => !['field', 'notes', 'document'].includes(p)));
+      return bad.length === 0 ? true : `rows naming an unknown profile: ${j(bad)}`;
+    },
+  ],
+  [
+    'scopeOf separates the three answers for one construct across the three profiles',
+    () => {
+      const got = ['field', 'notes', 'document'].map((p) => scopeOf('InlineMath', p));
+      return j(got) === j(['profile', 'profile', 'unimplemented']) ? true : `InlineMath across field, notes, document was ${j(got)}`;
+    },
+  ],
+];
+cases.push(...renderCases);
+
+// ---- The render path: what each construct becomes ---------------------------------------------
+
+/** The html `md` renders to under `profile`, with nothing reported out of scope unless `oos` says so. */
+const renders = (md, profile, want, oos = []) => {
+  const out = renderMarkdown(md, profile);
+  if (out.html !== want) return `${j(md)} under ${profile} rendered ${j(out.html)}, wanted ${j(want)}`;
+  const got = out.outOfScope.map((o) => `${o.construct}/${o.reason}`);
+  return j(got) === j(oos) ? true : `${j(md)} under ${profile} reported ${j(got)}, wanted ${j(oos)}`;
+};
+
+/**
+ * One example of every construct the render path was asked to cover, each with the construct's own
+ * name, the profile it is drawn in, and the exact html. `drawn` lists the constructs a profile's
+ * list owes and this path must therefore never report as out of scope.
+ */
+const DRAWN = [
+  ['SetextHeading1', 'Title *x*\n=====\n', 'notes', '<h1>Title <em>x</em>\n</h1>\n'],
+  ['SetextHeading2', 'Sub\nline\n---\n', 'notes', '<h2>Sub\nline\n</h2>\n'],
+  ['Autolink', 'see <https://e.com/a?x=1&y=2> now', 'field', '<p>see <a href="https://e.com/a?x=1&amp;y=2">https://e.com/a?x=1&amp;y=2</a> now</p>'],
+  ['URL', 'see https://e.com/a now', 'field', '<p>see <a href="https://e.com/a">https://e.com/a</a> now</p>'],
+  ['Image', '![alt *x*](p.png)', 'document', '<p><img src="p.png" alt="alt x"></p>'],
+  ['FencedCode', '```js\nlet a = 1 < 2;\n```\n', 'notes', '<pre>\n<code class="language-js">let a = 1 &lt; 2;\n</code></pre>\n'],
+  ['CodeBlock', '    code here\n    more\n', 'notes', '<pre><code>code here\nmore</code></pre>\n'],
+  [
+    'Table',
+    '| a | *b* |\n|:--|--:|\n| 1 | 2 |\n',
+    'document',
+    '<table><thead><tr><th align="left">a</th><th align="right"><em>b</em></th></tr></thead>\n\n<tbody><tr><td align="left">1</td><td align="right">2</td></tr></tbody></table>\n',
+  ],
+  ['HorizontalRule', 'a\n\n---\n\nb', 'notes', '<p>a</p>\n\n<hr>\n\n<p>b</p>'],
+  [
+    'FootnoteReference',
+    'see[^1]\n\n[^1]: the note\n',
+    'notes',
+    '<p>see<sup class="md-footnote-ref" title="the note">1</sup></p>\n\n<div class="md-footnote-def"><sup class="md-footnote-num">1</sup> the note</div>\n',
+  ],
+  ['Entity', 'a &amp; b &copy; &#35; &#x41;', 'field', '<p>a &amp; b © # A</p>'],
+  ['Escape', 'a \\*b\\* c', 'field', '<p>a *b* c</p>'],
+  ['HardBreak', 'a  \nb\\\nc', 'notes', '<p>a<br>\nb<br>\nc</p>'],
+  ['HTMLTag', 'press <kbd>x</kbd> now', 'notes', '<p>press <span class="tok-html-kbd">x</span> now</p>'],
+  // A definition is drawn as nothing, and its line stays so the output is the source's length.
+  ['LinkReference', 'See [a][d]\n\n[d]: https://e.com "T"\n', 'notes', '<p>See <a href="https://e.com">a</a></p>\n\n\n'],
+];
+
+const drawnCases = DRAWN.map(([construct, md, profile, want]) => [
+  `${construct} is drawn in ${profile}: ${j(md)}`,
+  () => renders(md, profile, want),
+]);
+
+/** Every example, drawn under the richest profile, reports nothing: the document profile owes each one. */
+const documentDrawsEach = [
+  'every example above is drawn under document too, with nothing reported',
+  () => {
+    for (const [construct, md, , want] of DRAWN) {
+      const got = renders(md, 'document', want);
+      if (got !== true) return `${construct}: ${got}`;
+    }
+    return true;
+  },
+];
+
+/**
+ * Output is the source's number of lines, whatever a construct hides. The comparison against the
+ * editor lines the two up by number, so one construct that swallowed a newline would put every line
+ * below it against the wrong partner, and the report would read as thousands of disagreements about
+ * text that agrees.
+ */
+const sameLines = [
+  'every example is as many lines as its source',
+  () => {
+    for (const [construct, md, profile] of DRAWN) {
+      const html = renderMarkdown(md, profile).html;
+      if (html.split('\n').length !== md.split('\n').length) return `${construct}: ${j(md)} has ${md.split('\n').length} lines and ${j(html)} has ${html.split('\n').length}`;
+    }
+    return true;
+  },
+];
+
+/**
+ * The count a profile owes and cannot yet draw, as a committed expectation rather than a number
+ * somebody maintains by hand. A construct added to the table without a drawing, or a drawing
+ * removed, changes this list and fails here naming it.
+ */
+const owedCases = [
+  [
+    'document owes only what needs a subsystem: emoji, maths and callouts',
+    () => {
+      const got = unimplemented('document').sort();
+      const want = ['Callout', 'Emoji', 'InlineMath', 'InlineMathMark'].sort();
+      return j(got) === j(want) ? true : `unimplemented(document) was ${j(got)}, wanted ${j(want)}`;
+    },
+  ],
+  [
+    'notes owes emoji and nothing else',
+    () => {
+      const got = unimplemented('notes').sort();
+      return j(got) === j(['Emoji']) ? true : `unimplemented(notes) was ${j(got)}, wanted ["Emoji"]`;
+    },
+  ],
+];
+
+/**
+ * CONTROL for each drawing above: remove its handler and the construct is owed, reported as
+ * `unimplemented`, where it was drawn and reported nothing. The lever is the handler and not the
+ * output, so a drawing that was already wrong would still be caught going missing.
+ */
+const FOOTNOTE = 'see[^1]\n\n[^1]: the note\n';
+const removalCases = [
+  ...DRAWN.map(([construct, md]) => [construct, md]),
+  // The construct the examples above cover through a neighbour: one example holds both footnote nodes.
+  ['FootnoteDefinition', FOOTNOTE],
+].map(([construct, md]) => [
+  `CONTROL: removing the ${construct} handler makes it unimplemented and unimplemented() names it`,
+  () => {
+    const before = reported(md, 'document');
+    if (before.length !== 0) return `with the handler present ${j(md)} reported ${j(before)}`;
+    return withEntry(HANDLERS, construct, undefined, () => {
+      const got = reported(md, 'document');
+      if (!got.every((r) => r.endsWith('/unimplemented')) || got.length === 0) return `with the handler removed ${j(md)} reported ${j(got)}`;
+      return unimplemented('document').includes(construct) ? true : `unimplemented(document) did not name ${construct} with its handler removed`;
+    });
+  },
+]);
+
+cases.push(...drawnCases, documentDrawsEach, sameLines, ...owedCases, ...removalCases);
+
+/*
+ * What must not become markup. Each of these puts a document's text where an attribute or an
+ * element would be, and each must come back as text or as a refused destination.
+ */
+const hostileCases = [
+  [
+    'an image whose address runs script is refused and its description stays',
+    () => renders('![alt](javascript:alert(1))', 'document', '<p>alt</p>'),
+  ],
+  [
+    'an image address cannot leave its attribute',
+    () => renders('![a](x"onerror="y)', 'document', '<p><img src="x&quot;onerror=&quot;y" alt="a"></p>'),
+  ],
+  [
+    'an info string that is not a language word does not become a class',
+    () => renders('```"><script>\nx\n```\n', 'notes', '<pre>\n<code>x\n</code></pre>\n'),
+  ],
+  [
+    'an angled autolink with a scheme a browser runs is text, not an anchor',
+    () => {
+      const out = renderMarkdown('<javascript:alert(1)>', 'notes').html;
+      return /<a /.test(out) ? `${j(out)} holds an anchor` : true;
+    },
+  ],
+  [
+    'an angled address with a scheme that fetches or runs something is text, whichever scheme it is',
+    () => {
+      for (const md of ['<vbscript:msgbox(1)>', '<data:text/html,x>', '<file:///etc/passwd>', '<irc://x.com/y>']) {
+        const out = renderMarkdown(md, 'notes').html;
+        if (/<a /.test(out)) return `${j(md)} rendered ${j(out)}, which holds an anchor`;
+      }
+      return true;
+    },
+  ],
+  [
+    'an inline html pair with an attribute is not drawn, so the attribute cannot ride along',
+    () => renders('<kbd onclick="x">y</kbd>', 'notes', '<p><span class="sheaf-unrendered" data-construct="HTMLTag">&lt;kbd onclick=&quot;x&quot;&gt;</span>y<span class="sheaf-unrendered" data-construct="HTMLTag">&lt;/kbd&gt;</span></p>', ['HTMLTag/profile', 'HTMLTag/profile']),
+  ],
+  [
+    'an abbreviation title is escaped',
+    () => renders('<abbr title="a&amp;&quot;b">x</abbr>', 'notes', '<p><span class="tok-html-abbr" title="a&amp;&quot;b">x</span></p>'),
+  ],
+  [
+    'a table cell cannot close the table around itself',
+    () => {
+      const out = renderMarkdown('| </td></tr></table><script>x</script> | b |\n|---|---|\n| 1 | 2 |\n', 'document').html;
+      return /<script/i.test(out) ? `${j(out)} holds a script element` : true;
+    },
+  ],
+  [
+    'an entity cannot decode into markup',
+    () => renders('&lt;script&gt;', 'field', '<p>&lt;script&gt;</p>'),
+  ],
+  ['an unknown entity name stays as written', () => renders('&nosuchentity;', 'field', '<p>&amp;nosuchentity;</p>')],
+  ['a numeric entity outside Unicode is the replacement character', () => renders('&#0; &#x110000;', 'field', '<p>� �</p>')],
+];
+cases.push(...hostileCases);
+
+// ---- Brackets that are not a link ---------------------------------------------------------------
+
+/**
+ * A bracket run the parser calls a link and the document never makes one. The brackets are text and
+ * what is between them is drawn like any other text, which is what the editor does and what the
+ * specification's rule says: the brackets render as written, not the content.
+ */
+const bracketCases = [
+  ['marks inside brackets with no address are drawn', () => renders('[_italic_ in brackets]', 'notes', '<p>[<em>italic</em> in brackets]</p>')],
+  ['the same in a field, which carries the marks', () => renders('[_a note_]', 'field', '<p>[<em>a note</em>]</p>')],
+  ['doubled brackets keep both pairs and draw the mark', () => renders('[[_TOC_]]', 'notes', '<p>[[<em>TOC</em>]]</p>')],
+  ['code, strong and strikethrough are drawn too', () => renders('[`c`] [**b**] [~~s~~]', 'notes', '<p>[<code>c</code>] [<strong>b</strong>] [<s>s</s>]</p>')],
+  ['an escape inside is the character it stands for', () => renders('[\\*x\\*]', 'notes', '<p>[*x*]</p>')],
+  ['an entity inside is the character it stands for', () => renders('[&copy; x]', 'notes', '<p>[© x]</p>')],
+  ['an undefined label after the text is kept as written and the text is drawn', () => renders('[**b**][nope]', 'notes', '<p>[<strong>b</strong>][nope]</p>')],
+  ['a bracketed number is unchanged', () => renders('[1.9.4]', 'notes', '<p>[1.9.4]</p>')],
+  ['brackets nested in the text stay text', () => renders('[a [b] c]', 'notes', '<p>[a [b] c]</p>')],
+  ['an address inside is a link of its own and the brackets stay', () => renders('[see https://e.com]', 'notes', '<p>[see <a href="https://e.com">https://e.com</a>]</p>')],
+  ['an undefined reference image keeps its text and draws the marks', () => renders('![_a_ b][nope]', 'document', '<p>![<em>a</em> b][nope]</p>')],
+  [
+    'a link whose words are an address keeps the words and points at its own destination',
+    () => renders('[https://e.com/a](https://e.com/b)', 'notes', '<p><a href="https://e.com/b">https://e.com/a</a></p>'),
+  ],
+  [
+    'CONTROL: a real link is unchanged',
+    () => renders('[_text_](https://e.com)', 'notes', '<p><a href="https://e.com"><em>text</em></a></p>'),
+  ],
+  [
+    'CONTROL: a reference link, in its full, collapsed and shortcut forms, draws its text and resolves',
+    () => {
+      const defs = '\n\n[d]: https://e.com\n';
+      const want = '<p><a href="https://e.com"><em>t</em></a></p>';
+      for (const src of ['[_t_][d]', '[_t_][]', '[_t_]']) {
+        // The collapsed and shortcut forms use their own text as the label, so those two define it.
+        const md = src === '[_t_][d]' ? src + defs : `${src}\n\n[_t_]: https://e.com\n`;
+        const got = renderMarkdown(md, 'notes').html.replace(/\n+$/, '');
+        const text = got.split('\n')[0];
+        if (text !== want) return `${j(md)} rendered ${j(got)}, wanted the first block ${j(want)}`;
+      }
+      return true;
+    },
+  ],
+];
+cases.push(...bracketCases);
+
+// ---- Code spans ----------------------------------------------------------------------------------
+
+/**
+ * CommonMark takes one space off each end of a code span when the content begins and ends with one
+ * and is not all spaces. The padding exists so a span can start or end with a backtick, which makes
+ * it syntax and not content. Each case here is one clause of that rule.
+ */
+const code = (src, inner) => [`${j(src)} is a code span of ${j(inner)}`, () => renders(src, 'notes', `<p><code>${inner}</code></p>`)];
+const codeCases = [
+  code('`` a ` b ``', 'a ` b'),
+  code('`` ` ``', '`'),
+  code('` x `', 'x'),
+  code('``  a  ``', ' a '),
+  code('`x`', 'x'),
+  code('` `', ' '),
+  code('`  `', '  '),
+  code('` a`', ' a'),
+  code('`a `', 'a '),
+  code('`\na\n`', '\na\n'.slice(1, -1)),
+  code('`\n`', '\n'),
+  ['padding is stripped the same in a field', () => renders('`` ` ``', 'field', '<p><code>`</code></p>')],
+  ['what is inside a span is escaped, with or without padding', () => renders('` <b>&amp; ` and `<i>`', 'notes', '<p><code>&lt;b&gt;&amp;amp;</code> and <code>&lt;i&gt;</code></p>')],
+];
+cases.push(...codeCases);
+
+// ---- A link with no text -------------------------------------------------------------------------
+
+/**
+ * `[](url)` has no words to click, so the address stands for itself, without the angle brackets of a
+ * `<url>` destination. An empty anchor is in the page, counts as a link and cannot be seen.
+ */
+const emptyLinkCases = [
+  ['an empty link shows its address as its text', () => renders('[](https://example.com)', 'notes', `<p>${A('https://example.com', 'https://example.com')}</p>`)],
+  [
+    'an empty link in angle brackets has them off in the address and in the text',
+    () => renders('[](<https://example.com>)', 'notes', `<p>${A('https://example.com', 'https://example.com')}</p>`),
+  ],
+  ['an address with a space in it, in angle brackets, is the text and the destination', () => renders('[](<a file.md>)', 'notes', `<p>${A('a file.md', 'a file.md')}</p>`)],
+  ['the text is escaped as the destination is', () => renders('[](https://e.com/?a=1&b=2)', 'notes', `<p>${A('https://e.com/?a=1&amp;b=2', 'https://e.com/?a=1&amp;b=2')}</p>`)],
+  ['an empty link with no destination is not a link and leaves no anchor', () => renders('[]()', 'notes', '<p>[]()</p>')],
+  [
+    'an empty link whose destination is refused is its address as text, with no anchor',
+    () => renders('[](javascript:alert(1))', 'notes', '<p>javascript:alert(1)</p>'),
+  ],
+  ['CONTROL: a link with text is unchanged', () => renders('[x](https://example.com)', 'notes', `<p>${A('https://example.com', 'x')}</p>`)],
+  ['CONTROL: a link whose text is a space is unchanged', () => renders('[ ](https://example.com)', 'notes', `<p>${A('https://example.com', ' ')}</p>`)],
+  [
+    'CONTROL: the angle brackets of a definition come off too, from the other entry point',
+    () => rendersTrimmed('[a][d]\n\n[d]: <https://example.com>\n', 'notes', `<p>${A('https://example.com', 'a')}</p>`),
+  ],
+  [
+    'a field draws an empty link the same way',
+    () => renders('[](<https://example.com>)', 'field', `<p>${A('https://example.com', 'https://example.com')}</p>`),
+  ],
+];
+cases.push(...emptyLinkCases);
+
+// ---- Link reference definitions ----------------------------------------------------------------
+
+/** What `md` renders to with the whitespace at its end removed, which is all a removed block leaves. */
+const rendersTrimmed = (md, profile, want, oos = []) => {
+  const out = renderMarkdown(md, profile);
+  const html = out.html.trimEnd();
+  if (html !== want) return `${j(md)} under ${profile} rendered ${j(html)}, wanted ${j(want)}`;
+  const got = out.outOfScope.map((o) => `${o.construct}/${o.reason}`);
+  return j(got) === j(oos) ? true : `${j(md)} under ${profile} reported ${j(got)}, wanted ${j(oos)}`;
+};
+
+const A = (href, text) => `<a href="${href}">${text}</a>`;
+
+const definitionCases = [
+  [
+    'every definition is gone from the output and the links that name them resolve',
+    () =>
+      rendersTrimmed(
+        'See [the docs][d] and [the site][s].\n\nA second paragraph.\n\n[d]: https://e.com/docs\n[s]: https://e.com\n',
+        'notes',
+        `<p>See ${A('https://e.com/docs', 'the docs')} and ${A('https://e.com', 'the site')}.</p>\n\n<p>A second paragraph.</p>`
+      ),
+  ],
+  [
+    'a definition with a title is gone',
+    () => rendersTrimmed('[a][d]\n\n[d]: https://e.com "The title"\n', 'notes', `<p>${A('https://e.com', 'a')}</p>`),
+  ],
+  [
+    'a definition with its address in angle brackets is gone and its link has no brackets',
+    () => rendersTrimmed('[a][d]\n\n[d]: <https://e.com/a b>\n', 'notes', `<p>${A('https://e.com/a b', 'a')}</p>`),
+  ],
+  ['a definition nothing refers to is gone too', () => rendersTrimmed('A paragraph.\n\n[z]: https://z.com\n', 'notes', '<p>A paragraph.</p>')],
+  [
+    'a definition inside a list item or a quote is gone',
+    () => {
+      const inList = rendersTrimmed('- item\n\n  [z]: https://z.com\n', 'notes', '<ul><li>item\n\n  </li></ul>');
+      if (inList !== true) return inList;
+      return rendersTrimmed('> [z]: https://z.com\n', 'notes', '<blockquote></blockquote>');
+    },
+  ],
+  [
+    'a line that only looks like a definition, in the middle of a sentence, is text',
+    () => rendersTrimmed('See [a]: this is prose here\n', 'notes', '<p>See [a]: this is prose here</p>'),
+  ],
+  [
+    'a line that looks like a definition and follows a line of its paragraph is text, because a definition cannot interrupt one',
+    () => rendersTrimmed('Some text\n[a]: https://e.com\n', 'notes', `<p>Some text\n[a]: ${A('https://e.com', 'https://e.com')}</p>`),
+  ],
+  [
+    'a definition inside a fenced block or an indented one is kept verbatim',
+    () => {
+      const fenced = rendersTrimmed('```\n[d]: https://e.com\n```\n', 'notes', '<pre>\n<code>[d]: https://e.com\n</code></pre>');
+      if (fenced !== true) return fenced;
+      return rendersTrimmed('    [d]: https://e.com\n', 'notes', '<pre><code>[d]: https://e.com</code></pre>');
+    },
+  ],
+  [
+    'a label matches whatever its case and spacing, and the first definition of it counts',
+    () =>
+      rendersTrimmed(
+        '[Foo   Bar][foo bar] and [x]\n\n[FOO BAR]: https://first.com\n[foo bar]: https://second.com\n[x]: https://x.com\n',
+        'notes',
+        `<p>${A('https://first.com', 'Foo   Bar')} and ${A('https://x.com', 'x')}</p>`
+      ),
+  ],
+  [
+    'a definition inside a quote or a list item defines its label for the whole document',
+    () => {
+      const inQuote = rendersTrimmed('[a][d]\n\n> [d]: https://e.com\n', 'notes', `<p>${A('https://e.com', 'a')}</p>\n\n<blockquote></blockquote>`);
+      if (inQuote !== true) return inQuote;
+      return rendersTrimmed('[a][d]\n\n- [d]: https://e.com\n', 'notes', `<p>${A('https://e.com', 'a')}</p>\n\n<ul><li></li></ul>`);
+    },
+  ],
+  [
+    'a definition is not a thing a field carries, so it is a profile decision there and nothing resolves',
+    () =>
+      rendersTrimmed(
+        '[a][d]\n\n[d]: https://e.com',
+        'field',
+        '<p>[a][d]</p>\n\n<span class="sheaf-unrendered" data-construct="LinkReference">[d]: https://e.com</span>',
+        ['LinkReference/profile']
+      ),
+  ],
+  [
+    'a hostile address in a definition is refused wherever the definition sits',
+    () => rendersTrimmed('[a][d]\n\n[d]: javascript:alert(1)\n', 'notes', '<p>a</p>'),
+  ],
+];
+cases.push(...definitionCases);
 
 /*
  * The corpus, parsed, as a ratchet rather than as assertions.

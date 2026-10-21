@@ -23,66 +23,16 @@
  *     and every check around it is answering a question nobody asked.
  *
  * Nothing here opens a window or downloads anything: the bundle is built with the
- * esbuild already in this checkout.
+ * esbuild already in this checkout, through `lib/bundle.mjs`, which is where the
+ * reasoning about building rather than reading a prebuilt artefact lives.
  */
 
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { bundleExports } from './bundle.mjs';
 
 /** Reported for the window and the editor so the whole document is in the viewport. */
 const TALL = 1e7;
-
-/**
- * Build a CommonJS bundle exporting `exports`, a map of local name to the module
- * path it comes from, relative to the repository root. `@codemirror/...` and other
- * package paths are passed through as written.
- */
-async function bundleFor(repo, exports, name) {
-  const req = createRequire(join(repo, 'package.json'));
-  const esbuild = req('esbuild');
-  /*
-   * A directory of this process's own. It used to be `sheaf-${name}`, a fixed path
-   * in the machine-wide temporary directory with nothing in it naming the checkout,
-   * so every worktree on this machine wrote the same 3.7 MB `bundle.cjs`. Two runs
-   * overlapping meant one esbuild writing the file while the other required it, and
-   * the quieter half of that is worse than a crash: a run can load a bundle built
-   * from another checkout's sources and report a perfectly green matrix about code
-   * it never measured.
-   *
-   * Every other script here already does it this way, `mkdtempSync` in eight of
-   * them, so this is the convention rather than a new idea. Removed on exit because
-   * each directory holds a few megabytes and a night of runs is a few hundred.
-   */
-  const out = mkdtempSync(join(tmpdir(), `sheaf-${name}-`));
-  process.on('exit', () => {
-    try {
-      rmSync(out, { recursive: true, force: true });
-    } catch {
-      // A temporary directory that outlives the run costs disk and nothing else.
-    }
-  });
-  const entry = join(out, 'entry.ts');
-  const spec = (from) => JSON.stringify(from.startsWith('@') || !from.includes('/') ? from : join(repo, from));
-  writeFileSync(
-    entry,
-    Object.entries(exports)
-      .map(([names, from]) => `export { ${names} } from ${spec(from)};`)
-      .join('\n') + '\n'
-  );
-  const bundle = join(out, 'bundle.cjs');
-  await esbuild.build({
-    entryPoints: [entry],
-    bundle: true,
-    format: 'cjs',
-    platform: 'browser',
-    outfile: bundle,
-    logLevel: 'warning',
-    nodePaths: [join(repo, 'node_modules')],
-  });
-  return bundle;
-}
 
 /** Put a jsdom window on the globals CodeMirror reaches for. */
 function installDom(repo) {
@@ -135,7 +85,7 @@ function tallViewport(window) {
  * to the module the name comes from.
  */
 export async function editorUnderJsdom(repo, { extra = {}, name = 'editor-dom' } = {}) {
-  const bundle = await bundleFor(
+  const bundle = await bundleExports(
     repo,
     {
       mountProse: 'test/harness',

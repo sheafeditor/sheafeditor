@@ -33,9 +33,22 @@ const baseTheme = EditorView.theme({
   '.cm-scroller': {
     fontFamily: 'var(--sheaf-font, var(--md-font))',
     lineHeight: 'var(--sheaf-line-height, 1.5)',
-    // The space above the first line, shared with webview.css, where the sticky
-    // header of a table has to undo it.
-    padding: 'var(--sheaf-page-top, 56px) 0 40vh',
+    /*
+     * The page: air above the first line, and room to scroll past the last one.
+     *
+     * Both insets are custom properties so a surface that is not a page can turn
+     * them off, which is what `.sheaf-surface-field` in webview.css does. A rule
+     * there cannot win a fight with this one, because CodeMirror injects its own
+     * base theme after the stylesheet and this rule matches it class for class,
+     * but a custom property declared on an ancestor is not in that fight: it is
+     * inherited, and the nearest declaration is the one this `var()` reads.
+     *
+     * `--sheaf-page-top` is also declared on `:root` in webview.css, because the
+     * table of contents and a table's sticky header read it to find the top of
+     * the pane. Nothing outside this rule reads the bottom inset, so it is
+     * defined here and nowhere else.
+     */
+    padding: 'var(--sheaf-page-top, 56px) 0 var(--sheaf-page-bottom, 40vh)',
   },
   // Notion's centered writing column: 708px text measure inside side gutters.
   '.cm-content': {
