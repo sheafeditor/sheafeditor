@@ -33,6 +33,8 @@ import { StateField, StateEffect, EditorState, Range, Extension, Prec, Transacti
 import { Decoration, DecorationSet, EditorView, ViewPlugin, WidgetType } from '@codemirror/view';
 import { syntaxTree } from '@codemirror/language';
 import { revealField } from './revealState';
+import { mountSlot } from './mountScope';
+import type { MountScope } from './mountScope';
 import {
   BareTable,
   bareTable,
@@ -84,25 +86,92 @@ const files = new Map<string, FileState>();
  */
 const DATA_FILE_WAIT_MS = 4000;
 
-let post: ((message: FromWebview) => void) | null = null;
-let asked = 0;
-let waitMs = DATA_FILE_WAIT_MS;
-
 /**
- * Where requests for data files go. Main wires this to the host. `wait` is how
- * long an answer is waited for, which only a test has reason to shorten.
+ * What one mounted editor holds about the data files its views read.
+ *
+ * `files` above is **not** here, and that is the distinction this file already drew correctly: a
+ * data file's contents are keyed by its path, and two editors reading one file should see one copy.
+ * What belongs to an editor is which host it asks, the requests it is waiting on, and the steps it
+ * can take back.
+ *
+ * `fileUndo` and `fileRedo` were plain module-level arrays, which is the sharpest defect of the
+ * kind: a step records the path it belongs to and the pop never consulted it, so undo in one editor
+ * applied a step the person had made in the other, against a different document's file. A file edit
+ * reverted in a document nobody was looking at, with no error anywhere.
  */
-export function setDataFileHost(send: ((message: FromWebview) => void) | null, wait = DATA_FILE_WAIT_MS): void {
-  post = send;
-  waitMs = wait;
-  files.clear();
-  creating.clear();
-  fileUndo.length = 0;
-  fileRedo.length = 0;
-  fileEditedLast = false;
+interface ViewFiles {
+  post: ((message: FromWebview) => void) | null;
+  asked: number;
+  waitMs: number;
+  /** Requests to write a file that have not been answered yet, by id. */
+  creating: Map<string, (result: Created) => void>;
+  createdSeq: number;
+  /*
+   * Edits in flight, by the id they were sent with.
+   *
+   * An edit is applied to the grid at once, because the person is typing into it and waiting for a
+   * round trip would make every keystroke feel like a network. So the answer cannot decide whether
+   * the edit happens; it decides whether the person is told it did not. A host that refuses, or one
+   * that never answers, leaves a notice on the file saying the view and the file disagree, which is
+   * the same shape as the one an undo already leaves when the file moved underneath it.
+   *
+   * Not rolled back. Taking the value away would be the other defensible answer and it destroys
+   * work somebody did, so it is a product call rather than this change's to make.
+   */
+  editing: Map<string, { path: string }>;
+  editSeq: number;
+  /** File edits made through this editor's views, latest last. */
+  fileUndo: FileStep[];
+  fileRedo: FileStep[];
+  /** True while a file edit, or the undo or redo of one, is the last thing the person did here. */
+  fileEditedLast: boolean;
 }
 
-/** The editors showing views, told when a file arrives. */
+const own = mountSlot<ViewFiles>(() => ({
+  post: null,
+  asked: 0,
+  waitMs: DATA_FILE_WAIT_MS,
+  creating: new Map(),
+  createdSeq: 0,
+  editing: new Map(),
+  editSeq: 0,
+  fileUndo: [],
+  fileRedo: [],
+  fileEditedLast: false,
+}));
+
+/**
+ * Where requests for data files go. The mount wires this to its host. `wait` is how
+ * long an answer is waited for, which only a test has reason to shorten.
+ */
+export function setDataFileHost(
+  send: ((message: FromWebview) => void) | null,
+  wait = DATA_FILE_WAIT_MS,
+  scope?: MountScope
+): void {
+  const here = scope ? own.of(scope) : own.at(null);
+  here.post = send;
+  here.waitMs = wait;
+  here.creating.clear();
+  here.fileUndo.length = 0;
+  here.fileRedo.length = 0;
+  here.fileEditedLast = false;
+  /*
+   * `files` is the page's, so clearing it is a page-wide reset and stays one. It is what makes one
+   * check's files invisible to the next, and a file's contents are not an editor's to keep. On a
+   * page with two editors the second one wiring its host empties the first one's cache, and the
+   * views re-ask on their next update; nothing is lost because the host is the authority.
+   */
+  files.clear();
+}
+
+/**
+ * The editors showing views, told when a file arrives.
+ *
+ * Shared on purpose: a registry of every editor there is rather than state about one, so a sweep
+ * making module-level collections per-mount must leave it alone. `mountScope.ts` names the other
+ * four of its kind.
+ */
 const editors = new Set<EditorView>();
 
 /** A data file arrived, or changed, or could not be read. */
@@ -115,21 +184,21 @@ function redraw(): void {
   });
 }
 
-/** Ask the host for a data file, once. */
-function requestFile(path: string): void {
+/** Ask this editor's host for a data file, once. */
+function requestFile(here: ViewFiles, path: string): void {
   if (files.has(path)) return;
-  if (!post) {
+  if (!here.post) {
     files.set(path, { status: 'error', message: noHost(path) });
     redraw();
     return;
   }
   files.set(path, { status: 'waiting' });
-  post({ type: 'dataFileRead', id: `data-${++asked}`, path });
+  here.post({ type: 'dataFileRead', id: `data-${++here.asked}`, path });
   setTimeout(() => {
     if (files.get(path)?.status !== 'waiting') return;
     files.set(path, { status: 'error', message: noHost(path) });
     redraw();
-  }, waitMs);
+  }, here.waitMs);
 }
 
 function noHost(path: string): string {
@@ -151,7 +220,8 @@ function pageText(text: string): string {
 export function handleDataFile(message: { path?: unknown; text?: unknown; error?: unknown; notice?: unknown; missing?: unknown }): void {
   if (typeof message.path !== 'string') return;
   // A note comes with an edit, an undo or a redo the host refused. The steps kept for
-  // that file were made against text it no longer holds, so they go.
+  // that file were made against text it no longer holds, so they go — in every editor,
+  // because the file is the page's and so is the news that it moved.
   if (typeof message.notice === 'string') dropFileSteps(message.path);
   if (typeof message.text === 'string') {
     files.set(message.path, {
@@ -174,59 +244,40 @@ export function handleDataFile(message: { path?: unknown; text?: unknown; error?
 /** What the host said about a file it was asked to write: the path it wrote, or why it wrote none. */
 type Created = { path: string } | { error: string };
 
-/** Requests to write a file that have not been answered yet, by id. */
-const creating = new Map<string, (result: Created) => void>();
-let createdSeq = 0;
-
 /**
- * Ask the host to write a new file holding `text`, relative to the document. The
+ * Ask this editor's host to write a new file holding `text`, relative to the document. The
  * host never writes over a file: with `nextFree` it takes the next free name, and
  * without it the request is refused. Resolves with the path written or a reason.
  */
-function createFile(path: string, text: string, nextFree: boolean): Promise<Created> {
+function createFile(here: ViewFiles, path: string, text: string, nextFree: boolean): Promise<Created> {
   return new Promise((resolve) => {
-    if (!post) {
+    if (!here.post) {
       resolve({ error: 'Only Sheaf in VS Code can write a data file beside the document.' });
       return;
     }
-    const id = `create-${++createdSeq}`;
-    creating.set(id, resolve);
-    post({ type: 'dataFileCreate', id, path, text, ...(nextFree ? { nextFree: true } : {}) });
+    const id = `create-${++here.createdSeq}`;
+    here.creating.set(id, resolve);
+    here.post({ type: 'dataFileCreate', id, path, text, ...(nextFree ? { nextFree: true } : {}) });
     setTimeout(() => {
-      if (!creating.delete(id)) return;
+      if (!here.creating.delete(id)) return;
       resolve({ error: `Nothing came back from the host about ${path} in time. Check whether the file was written before trying again.` });
-    }, waitMs);
+    }, here.waitMs);
   });
 }
-
-/*
- * Edits in flight, by the id they were sent with.
- *
- * An edit is applied to the grid at once, because the person is typing into it and waiting for a
- * round trip would make every keystroke feel like a network. So the answer cannot decide whether
- * the edit happens; it decides whether the person is told it did not. A host that refuses, or one
- * that never answers, leaves a notice on the file saying the view and the file disagree, which is
- * the same shape as the one an undo already leaves when the file moved underneath it.
- *
- * Not rolled back. Taking the value away would be the other defensible answer and it destroys work
- * somebody did, so it is a product call rather than this change's to make.
- */
-const editing = new Map<string, { path: string }>();
-let editSeq = 0;
 
 /**
  * Post an edit and wait for the answer, so both senders carry an id and neither writes the timer
  * out again. One of the two is an undo, which is why `step` rides along.
  */
-function postEditOfFile(edit: { path: string; base: string; text: string; step?: 'undo' | 'redo' }): void {
-  if (!post) return;
-  const id = `edit-${++editSeq}`;
-  editing.set(id, { path: edit.path });
-  post({ type: 'dataFileEdit', id, ...edit });
+function postEditOfFile(here: ViewFiles, edit: { path: string; base: string; text: string; step?: 'undo' | 'redo' }): void {
+  if (!here.post) return;
+  const id = `edit-${++here.editSeq}`;
+  here.editing.set(id, { path: edit.path });
+  here.post({ type: 'dataFileEdit', id, ...edit });
   setTimeout(() => {
-    if (!editing.delete(id)) return;
+    if (!here.editing.delete(id)) return;
     editRefused(edit.path, `Nothing came back from the host about ${edit.path} in time. The view shows your edit; the file may not have it.`);
-  }, waitMs);
+  }, here.waitMs);
 }
 
 /** Tell the reader the file did not take an edit, leaving what they typed on screen. */
@@ -239,20 +290,22 @@ function editRefused(path: string, why: string): void {
 }
 
 /** The host's answer to an edit: nothing to do when it took, a notice when it did not. */
-export function handleDataFileEdited(message: { id?: unknown; error?: unknown }): void {
+export function handleDataFileEdited(message: { id?: unknown; error?: unknown }, scope?: MountScope): void {
   if (typeof message.id !== 'string') return;
-  const pending = editing.get(message.id);
+  const here = scope ? own.of(scope) : own.at(null);
+  const pending = here.editing.get(message.id);
   if (!pending) return;
-  editing.delete(message.id);
+  here.editing.delete(message.id);
   if (typeof message.error === 'string' && message.error) editRefused(pending.path, message.error);
 }
 
 /** The host's answer to a request to write a file. */
-export function handleDataFileCreated(message: { id?: unknown; path?: unknown; error?: unknown }): void {
+export function handleDataFileCreated(message: { id?: unknown; path?: unknown; error?: unknown }, scope?: MountScope): void {
   if (typeof message.id !== 'string') return;
-  const done = creating.get(message.id);
+  const here = scope ? own.of(scope) : own.at(null);
+  const done = here.creating.get(message.id);
   if (!done) return;
-  creating.delete(message.id);
+  here.creating.delete(message.id);
   done(
     typeof message.path === 'string'
       ? { path: message.path }
@@ -356,7 +409,8 @@ export function moveBlockToFile(view: EditorView, from: number): void {
     return;
   }
   const wanted = `${block.id ?? 'data'}.${block.lang}`;
-  void createFile(wanted, parts.body, true).then((result) => {
+  const here = own.at(view);
+  void createFile(here, wanted, parts.body, true).then((result) => {
     if ('error' in result) {
       sayOnPage(view, `The block was not moved. ${result.error}`, 'error');
       return;
@@ -381,7 +435,7 @@ export function moveBlockToFile(view: EditorView, from: number): void {
       { from: same.from, to: same.to, insert: refenced(parts, block.prefix, 'view', [`from: ${path}`]) },
       ...readers.map((r) => ({ from: r.from, to: r.to, insert: path })),
     ]);
-    post?.({ type: 'dataFileRead', id: `data-${++asked}`, path });
+    here.post?.({ type: 'dataFileRead', id: `data-${++here.asked}`, path });
     sayOnPage(
       view,
       path === wanted
@@ -506,7 +560,7 @@ function createMissing(view: EditorView, q: ViewQuery, path: string): void {
   if (whyNotCreate(q, view.state.readOnly)) return;
   const columns = columnsFor(q);
   const text = headerRow(columns, langOf(path)) + '\n';
-  void createFile(path, text, false).then((result) => {
+  void createFile(own.at(view), path, text, false).then((result) => {
     if ('error' in result) {
       sayOnPage(view, `${path} was not created. ${result.error}`, 'error');
       return;
@@ -605,13 +659,14 @@ function writeThrough(view: EditorView, source: Source, change: DataChange): boo
   }
   if (source.kind === 'file') {
     const file = files.get(source.path);
-    if (file?.status !== 'ready' || !post) return false;
+    const here = own.at(view);
+    if (file?.status !== 'ready' || !here.post) return false;
     const next = writeDataFile(file.text, langOf(source.path), change);
     if (next === file.text) return false;
-    postEditOfFile({ path: source.path, base: file.text, text: next });
-    fileUndo.push({ path: source.path, before: file.text, after: next });
-    fileRedo.length = 0;
-    fileEditedLast = true;
+    postEditOfFile(here, { path: source.path, base: file.text, text: next });
+    here.fileUndo.push({ path: source.path, before: file.text, after: next });
+    here.fileRedo.length = 0;
+    here.fileEditedLast = true;
     files.set(source.path, { status: 'ready', text: next });
     // This editor is drawn now, so the view the person is typing in keeps up; any
     // other editor showing the file hears when the host sends it back.
@@ -644,29 +699,32 @@ interface FileStep {
   after: string;
 }
 
-const fileUndo: FileStep[] = [];
-const fileRedo: FileStep[] = [];
-
-/** True while a file edit, or the undo or redo of one, is the last thing the person did. */
-let fileEditedLast = false;
-
-/** Forget every step for `path`: the file holds something other than they were made against. */
+/**
+ * Forget every step for `path`, in **every** editor: the file holds something other than they were
+ * made against.
+ *
+ * All of them, because the file is the page's. One editor's edit being refused, or the file moving
+ * on disk, invalidates a step another editor is holding against the same path just as surely.
+ */
 function dropFileSteps(path: string): void {
-  for (const stack of [fileUndo, fileRedo]) {
-    for (let i = stack.length - 1; i >= 0; i--) if (stack[i].path === path) stack.splice(i, 1);
+  for (const here of own.all()) {
+    for (const stack of [here.fileUndo, here.fileRedo]) {
+      for (let i = stack.length - 1; i >= 0; i--) if (stack[i].path === path) stack.splice(i, 1);
+    }
   }
 }
 
 /**
- * Take back the latest file edit, or with `again` put back the latest one taken
- * back. False when there is none to take.
+ * Take back the latest file edit **this editor** made, or with `again` put back the latest one it
+ * took back. False when there is none to take.
  */
 function stepFile(view: EditorView, again: boolean): boolean {
-  const step = (again ? fileRedo : fileUndo).pop();
+  const here = own.at(view);
+  const step = (again ? here.fileRedo : here.fileUndo).pop();
   if (!step) return false;
   const [from, to] = again ? [step.before, step.after] : [step.after, step.before];
   const file = files.get(step.path);
-  if (!post || file?.status !== 'ready' || file.text !== from) {
+  if (!here.post || file?.status !== 'ready' || file.text !== from) {
     // The file changed since the edit, so the host would refuse this. Say so here.
     dropFileSteps(step.path);
     if (file?.status === 'ready') {
@@ -679,9 +737,9 @@ function stepFile(view: EditorView, again: boolean): boolean {
     view.dispatch({ effects: filesChanged.of(null) });
     return true;
   }
-  postEditOfFile({ path: step.path, base: from, text: to, step: again ? 'redo' : 'undo' });
-  (again ? fileUndo : fileRedo).push(step);
-  fileEditedLast = true;
+  postEditOfFile(here, { path: step.path, base: from, text: to, step: again ? 'redo' : 'undo' });
+  (again ? here.fileUndo : here.fileRedo).push(step);
+  here.fileEditedLast = true;
   files.set(step.path, { status: 'ready', text: to });
   view.dispatch({ effects: filesChanged.of(null) });
   return true;
@@ -717,7 +775,7 @@ const historyInText = Prec.highest(
   EditorView.domEventHandlers({
     keydown: (e, view) => {
       const which = historyKey(e);
-      if (!which || !fileEditedLast || !stepFile(view, which === 'redo')) return false;
+      if (!which || !own.at(view).fileEditedLast || !stepFile(view, which === 'redo')) return false;
       e.preventDefault();
       e.stopPropagation();
       return true;
@@ -729,11 +787,11 @@ const historyInText = Prec.highest(
  * A change the person made to the document makes it the last thing edited, and one
  * that is not an undo or a redo leaves nothing of the files' to redo.
  */
-function documentEdited(transactions: readonly Transaction[]): void {
+function documentEdited(here: ViewFiles, transactions: readonly Transaction[]): void {
   for (const tr of transactions) {
     if (!tr.docChanged || tr.annotation(Transaction.remote) || tr.annotation(Transaction.addToHistory) === false) continue;
-    fileEditedLast = false;
-    if (!tr.isUserEvent('undo') && !tr.isUserEvent('redo')) fileRedo.length = 0;
+    here.fileEditedLast = false;
+    if (!tr.isUserEvent('undo') && !tr.isUserEvent('redo')) here.fileRedo.length = 0;
   }
 }
 
@@ -794,6 +852,61 @@ const UNMATCHED_TITLE = 'This row no longer matches the view. It stays here unti
 function showEditable(wrap: HTMLElement, add: HTMLElement, can: boolean): void {
   add.hidden = !can;
   wrap.classList.toggle('is-editable', can);
+}
+
+/** The observers keeping each board view's heading over its lanes, so teardown can stop them. */
+const headObservers = new WeakMap<HTMLElement, { disconnect(): void }[]>();
+
+/**
+ * Publish where a view's board lanes begin, so the view's heading can sit over them.
+ *
+ * A view showing a board takes the pane and centres its lanes in it with `safe center`, so when the
+ * lanes do not fill the window they start some way in from the frame's edge, and the heading, which
+ * spans the frame, sat at that edge instead: the view's name and its buttons over empty space beside
+ * the first lane. The same fault the table's name had, on the other kind of block.
+ *
+ * Read off the first lane rather than computed, because a board's width comes from the stylesheet
+ * (each lane's basis and the gap between them) and the layout is the only thing that knows it. That
+ * makes this a measurement, so it runs after layout: from the observer when the frame changes size,
+ * and once after each board is drawn. `scrollLeft` is added back so a board scrolled sideways does
+ * not move its heading; a board wider than its frame starts at 0 and has no offset to publish.
+ */
+function placeHeadOverLanes(wrap: HTMLElement, frame: HTMLElement): void {
+  const lane = frame.querySelector<HTMLElement>(':scope > .sheaf-board > .sheaf-board-col');
+  if (!lane) {
+    wrap.style.removeProperty('--md-view-start');
+    return;
+  }
+  const start = Math.max(0, Math.round(lane.getBoundingClientRect().left - frame.getBoundingClientRect().left + frame.scrollLeft));
+  wrap.style.setProperty('--md-view-start', `${start}px`);
+}
+
+/**
+ * Make a view's element live: it repaints in place, and its heading follows its board's lanes.
+ *
+ * Both are set up here rather than in `toDOM`, which has a line budget the shape check holds it to,
+ * and the check is right about why: this is wiring decided from inputs, not DOM built in the closure.
+ *
+ * Two observers, because the lanes move for two reasons. The frame changes size when the pane does,
+ * which the `ResizeObserver` sees. A redraw replaces the lanes without the frame changing size, which
+ * it does not, so a `MutationObserver` on the frame's children catches that and places the heading
+ * after the next layout, since the new lanes have no geometry until then.
+ */
+function registerView(wrap: HTMLElement, paint: (spec: ViewSpec) => void, frame: HTMLElement): void {
+  live.set(wrap, paint);
+  const place = (): void => placeHeadOverLanes(wrap, frame);
+  const watchers: { disconnect(): void }[] = [];
+  if (typeof ResizeObserver !== 'undefined') {
+    const sized = new ResizeObserver(place);
+    sized.observe(frame);
+    watchers.push(sized);
+  }
+  if (typeof MutationObserver !== 'undefined' && typeof requestAnimationFrame !== 'undefined') {
+    const redrawn = new MutationObserver(() => requestAnimationFrame(place));
+    redrawn.observe(frame, { childList: true });
+    watchers.push(redrawn);
+  }
+  headObservers.set(wrap, watchers);
 }
 
 class ViewWidget extends WidgetType {
@@ -1590,9 +1703,14 @@ class ViewWidget extends WidgetType {
     wrap.addEventListener('keydown', (e) => historyInView(view, e));
 
     paint(spec);
-    live.set(wrap, paint);
+    registerView(wrap, paint, frame);
     wrap.append(head, notes, frame, add);
     return wrap;
+  }
+
+  destroy(dom: HTMLElement): void {
+    for (const w of headObservers.get(dom) ?? []) w.disconnect();
+    headObservers.delete(dom);
   }
 
   ignoreEvent(): boolean {
@@ -1747,11 +1865,12 @@ const viewField = StateField.define<{ decos: DecorationSet; wanted: string[] }>(
 /** Asks the host for the files the views want, and hears when they arrive. */
 const fileRequests = ViewPlugin.define((view) => {
   editors.add(view);
-  const ask = (): void => view.state.field(viewField).wanted.forEach(requestFile);
+  const here = own.at(view);
+  const ask = (): void => view.state.field(viewField).wanted.forEach((path) => requestFile(here, path));
   ask();
   return {
     update: (update) => {
-      documentEdited(update.transactions);
+      documentEdited(here, update.transactions);
       ask();
     },
     destroy: () => {

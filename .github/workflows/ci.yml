@@ -1,8 +1,51 @@
 name: CI
 
+# **No trigger on a push to `main`, deliberately, and this is the one to read before adding it back.**
+#
+# `main` is pushed many times a day, and every push ran this workflow. That is a duplicate: the
+# full `npm run gates -- --all` is re-run on the exact landing tree before anything reaches
+# `main`, so by the time a push happens the same 38 gates have already passed on the same bytes.
+# What CI adds over that is a clean clone and `npm ci` from the lockfile, which is real and is
+# not worth a run per push.
+#
+# The cost was not theoretical. This account's 2,000 included Actions minutes ran out on
+# 2026-10-17 with fifteen days of the cycle left, and a run here is roughly a quarter of an
+# hour. A private repository spends from that allowance; a public one would not.
+#
+# `pull_request` stays, because a pull request is a deliberate request to be checked and that
+# is the place a red run is useful. `workflow_dispatch` stays, because asking for a run is
+# cheap when somebody wants one.
+#
+# **Measured, so that neither trigger is read as coverage it does not provide: this repository
+# has never had a pull request.** Over 1,350 commits on `main` there are zero `Merge pull
+# request` commits and zero `(#nnn)` subjects, which are the two shapes a merged and a
+# squash-merged pull request leave. The 31 merge commits are the integrator's own `Land <branch>`
+# merges, made locally and pushed. So under the process as it stands — one session merges
+# branches in its checkout and pushes `main` — **`pull_request` cannot fire, and this workflow
+# now runs only when somebody asks for it by hand.**
+#
+# It is written down because "`pull_request` stays" reads like a retained safety net, and here
+# it is a door nobody has ever walked through.
+#
+# **A release still needs a run of this workflow, and that is the cost of dropping the push
+# trigger.** `npm run release:check` refuses to proceed unless this workflow passed on the exact
+# commit being released, and it has no local substitute by design: releases have failed on
+# defects that only show on the Linux runner, a keyboard chord among them, which a run on a
+# developer's Mac cannot reproduce. So before a cut, run this workflow by hand on the commit with
+# **Run workflow**, wait for green, and then cut. That is one run per release rather than one per
+# push, which is what saves the minutes.
+#
+# An earlier version of this comment said `release:check` was a local equivalent of this job. It
+# is not: it reads this job's result and stops without it. Corrected rather than left, because it
+# was the reason given for removing the push trigger, and somebody relying on it would find the
+# release blocked on the day they tried to cut one.
+#
+# **A scheduled weekly run was considered and declined.** It would cost about 48 minutes a month
+# against the 2,000 and would restore an automatic clean-clone check. It was declined because a
+# scheduled run can go red exactly the way the push trigger did, which is the thing being
+# avoided. If clean-clone drift starts being found on the day of a cut, this is the cheapest way
+# to get the signal back.
 on:
-  push:
-    branches: [main]
   pull_request:
   workflow_dispatch:
 

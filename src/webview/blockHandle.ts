@@ -95,7 +95,7 @@ export function blockMenuItems(view: EditorView, range: BlockRange): BlockMenuIt
   );
   // No key hint: the sharing key copies the selection, and this item copies the
   // whole block, so printing the chord here would name a key that does something else.
-  const host = blockRefHost();
+  const host = blockRefHost(view);
   if (host) {
     items.push({ label: 'Copy ref', separator: true, run: () => host.copyToClipboard(blockRef(view, range, host.getFileName())) });
   }

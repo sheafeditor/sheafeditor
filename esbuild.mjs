@@ -56,6 +56,14 @@ const stamp = buildStamp();
  * WOFF2, and it is the first format each rule names, so the TrueType and WOFF
  * copies beside them would ship a megabyte nothing ever asks for.
  *
+ * The stylesheet's references to those two formats are taken out with them. A
+ * browser never follows them, because it takes the first format it reads, but a
+ * library consumer's bundler resolves every `url()` in a stylesheet it imports,
+ * and 40 references to files that are not there is 40 warnings on the first
+ * build of the package. The build stops if a reference survives to a file that
+ * was not copied, so a KaTeX upgrade that renames a font fails here rather than
+ * in somebody else's build log.
+ *
  * KaTeX is MIT licensed, which asks that its notice travel with it, so the
  * licence is copied next to the stylesheet and ships in the package.
  */
@@ -63,7 +71,14 @@ function copyKatexAssets() {
   const from = join(REPO, 'node_modules', 'katex');
   const fonts = join(REPO, 'media', 'katex-fonts');
   mkdirSync(fonts, { recursive: true });
-  const css = readFileSync(join(from, 'dist', 'katex.min.css'), 'utf8').replaceAll('url(fonts/', 'url(katex-fonts/');
+  const css = readFileSync(join(from, 'dist', 'katex.min.css'), 'utf8')
+    .replaceAll('url(fonts/', 'url(katex-fonts/')
+    .replace(/,url\(katex-fonts\/[^)]+\.(?:woff|ttf)\) format\("(?:woff|truetype)"\)/g, '');
+  const unshipped = [...css.matchAll(/url\(katex-fonts\/([^)]+)\)/g)].map((m) => m[1]).filter((f) => !f.endsWith('.woff2'));
+  if (unshipped.length) {
+    console.error(`[esbuild] katex.css still names ${unshipped.length} font(s) that are not copied: ${unshipped.slice(0, 3).join(', ')}`);
+    process.exit(1);
+  }
   writeFileSync(join(REPO, 'media', 'katex.css'), css);
   for (const file of readdirSync(join(from, 'dist', 'fonts'))) {
     if (file.endsWith('.woff2')) copyFileSync(join(from, 'dist', 'fonts', file), join(fonts, file));
@@ -235,12 +250,78 @@ const webviewCtx = await esbuild.context({
  */
 rmSync(join(REPO, 'lib'), { recursive: true, force: true });
 
+/*
+ * `lib/package.json`, saying the files under it are ES modules, and `lib/types/package.json`
+ * saying the declarations are not.
+ *
+ * The root manifest has no `type`, so Node reads a bare `.js` as CommonJS, which is right for
+ * `dist/extension.js` and `dist/serve.js` and wrong for everything here. Node loading `lib/index.js`
+ * then fails to parse it as CommonJS, reparses it as a module and warns on every import. The warning
+ * says to add `"type": "module"` to the root manifest, and that advice is wrong for this package:
+ * VS Code's extension host loads `main` with `require`, and both `dist/` bundles are CommonJS, so the
+ * extension would stop loading. A manifest inside `lib/` scopes the declaration to the directory
+ * that needs it. It holds no `name` and no `exports`, so it does not become a package of its own,
+ * and the `exports` map serves nothing at this path.
+ *
+ * The declarations need the opposite, and leaving them out would break a consumer's type check.
+ * tsc writes their relative imports without extensions, which TypeScript accepts in a CommonJS
+ * declaration and refuses in a module one under `moduleResolution: node16` or `nodenext`. Inside a
+ * `type: module` directory they would be module declarations, so `lib/types/` keeps the format it
+ * had before either file existed. `scripts/check-package.mjs` checks both, and imports the entries
+ * in Node to read that the warning is gone.
+ */
+mkdirSync(join(REPO, 'lib', 'types'), { recursive: true });
+writeFileSync(join(REPO, 'lib', 'package.json'), `${JSON.stringify({ type: 'module' })}\n`);
+writeFileSync(join(REPO, 'lib', 'types', 'package.json'), `${JSON.stringify({ type: 'commonjs' })}\n`);
+
 const LIB_METAFILE = join(REPO, '.claude', 'scratch', 'lib-metafile.json');
 const writeLibMetafilePlugin = writeMetafile('lib', LIB_METAFILE);
+const LIB_ENTRIES = ['src/lib/index.ts', 'src/lib/editor.ts', 'src/lib/render.ts'];
+
+/*
+ * Delete any chunk the library build wrote that no entry can reach.
+ *
+ * esbuild makes every `import()` target a split point while it scans, before tree shaking decides
+ * which code survives. `src/webview/toolbar.ts` reaches the table widget through
+ * `import('./tables.js')` from its insert-table menu, and the library entries keep part of the
+ * toolbar but not that menu, so the importer is shaken out and the chunk it named is written anyway:
+ * 131 kB of table widget in `lib/chunks/` that no file in `lib/` imports. The `exports` map serves
+ * `./chunks/*`, so a file there is servable whether or not anything loads it.
+ *
+ * Reachability is read off the metafile's outputs, following static and dynamic imports alike from
+ * the three entries, so a chunk reached only by `import()` (KaTeX, the emoji table) is kept. The
+ * metafile on disk still lists what esbuild wrote, and the build log names what was removed.
+ * `scripts/check-package.mjs` reads the files themselves and fails on a chunk nothing imports.
+ */
+const pruneUnreachedLibChunks = {
+  name: 'prune-unreached-lib-chunks',
+  setup(build) {
+    build.onEnd((result) => {
+      if (!result.metafile) return;
+      const outputs = result.metafile.outputs;
+      const reached = new Set();
+      const queue = Object.keys(outputs).filter((o) => LIB_ENTRIES.includes(outputs[o].entryPoint));
+      while (queue.length) {
+        const o = queue.pop();
+        if (reached.has(o) || !outputs[o]) continue;
+        reached.add(o);
+        for (const i of outputs[o].imports) if (!i.external) queue.push(i.path);
+      }
+      for (const o of Object.keys(outputs)) {
+        if (reached.has(o) || o.endsWith('.map')) continue;
+        // Metafile paths are relative to the build's working directory, as `outdir` is.
+        const at = join(build.initialOptions.absWorkingDir ?? process.cwd(), o);
+        rmSync(at, { force: true });
+        rmSync(`${at}.map`, { force: true });
+        console.log(`[esbuild] removed ${o} (${outputs[o].bytes} bytes): no library entry imports it`);
+      }
+    });
+  },
+};
 
 const libCtx = await esbuild.context({
   ...common,
-  entryPoints: ['src/lib/index.ts', 'src/lib/editor.ts', 'src/lib/render.ts'],
+  entryPoints: LIB_ENTRIES,
   outdir: 'lib',
   entryNames: '[name]',
   chunkNames: 'chunks/[name]-[hash]',
@@ -249,7 +330,7 @@ const libCtx = await esbuild.context({
   platform: 'browser',
   target: 'es2020',
   metafile: true,
-  plugins: [writeLibMetafilePlugin],
+  plugins: [writeLibMetafilePlugin, pruneUnreachedLibChunks],
 });
 
 /**

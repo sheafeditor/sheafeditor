@@ -22,10 +22,12 @@ import { syntaxTree } from '@codemirror/language';
 import { isolateHistory } from '@codemirror/commands';
 import { headingSlug } from './linkTarget';
 import { linkDestination } from './linkPopover';
-import { frontMatterEnd, posInFrontMatter } from './frontMatter';
+import { frontMatterEnd, posInFrontMatter } from '../dialect/frontMatter';
 import { relativeLink } from '../docLink';
 import { FloatingIcon, floatingIcon } from './floatingIcons';
 import { placeOrClose, whileScrolling } from './caretList';
+import { mountSlot } from './mountScope';
+import type { MountScope } from './mountScope';
 
 export interface LinkCompletionItem {
   /** What the row shows: a path relative to this document, or a heading's text. */
@@ -46,15 +48,26 @@ const FILES_TIMEOUT_MS = 1500;
 
 type Post = (message: FromWebview) => void;
 
-let post: Post | null = null;
-/** The document's path relative to its workspace folder, as the host named it. */
-let documentPath = '';
-let seq = 0;
-const pending = new Map<string, (files: string[] | null) => void>();
+/**
+ * One editor's host and the document it is showing.
+ *
+ * Per mount, because every completed path is written relative to **this** document's folder. Shared,
+ * a second editor's `init` replaced the path, and the first editor then completed addresses relative
+ * to the wrong folder: an address that resolves to nothing, written into the file.
+ */
+interface Completion {
+  post: Post | null;
+  /** The document's path relative to its workspace folder, as the host named it. */
+  documentPath: string;
+  seq: number;
+  pending: Map<string, (files: string[] | null) => void>;
+}
+
+const own = mountSlot<Completion>(() => ({ post: null, documentPath: '', seq: 0, pending: new Map() }));
 
 /** Where to send a request for the workspace's files. Null leaves file completion out. */
-export function setWorkspaceFilesHost(send: Post | null): void {
-  post = send;
+export function setWorkspaceFilesHost(send: Post | null, scope?: MountScope): void {
+  (scope ? own.of(scope) : own.at(null)).post = send;
 }
 
 /**
@@ -62,33 +75,34 @@ export function setWorkspaceFilesHost(send: Post | null): void {
  * to. A path the host could not make relative (a file outside any workspace folder
  * arrives as an absolute path) has no workspace to list, so files are left out.
  */
-export function setLinkCompleteDocument(path: string): void {
-  documentPath = path.replace(/\\/g, '/');
+export function setLinkCompleteDocument(path: string, scope?: MountScope): void {
+  (scope ? own.of(scope) : own.at(null)).documentPath = path.replace(/\\/g, '/');
 }
 
 /** The host's answer to a request, by the id it was asked with. */
-export function handleWorkspaceFiles(id: string, files: string[]): void {
-  const done = pending.get(id);
+export function handleWorkspaceFiles(id: string, files: string[], scope?: MountScope): void {
+  const here = scope ? own.of(scope) : own.at(null);
+  const done = here.pending.get(id);
   if (!done) return;
-  pending.delete(id);
+  here.pending.delete(id);
   done(Array.isArray(files) ? files : []);
 }
 
-function canListFiles(): boolean {
-  return post !== null && documentPath !== '' && !/^(\/|[A-Za-z]:)/.test(documentPath);
+function canListFiles(here: Completion): boolean {
+  return here.post !== null && here.documentPath !== '' && !/^(\/|[A-Za-z]:)/.test(here.documentPath);
 }
 
 /** The workspace's files as workspace-relative paths, or null when the host did not answer in time. */
-function requestFiles(): Promise<string[] | null> {
-  const send = post;
-  if (!send || !canListFiles()) return Promise.resolve(null);
-  const id = `files-${++seq}`;
+function requestFiles(here: Completion): Promise<string[] | null> {
+  const send = here.post;
+  if (!send || !canListFiles(here)) return Promise.resolve(null);
+  const id = `files-${++here.seq}`;
   return new Promise((resolve) => {
     const timer = setTimeout(() => {
-      pending.delete(id);
+      here.pending.delete(id);
       resolve(null);
     }, FILES_TIMEOUT_MS);
-    pending.set(id, (files) => {
+    here.pending.set(id, (files) => {
       clearTimeout(timer);
       resolve(files);
     });
@@ -255,7 +269,7 @@ let sessions = 0;
 
 function itemsFor(state: EditorState, value: CompleteState): LinkCompletionItem[] {
   if (value.query.startsWith('#')) return headingItems(state, value.query.slice(1));
-  return value.files ? rankFiles(value.files, documentPath, value.query) : [];
+  return value.files ? rankFiles(value.files, own.at(state).documentPath, value.query) : [];
 }
 
 function validQuery(query: string): boolean {
@@ -398,13 +412,14 @@ const completeView = ViewPlugin.fromClass(
     }
     update(update: ViewUpdate): void {
       const value = update.state.field(completeField, false);
-      if (value && value.session !== this.asked && canListFiles()) {
+      const here = own.at(this.view);
+      if (value && value.session !== this.asked && canListFiles(here)) {
         this.asked = value.session;
         const session = value.session;
         // Asked a turn later: an answer can arrive at once, and a view cannot be
         // dispatched to while it is still applying this update.
         void Promise.resolve()
-          .then(requestFiles)
+          .then(() => requestFiles(here))
           .then((files) => {
             if (this.destroyed || !files || this.view.state.field(completeField, false)?.session !== session) return;
             this.view.dispatch({ effects: filesArrived.of({ session, files }) });

@@ -199,11 +199,11 @@ function createSelectionToolbar(view: EditorView): TooltipView {
    *
    * Left out with no host, since there would be nowhere to put the text.
    */
-  const copyRef = toolbarButton('copy', titled('Copy ref', hasRefKey() ? COPY_REF_KEY : undefined));
+  const copyRef = toolbarButton('copy', titled('Copy ref', hasRefKey(view) ? COPY_REF_KEY : undefined));
   copyRef.dataset.cmd = 'copy-ref';
   let copiedTimer: ReturnType<typeof setTimeout> | null = null;
   copyRef.addEventListener('click', () => {
-    const host = blockRefHost();
+    const host = blockRefHost(view);
     if (!host) return;
     // In a cell the grid says where the row lands in the file; this editor's own line
     // numbers count from 1 inside the cell and would name the same line every time.
@@ -218,7 +218,7 @@ function createSelectionToolbar(view: EditorView): TooltipView {
       copyRef.innerHTML = floatingIcon('copy');
     }, COPIED_FOR);
   });
-  if (blockRefHost() !== null) buttons.push(copyRef);
+  if (blockRefHost(view) !== null) buttons.push(copyRef);
 
   if (buttons.length) {
     dom.append(...buttons, separator());

@@ -15,6 +15,8 @@ import { EditorView } from '@codemirror/view';
 import { languages } from '@codemirror/language-data';
 import { forceParsing } from '@codemirror/language';
 import { SearchQuery, setSearchQuery, closeSearchPanel, openSearchPanel } from '@codemirror/search';
+import { closeMount, fallbackCount, mountExtension, openMount } from '../src/webview/mountScope';
+import type { MountScope } from '../src/webview/mountScope';
 import { livePreview } from '../src/webview/livePreview';
 import { revealField, setLivePreviewConfig } from '../src/webview/revealState';
 import { revealBlockAt } from '../src/webview/revealBlock';
@@ -48,6 +50,7 @@ import {
   tableUsesPane,
   tableRowRefAt,
 } from '../src/webview/tables';
+import type { TableAction } from '../src/webview/tables';
 import { setBlockRefHost, setCellRefSource, tableRowRef } from '../src/webview/refs';
 import { tableIcon } from '../src/webview/tableIcons';
 import { setResourceBaseUri } from '../src/webview/imageMarkup';
@@ -276,6 +279,39 @@ const copyRef = (h: Harness, target: Element): string => {
 };
 /** A ref's fenced quote, as `copyRef` returns it wrapped. */
 const quoted = (text: string): string => '\n\n```\n' + text + '\n```\n';
+
+/** One editor with a mount of its own, for the checks that need two of them on one page. */
+interface Scoped {
+  scope: MountScope;
+  h: Harness;
+  root: HTMLElement;
+}
+
+/**
+ * Mount an editor inside a root the mount actually owns.
+ *
+ * **The root has to contain the editor, and getting that wrong is invisible to most reads.** Anything
+ * handed the editor's state finds its mount through the facet in the editor's own configuration, and
+ * a root containing nothing does not disturb that. The reads handed an element instead walk up the
+ * DOM to a registered root: with nothing matched they take the page's scope, which on a page with
+ * one editor is right by construction and on a page with two is the defect these checks exist to
+ * catch. `mount` makes its own parent under the body, so this puts that parent inside the root.
+ */
+function mountScoped(doc: string, extra: Extension[] = []): Scoped {
+  const root = document.createElement('div');
+  document.body.appendChild(root);
+  const scope = openMount(root);
+  const h = mount(doc, [...extra, mountExtension(scope)]);
+  const parent = h.view.dom.parentElement;
+  if (parent && parent !== root) root.appendChild(parent);
+  return { scope, h, root };
+}
+
+function unmountScoped(m: Scoped): void {
+  m.h.view.destroy();
+  m.root.remove();
+  closeMount(m.scope);
+}
 
 
 /**
@@ -628,6 +664,78 @@ export async function runAll(): Promise<Result[]> {
         write.widths[key]?.['2'] === a[3]
       );
     })
+  );
+
+  results.push(
+    await scenario(
+      'CONTROL, two editors: resetting widths in one does not take the other document’s widths away, or write them to its host',
+      async () => {
+        /*
+         * A table's hand-set widths are kept under a key made from its header row, which says
+         * nothing about which document the table is in. So two documents holding a table of the same
+         * shape shared one entry, and `saveWidths` writes the **whole** map to whichever host
+         * registered last: resetting in one document deleted the other's widths and reported the
+         * result to the wrong host.
+         *
+         * **The first editor is the one read.** The editor doing the resetting behaves correctly
+         * either way. The precondition is asserted first: the first editor has to be holding a width
+         * before the reset, or "its widths survived" is a claim about nothing.
+         */
+        const headers = ['Shared A', 'Shared B'];
+        const key = tableWidthKey(headers);
+        const doc = `${P}| ${headers[0]} | ${headers[1]} |\n| - | - |\n| 1 | 2 |`;
+        const sentA: any[] = [];
+        const sentB: any[] = [];
+        const first = mountScoped(doc);
+        const second = mountScoped(doc);
+        const a = first.scope;
+        const b = second.scope;
+        const ha = first.h;
+        const hb = second.h;
+        setTableWidthsHost((m) => sentA.push(m), a);
+        setTableWidthsHost((m) => sentB.push(m), b);
+        // The first editor's own host answers with a width for its table. The second's answers none.
+        handleTableWidths('a', { [key]: { 0: 150 } }, a);
+        handleTableWidths('b', {}, b);
+        await settle();
+        const fellBackAt = fallbackCount();
+        const held = (h: Harness): TableAction[] => tableActionsAt(h.cell(0, 0)) ?? [];
+        const resetIn = (h: Harness): boolean => {
+          const action = held(h).find((x) => x.id === 'table.resetWidths');
+          if (!action || action.disabled) return false;
+          action.run();
+          return true;
+        };
+        // The precondition: the first editor is offered a reset, which it only is once it holds a
+        // width. The second is not, because its host gave it none.
+        const mineOffered = held(ha).some((x) => x.id === 'table.resetWidths' && !x.disabled);
+        const theirsOffered = held(hb).some((x) => x.id === 'table.resetWidths' && !x.disabled);
+        // Reset in the second editor, which has nothing of its own to reset.
+        const ran = resetIn(hb);
+        await settle();
+        // And now the first editor saves, which is what says whether its width is still there.
+        const asked = sentA.length;
+        const stillMine = resetIn(ha);
+        await settle();
+        const write = sentA.slice(asked).find((m) => m.type === 'tableWidthsWrite');
+        const theirWrites = sentB.filter((m) => m.type === 'tableWidthsWrite');
+        // Nothing may have taken the page's scope while two mounts were open, or an answer above
+        // could be right for the wrong reason.
+        const fellBack = fallbackCount() - fellBackAt;
+        const ok =
+          mineOffered && !theirsOffered && !ran && stillMine && !!write && theirWrites.length === 0 && fellBack === 0;
+        const detail =
+          `the first editor was offered a reset: ${mineOffered}; the second was: ${theirsOffered}; ` +
+          `the reset ran in the second: ${ran}; the first could still reset: ${stillMine}; ` +
+          `the first host got ${JSON.stringify(write ?? null)}; the second host got ${theirWrites.length} write(s); ` +
+          `${fellBack} read(s) fell back to the page`;
+        setTableWidthsHost(null, a);
+        setTableWidthsHost(null, b);
+        unmountScoped(first);
+        unmountScoped(second);
+        return { ok, detail };
+      }
+    )
   );
 
   results.push(
@@ -9995,6 +10103,73 @@ async function viewEditChecks(): Promise<Result[]> {
       setDataFileHost(null);
       return edits === 2;
     })
+  );
+
+  results.push(
+    await scenario(
+      'CONTROL, two editors: a file edit made in one is not what the other editor’s undo takes back',
+      async () => {
+        /*
+         * The sharpest of the one-editor-per-page faults, because it writes to disk. A step records
+         * the path it belongs to, and the pop never consulted it, so with two editors on a page undo
+         * in one applied a step the person had made in the other, against a different file.
+         *
+         * **The second editor is the one read**, and it has to be: the editor that made the edit
+         * behaves correctly either way, so a check pressing undo in the first one passes against the
+         * defect. The precondition is asserted first, because an undo that sends nothing is the
+         * right answer here and also what a grid that never took the edit would produce.
+         */
+        const sentA: any[] = [];
+        const sentB: any[] = [];
+        const first = mountScoped(P + '```view\nfrom: a.csv\n```\n', [viewBlocks, history()]);
+        const second = mountScoped(P + '```view\nfrom: b.csv\n```\n', [viewBlocks, history()]);
+        const a = first.scope;
+        const b = second.scope;
+        const ha = first.h;
+        const hb = second.h;
+        // Both hosts before either file arrives: wiring a host clears the page's file cache.
+        setDataFileHost((m) => sentA.push(m), undefined, a);
+        setDataFileHost((m) => sentB.push(m), undefined, b);
+        handleDataFile({ path: 'a.csv', text: 'a,b\n1,2\n' });
+        handleDataFile({ path: 'b.csv', text: 'a,b\n3,4\n' });
+        await tick();
+        const fellBackAt = fallbackCount();
+        // The edit, in the first editor's view.
+        const typed = typeInView(ha, 0, 1, '9');
+        const edits = (sent: any[]): any[] => sent.filter((m) => m.type === 'dataFileEdit');
+        const made = edits(sentA);
+        // Undo in the **second** editor, which has made no file edit of its own.
+        const table = hb.view.dom.querySelector('.sheaf-view table') as HTMLElement | null;
+        hb.keydown(table as HTMLElement, 'z', { metaKey: true });
+        const tookSomething = edits(sentB);
+        // And the first editor's own step is still there to take back.
+        const tableA = ha.view.dom.querySelector('.sheaf-view table') as HTMLElement | null;
+        ha.keydown(tableA as HTMLElement, 'z', { metaKey: true });
+        const mine = edits(sentA);
+        const fellBack = fallbackCount() - fellBackAt;
+        const ok =
+          typed &&
+          !!table &&
+          !!tableA &&
+          made.length === 1 &&
+          made[0].path === 'a.csv' &&
+          tookSomething.length === 0 &&
+          mine.length === 2 &&
+          mine[1].step === 'undo' &&
+          mine[1].path === 'a.csv' &&
+          fellBack === 0;
+        const detail =
+          `the first editor's edit went to ${JSON.stringify(made.map((m) => m.path))}; ` +
+          `undo in the second editor sent ${JSON.stringify(tookSomething.map((m) => ({ path: m.path, step: m.step })))}; ` +
+          `undo in the first then sent ${JSON.stringify(mine.map((m) => ({ path: m.path, step: m.step })))}; ` +
+          `${fellBack} read(s) fell back to the page`;
+        setDataFileHost(null, undefined, a);
+        setDataFileHost(null, undefined, b);
+        unmountScoped(first);
+        unmountScoped(second);
+        return { ok, detail };
+      }
+    )
   );
 
   results.push(

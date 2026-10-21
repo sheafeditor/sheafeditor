@@ -7,8 +7,8 @@
  * connection, but it is not part of `webview.js`: it is several megabytes, and a
  * document with no diagram in it should not pay for one. It sits in
  * `media/mermaid/` as a module and its chunks, and the first diagram on a page
- * imports it from beside the script that is running, which is the same place in
- * every host: the extension's own media folder in VS Code, `/media/` from the
+ * imports it from the directory `src/webview/assetBase.ts` was told the editor's
+ * files are in: the extension's own media folder in VS Code, `/media/` from the
  * local server, and the demo's folder on the site. Mermaid splits itself by
  * diagram type, so a pie chart loads the pie chart's code and not the gantt's.
  *
@@ -42,6 +42,7 @@
 
 import { StateEffect } from '@codemirror/state';
 import { Decoration, EditorView, ViewPlugin, WidgetType } from '@codemirror/view';
+import { assetUrl } from './assetBase';
 
 /** The part of Mermaid's module this file uses. */
 export interface MermaidApi {
@@ -53,40 +54,41 @@ export interface MermaidApi {
 type Drawn = { svg: string } | { error: string };
 
 /**
- * Where the editor's files are, read from the stylesheet every host loads beside
- * the bundle.
+ * The address this will import Mermaid from, or '' when nothing has said where the
+ * editor's files are.
  *
- * This used to read `document.currentScript`, which was right while the editor was
- * one plain script and became `null` the moment it was split into modules: inside a
- * module there is no current script, and inside an async chunk there is none again.
- * Every diagram in every host then drew "the editor does not know where its files
- * are", and nothing 404'd and no policy refused anything, so the failure showed up
- * nowhere except on the screen.
+ * Exported so a check can read the address without fetching it. The alternative is
+ * to drive the loader and look at what failed, which cannot tell a wrong address
+ * from a right one that a stub or a policy refused: both arrive as an exception.
  *
- * `media/webview.css` is the anchor instead. Every host links it beside the bundle,
- * and unlike the bundle it is a plain stylesheet, so its address does not move with
- * how the code is split. Mermaid's folder sits beside it.
+ * Two earlier answers to this question, and the second is why there is a third.
  *
- * That makes the link load-bearing, which is the cost of this and worth knowing
- * before changing a host's page. A host that inlined its stylesheet, or renamed it,
- * or stopped putting it beside the bundle, would break every diagram and nothing
- * here would say why: the file loads, no request fails, no policy refuses anything.
- * `scripts/check-diagrams.mjs` catches it for the folder server and the site's own
- * demo check catches it there, so the one host with no automated cover is VS Code.
+ * `document.currentScript` was right while the editor was one plain script and
+ * became `null` the moment it was split into modules: inside a module there is no
+ * current script, and inside an async chunk there is none again. Every diagram in
+ * every host then drew "the editor does not know where its files are", and nothing
+ * 404'd and no policy refused anything, so the failure showed up nowhere except on
+ * the screen.
+ *
+ * Then it was the page's own stylesheet, found by looking for a `<link>` whose href
+ * held the string `webview.css`. That worked in every host in this repository,
+ * because each of them writes that tag itself, and it made the tag load-bearing:
+ * a hashed name, an inlined stylesheet or one concatenated with an application's own
+ * all left the address empty, with the same silence as before. Which of those a
+ * build does is decided by a CSS pipeline, and `src/webview/assetBase.ts` carries
+ * why a library should not be deciding anything from one.
  *
  * Read when a diagram is first drawn rather than while this module is evaluated, so
- * it does not depend on what the document happens to hold at import time.
+ * a host that says where its files are after the editor has loaded is still heard.
  */
-function mediaFolder(): string {
-  if (typeof document === 'undefined') return '';
-  return document.querySelector<HTMLLinkElement>('link[rel="stylesheet"][href*="webview.css"]')?.href ?? '';
+export function mermaidModuleUrl(): string {
+  return assetUrl('mermaid/mermaid.esm.min.mjs');
 }
 
 /** Loads Mermaid's module. Tests replace it, since jsdom has no layout to draw with. */
 let load: () => Promise<MermaidApi> = async () => {
-  const base = mediaFolder();
-  if (!base) throw new Error('Diagrams cannot be drawn here: the editor does not know where its files are.');
-  const url = new URL('mermaid/mermaid.esm.min.mjs', base).href;
+  const url = mermaidModuleUrl();
+  if (!url) throw new Error('Diagrams cannot be drawn here: the editor does not know where its files are.');
   const mod = (await import(/* @vite-ignore */ url)) as { default: MermaidApi };
   return mod.default;
 };

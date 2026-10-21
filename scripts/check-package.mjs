@@ -22,10 +22,24 @@
  * Read off the metafile's `imports[].kind` rather than by searching the output text, for the reason
  * `scripts/eager-closure.mjs` sets out at length: a `dynamic-import` costs nothing until something
  * asks for it, and a name in a bundle says a library was mentioned.
+ *
+ * ## The half of the promise this cannot check
+ *
+ * **Every assertion here asks whether an entry resolves. None asks whether the library stays inside
+ * the entries**, and a path the map does not name still resolves perfectly well in this checkout,
+ * because the repository's layout puts it where the code looks. `media/mermaid/` sits beside
+ * `media/webview.css` and the diagram loader resolves its module against the page's stylesheet, so
+ * every host here serves it by accident of layout while no entry reaches it. A probe rooted at the
+ * checkout cannot see that and reports a working diagram.
+ *
+ * `scripts/check-consumer-assets.mjs` asks the other direction, in a tree built out of this map and
+ * served from outside the checkout. Nothing here needs to change for it; this is so that a reader
+ * of the package boundary knows where the second half is.
  */
+import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { bytesByPackage, eagerOutputs } from './eager-closure.mjs';
 
 const REPO = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -81,6 +95,67 @@ for (const { name, condition, path } of targets) {
     continue;
   }
   if (!existsSync(join(REPO, path))) problems.push(`${where} points at ${path}, which the build did not write`);
+}
+
+/*
+ * **What the loop above does not establish, which is easy to read it as establishing.**
+ *
+ * `existsSync` answers a question about *this checkout*. The question a published package raises is
+ * whether an entry resolves for a **consumer**, and the two differ here by almost everything: `lib/`
+ * and `dist/` are gitignored, this manifest has no `files` field, so npm falls back to `.gitignore`
+ * and an `npm pack` ships **neither**. Measured 2026-10-17 at `5885b05`: `main` and 7 of the 9
+ * `exports` targets are absent from a tarball, which holds 485 files of `src/`, `scripts/` and
+ * `docs/` instead. All three JavaScript entries also carry a `types` condition into `lib/types/`,
+ * so the failing state is a compile error with no declaration as well as a missing runtime import:
+ * two tools, two symptoms, one cause.
+ *
+ * **That is recorded rather than enforced, on purpose.** Nothing in this repository produces a
+ * tarball — there is no `npm publish` in `scripts` or in `.github/workflows/`, publishing is `vsce`
+ * and `ovsx`, and the library is consumed by a path link. A gate over an artefact nobody makes is a
+ * check defending a plan. The day an npm distribution is real, the fix is `.npmignore` plus a
+ * `prepack` (**not** `files`, which `vsce` refuses alongside `.vscodeignore`; see the guard below),
+ * and the control is free because seven entries are already in the failing state.
+ *
+ * Said out loud because a reader of a green run from a script called `check-package` would
+ * otherwise take it for package-surface coverage, which is the one thing it is not.
+ */
+notes.push(
+  `Entry resolution above is checked in this checkout, not in a tarball: no npm tarball is produced ` +
+    `by any path here, and an \`npm pack\` today would omit \`main\` and 7 of the ${targets.length} exports targets.`
+);
+
+/*
+ * `private` keeps an accidental `npm publish` from putting that tarball on a public registry.
+ *
+ * **Measured before it was set, because this manifest is read by two tools with different rules and
+ * the guard below exists because that bit once.** `npm run package` is unaffected: `vsce package`
+ * exits 0 with `private: true` and produces the same 270 files at 2.72 MB.
+ *
+ * **That npm refuses is measured too, and the obvious instrument is blind to it.** `npm publish
+ * --dry-run` does **not** enforce `private` in npm 11.19.0: a throwaway package holding nothing but
+ * a name, a version and `private: true` still prints "Publishing to https://registry.npmjs.org/".
+ * So a dry run saying it would publish is evidence of nothing either way, and the plain command
+ * stops at `ENEEDAUTH` before the check is reached.
+ *
+ * What settles it is a token for a registry that cannot answer, which is safe because nothing can be
+ * published to a dead port, run in a throwaway directory:
+ *
+ *   npm publish --registry=http://127.0.0.1:1 --//127.0.0.1:1/:_authToken=x
+ *
+ *   without `private`   ECONNREFUSED   npm reached the network
+ *   with    `private`   EPRIVATE       "This package has been marked as private"
+ *
+ * The pair is the point: the refusal fires **ahead of** the network rather than instead of a failure
+ * that would have happened anyway.
+ *
+ * It comes out in one edit the day a distribution is decided. It is here because that decision is
+ * reversible and a published version number is not: unpublish is restricted after 72 hours and the
+ * number stays burned, and what would be published today is the tarball described above.
+ */
+if (pkg.private !== true) {
+  problems.push(
+    '`private` is not true. Nothing here publishes to npm, and an accidental `npm publish` would put a tarball holding no `lib/` and no `dist/` on a public registry under a version number that cannot be reclaimed. Remove this guard deliberately when an npm distribution is decided.'
+  );
 }
 
 /*
@@ -140,6 +215,40 @@ for (const [entry, names] of Object.entries(DECLARED)) {
 }
 
 /*
+ * Which module format Node reads each half of the package as.
+ *
+ * The root manifest must carry no `"type": "module"`: `main` is loaded by VS Code's extension host
+ * with `require`, and `dist/serve.js` is CommonJS too, so that one line stops the extension loading.
+ * It is also exactly what Node's warning tells a person to add when it reparses `lib/index.js`, so
+ * the guard is here for the next person who takes the warning's advice.
+ *
+ * The build writes `lib/package.json` with `type: module` instead, and `lib/types/package.json` with
+ * `type: commonjs`, so the declarations keep the format their extensionless relative imports need.
+ * Both are read from disk, and then the three entries are imported by name in a child Node, which is
+ * the assertion that matters: the warning is either printed or it is not.
+ */
+if (pkg.type !== undefined && pkg.type !== 'commonjs') {
+  problems.push(
+    `package.json has \`"type": ${JSON.stringify(pkg.type)}\`. \`main\` is CommonJS loaded by VS Code's extension host, and dist/serve.js is CommonJS, so neither would load. The library's ES modules are declared by lib/package.json, which the build writes.`
+  );
+}
+const SCOPES = { 'lib/package.json': 'module', 'lib/types/package.json': 'commonjs' };
+for (const [file, want] of Object.entries(SCOPES)) {
+  const path = join(REPO, file);
+  const got = existsSync(path) ? JSON.parse(readFileSync(path, 'utf8')).type : undefined;
+  if (got !== want) problems.push(`${file} declares type ${got === undefined ? '(nothing)' : JSON.stringify(got)}, and the build writes ${JSON.stringify(want)}`);
+}
+{
+  const entries = ['sheafeditor', 'sheafeditor/editor', 'sheafeditor/render'];
+  const script = entries.map((e) => `await import(${JSON.stringify(e)});`).join(' ');
+  const r = spawnSync(process.execPath, ['--input-type=module', '-e', script], { cwd: REPO, encoding: 'utf8' });
+  const typeless = [...(r.stderr ?? '').matchAll(/Module type of (\S+) is not specified/g)].map((m) => m[1].replace(`${pathToFileURL(REPO).href}/`, ''));
+  if (r.status !== 0) problems.push(`importing ${entries.join(', ')} in Node exited ${r.status}:\n${r.stderr.trim()}`);
+  else if (typeless.length) problems.push(`Node reparses ${typeless.join(', ')} as ES modules and warns on every import, because nothing declares their type`);
+  else notes.push(`Node imports ${entries.length} entries by name with no module-type warning.`);
+}
+
+/*
  * R7: both stylesheets, and the one a consumer outside VS Code cannot skip.
  *
  * The count is in the output rather than in a comment, because the number is the argument: a
@@ -167,6 +276,44 @@ if (existsSync(webviewCss) && existsSync(themeCss)) {
     `webview.css reads ${used.size} distinct --vscode-* variables. browser-theme.css defines ${defined.size} variables, ` +
       `${covered} of which are among those ${used.size}, leaving ${missing.length} of them on their fallbacks.`
   );
+}
+
+/*
+ * Every relative `url()` the two stylesheets reach names a file that is there.
+ *
+ * A consumer imports these stylesheets into their own build, and their bundler resolves every
+ * `url()` in them and in what they `@import`. A reference to a missing file is a warning per
+ * reference on that build, whether or not a browser would ever follow it: KaTeX's stylesheet names
+ * a WOFF and a TrueType copy after each WOFF2 font, the build copies only the WOFF2, and that was
+ * 40 warnings on a consumer's first build of the package. Followed through `@import`, because the
+ * fonts are named by `katex.css` and not by `webview.css` itself.
+ */
+{
+  const missing = [];
+  let followed = 0;
+  const seen = new Set();
+  const walk = (file) => {
+    if (seen.has(file) || !existsSync(file)) return;
+    seen.add(file);
+    const text = readFileSync(file, 'utf8');
+    for (const m of text.matchAll(/url\(\s*['"]?([^'")]+)['"]?\s*\)/g)) {
+      const ref = m[1].split('?')[0].split('#')[0];
+      if (!ref || /^(?:[a-z]+:|\/|#)/i.test(ref)) continue;
+      followed += 1;
+      const target = join(dirname(file), ref);
+      if (!existsSync(target)) missing.push(`${file.slice(REPO.length + 1)} names ${ref}`);
+      else if (ref.endsWith('.css')) walk(target);
+    }
+  };
+  walk(webviewCss);
+  walk(themeCss);
+  if (missing.length) {
+    problems.push(
+      `${missing.length} relative url() reference(s) in the stylesheets name a file that is not there, which is a warning each on a consumer's build: ${missing.slice(0, 3).join('; ')}${missing.length > 3 ? '; …' : ''}`
+    );
+  } else {
+    notes.push(`The stylesheets name ${followed} relative url() reference(s) across ${seen.size} file(s), and every one is on disk.`);
+  }
 }
 
 const readme = join(REPO, 'src', 'lib', 'README.md');
@@ -208,10 +355,56 @@ if (!existsSync(METAFILE)) {
   notes.push(`lib/editor.js eager closure: ${editorEager.size} file(s), ${[...editorEager].reduce((n, f) => n + metafile.outputs[f].bytes, 0)} bytes raw.`);
 }
 
+/*
+ * Every file in `lib/chunks/` is reached from an entry.
+ *
+ * The `exports` map serves `./chunks/*`, so anything the build leaves there is part of what the
+ * package serves, and the map's comment calls that pattern a complete list of what the package can
+ * serve. A chunk no entry imports is a file the package serves for no reason: esbuild wrote a 131 kB
+ * table-widget chunk there for an `import()` whose importer tree shaking had removed, and nothing
+ * above noticed, because every assertion above starts from an entry and walks forward.
+ *
+ * Read from the files rather than the metafile, because the files are what a consumer is served and
+ * the build prunes them after the metafile is written. Static imports, re-exports and `import()`
+ * all count: KaTeX and the emoji table are reached only by `import()`, and a walk over static
+ * imports alone would report them as orphans.
+ */
+{
+  const LIB = join(REPO, 'lib');
+  const CHUNKS = join(LIB, 'chunks');
+  const SPECIFIER = /(?:\bfrom\s*|\bimport\s*\(\s*|\bimport\s*)["'](\.{1,2}\/[^"']+)["']/g;
+  const reached = new Set();
+  const unresolved = [];
+  const queue = ['index.js', 'editor.js', 'render.js'].map((f) => join(LIB, f)).filter((f) => existsSync(f));
+  while (queue.length) {
+    const file = queue.pop();
+    if (reached.has(file)) continue;
+    reached.add(file);
+    for (const m of readFileSync(file, 'utf8').matchAll(SPECIFIER)) {
+      const target = join(dirname(file), m[1]);
+      if (existsSync(target)) queue.push(target);
+      else unresolved.push(`${file.slice(REPO.length + 1)} imports ${m[1]}`);
+    }
+  }
+  const chunks = existsSync(CHUNKS) ? readdirSync(CHUNKS).filter((f) => f.endsWith('.js')).map((f) => join(CHUNKS, f)) : [];
+  const orphans = chunks.filter((f) => !reached.has(f)).map((f) => f.slice(REPO.length + 1));
+  if (unresolved.length) problems.push(`${unresolved.length} relative import(s) in lib/ name a file the build did not write: ${unresolved.join('; ')}`);
+  if (orphans.length) {
+    problems.push(
+      `${orphans.length} file(s) in lib/chunks/ are imported by no entry, and the exports map serves them all the same: ${orphans.join(', ')}`
+    );
+  } else {
+    notes.push(`Every one of the ${chunks.length} chunks in lib/chunks/ is reached from an entry, by static or dynamic import.`);
+  }
+}
+
 for (const n of notes) console.log(n);
 if (problems.length) {
   console.error(`\n${problems.length} problem(s) with the package boundary:`);
   for (const p of problems) console.error(`  - ${p}`);
   process.exit(1);
 }
-console.log(`\nThe exports map names ${EXPECTED.length} entries, every one resolves, and the main entry carries no editor.`);
+console.log(
+  `\nThe exports map names ${EXPECTED.length} entries, every one resolves **in this checkout**, and the main entry carries no editor.` +
+    `\nWhat a consumer receives from a tarball is a different question and this script does not answer it; see the note above.`
+);

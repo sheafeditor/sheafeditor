@@ -8,6 +8,9 @@ import type { FromWebview } from '../protocol';
 import { EditorState } from '@codemirror/state';
 import { syntaxTree } from '@codemirror/language';
 import { parseHtmlImage } from './imageMarkup';
+import { mountSlot, scopeNear } from './mountScope';
+import type { MountScope } from './mountScope';
+import type { EditorView } from '@codemirror/view';
 
 type TreeNode = ReturnType<ReturnType<typeof syntaxTree>['resolveInner']>;
 
@@ -155,32 +158,47 @@ export function headingPosition(state: EditorState, id: string): number | null {
 
 type Post = (message: FromWebview) => void;
 
-let post: Post | null = null;
-let revealFragment: ((id: string) => void) | null = null;
+/**
+ * Where one editor sends a link it cannot open itself, and how it shows a place in the document it
+ * is already displaying.
+ *
+ * Per mount, because both answers are about one document: a fragment names a heading in *that*
+ * editor, and a relative address is relative to *that* document's folder. Shared, the second editor
+ * to open took both, so a link clicked in the first document scrolled the second one.
+ */
+interface LinkHost {
+  post: Post | null;
+  revealFragment: ((id: string) => void) | null;
+}
+
+const own = mountSlot<LinkHost>(() => ({ post: null, revealFragment: null }));
 
 /**
- * How to show a place in the document this webview is already displaying. A
+ * How to show a place in the document this editor is already displaying. A
  * fragment names a heading here, so nothing needs to be opened and the host is
  * never involved.
  */
-export function setFragmentHost(reveal: (id: string) => void): void {
-  revealFragment = reveal;
+export function setFragmentHost(reveal: (id: string) => void, scope?: MountScope): void {
+  (scope ? own.of(scope) : own.at(null)).revealFragment = reveal;
 }
 
 /**
  * Where to send an address the host has to resolve. Without one, as on the site's
  * demo, a link to another document has nowhere to go and opening it does nothing.
  */
-export function setLinkHost(send: Post): void {
-  post = send;
+export function setLinkHost(send: Post, scope?: MountScope): void {
+  (scope ? own.of(scope) : own.at(null)).post = send;
 }
 
 /**
  * Open a link's address: the one path every opener goes through, so Cmd-click, the
  * right-click Open link, the popover's open button and a link in a table cell all
  * behave the same way.
+ *
+ * `near` says which editor is opening it — the view, or an element inside it. Five of the six
+ * callers have the view; the sixth is a press in a table cell and has the cell.
  */
-export function openLink(address: string): void {
+export function openLink(address: string, near?: EditorView | EditorState | Node | null): void {
   const plan = linkOpenPlan(address);
   if (plan.kind === 'external') {
     // An anchor click is allowed by the content security policy, and VS Code
@@ -192,12 +210,13 @@ export function openLink(address: string): void {
     a.click();
     return;
   }
+  const here = own.of(scopeNear(near));
   if (plan.kind === 'document') {
-    post?.({ type: 'openLink', address: plan.address });
+    here.post?.({ type: 'openLink', address: plan.address });
     return;
   }
   if (plan.kind === 'fragment') {
-    revealFragment?.(plan.id);
+    here.revealFragment?.(plan.id);
   }
 }
 

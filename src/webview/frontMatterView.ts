@@ -20,24 +20,39 @@
 import type { FromWebview } from '../protocol';
 import { EditorState, Extension, Range, StateEffect, StateField } from '@codemirror/state';
 import { Decoration, DecorationSet, EditorView, WidgetType } from '@codemirror/view';
-import { frontMatterEnd } from './frontMatter';
+import { frontMatterEnd } from '../dialect/frontMatter';
+import { mountSlot, scopeNear } from './mountScope';
+import type { MountScope } from './mountScope';
 
 /** How much of the front matter is drawn. */
 export type FrontMatterMode = 'shown' | 'collapsed' | 'hidden';
 
-let mode: FrontMatterMode = 'collapsed';
-/** This document's own state, when it has one, which wins over the setting. */
-let ownState: FrontMatterMode | null = null;
-let host: ((message: FromWebview) => void) | null = null;
-let seq = 0;
-
-/** What the host's setting says, the default for a document with no state of its own. */
-export function setFrontMatterMode(next: FrontMatterMode): void {
-  mode = next;
+/**
+ * What one editor knows about its own document's front matter.
+ *
+ * `ownState` is the document's, and `host` is where it is kept, so both belong to one editor. The
+ * setting is a setting, and it is here too for the same reason the comments' is: every host sends it
+ * at `init` to the editor it is for, and a page with two editors on two hosts can be told two
+ * different things.
+ */
+interface FrontMatter {
+  mode: FrontMatterMode;
+  /** This document's own state, when it has one, which wins over the setting. */
+  ownState: FrontMatterMode | null;
+  host: ((message: FromWebview) => void) | null;
+  seq: number;
 }
 
-export function frontMatterMode(): FrontMatterMode {
-  return ownState ?? mode;
+const own = mountSlot<FrontMatter>(() => ({ mode: 'collapsed', ownState: null, host: null, seq: 0 }));
+
+/** What the host's setting says, the default for a document with no state of its own. */
+export function setFrontMatterMode(next: FrontMatterMode, scope?: MountScope): void {
+  (scope ? own.of(scope) : own.at(null)).mode = next;
+}
+
+export function frontMatterMode(near?: EditorView | EditorState | Node | null): FrontMatterMode {
+  const here = own.of(scopeNear(near));
+  return here.ownState ?? here.mode;
 }
 
 /**
@@ -47,20 +62,22 @@ export function frontMatterMode(): FrontMatterMode {
  * left open is drawn the way it was left rather than flickering through the default
  * first.
  */
-export function setFrontMatterHost(send: ((message: FromWebview) => void) | null): void {
-  host = send;
-  send?.({ type: 'frontMatterStateRead', id: `frontmatter-${++seq}` });
+export function setFrontMatterHost(send: ((message: FromWebview) => void) | null, scope?: MountScope): void {
+  const here = scope ? own.of(scope) : own.at(null);
+  here.host = send;
+  send?.({ type: 'frontMatterStateRead', id: `frontmatter-${++here.seq}` });
 }
 
 /** The host's answer: this document's state, or null to follow the setting. */
-export function handleFrontMatterState(_id: string, state: unknown): void {
-  ownState = state === 'shown' || state === 'collapsed' || state === 'hidden' ? state : null;
+export function handleFrontMatterState(_id: string, state: unknown, scope?: MountScope): void {
+  const here = scope ? own.of(scope) : own.at(null);
+  here.ownState = state === 'shown' || state === 'collapsed' || state === 'hidden' ? state : null;
 }
 
 /** Remember this document's state, or forget it and follow the setting again. */
-function keep(state: FrontMatterMode | null): void {
-  ownState = state;
-  host?.({ type: 'frontMatterStateWrite', state });
+function keep(here: FrontMatter, state: FrontMatterMode | null): void {
+  here.ownState = state;
+  here.host?.({ type: 'frontMatterStateWrite', state });
 }
 
 /**
@@ -69,7 +86,7 @@ function keep(state: FrontMatterMode | null): void {
  * Null means follow the setting again.
  */
 export function setFrontMatterForDocument(view: EditorView, state: FrontMatterMode | null): void {
-  keep(state);
+  keep(own.at(view), state);
   view.dispatch({ effects: redraw.of(null) });
 }
 
@@ -81,8 +98,8 @@ export function setFrontMatterForDocument(view: EditorView, state: FrontMatterMo
  * following it, and the next document would look like the change had not worked.
  */
 export function frontMatterEverywhere(view: EditorView): void {
-  const state = frontMatterMode();
-  host?.({ type: 'setFrontMatter', state });
+  const state = frontMatterMode(view);
+  own.at(view).host?.({ type: 'setFrontMatter', state });
   setFrontMatterForDocument(view, null);
 }
 
@@ -92,8 +109,8 @@ export function resetFrontMatter(view: EditorView): void {
 }
 
 /** Whether this document has a state of its own, which is what there is to reset. */
-export function frontMatterIsOwn(): boolean {
-  return ownState !== null;
+export function frontMatterIsOwn(near?: EditorView | EditorState | Node | null): boolean {
+  return own.of(scopeNear(near)).ownState !== null;
 }
 
 /**
@@ -147,7 +164,7 @@ class StripWidget extends WidgetType {
       event.preventDefault();
       // This document, from now on, which is what the person just asked for. The
       // setting is still the default for every other document.
-      keep('shown');
+      keep(own.at(view), 'shown');
       view.dispatch({ effects: redraw.of(null) });
     });
     strip.appendChild(button);
@@ -197,7 +214,7 @@ class FoldWidget extends WidgetType {
     });
     button.addEventListener('click', (event) => {
       event.preventDefault();
-      keep('collapsed');
+      keep(own.at(view), 'collapsed');
       view.dispatch({ effects: redraw.of(null), ...caretOutOfBlock(view.state) });
     });
     return button;
@@ -231,7 +248,7 @@ function decorations(state: EditorState): DecorationSet {
   // Shown by the setting, opened by hand, or asked for by a caret inside it: a person
   // editing the metadata needs to see it, whatever the default says.
   const caretInside = state.selection.ranges.some((r) => r.from <= state.doc.line(endLine).to);
-  const showing = frontMatterMode();
+  const showing = frontMatterMode(state);
   if (showing === 'shown' || caretInside) {
     // Hidden reserves no space by design, so it carries no control either: one would be the
     // space back. The commands, the toolbar and the setting are the way out of it.

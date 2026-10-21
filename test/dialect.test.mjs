@@ -12,9 +12,23 @@ import { createRequire } from 'node:module';
 import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-const { parse, constructs, nodesNamed, has, census, blockMaths, renderMarkdown, scopeOf, unimplemented, PROFILE_TABLE, TAGS, HANDLERS } = createRequire(
-  import.meta.url
-)('./dialect.bundle.cjs');
+const {
+  parse,
+  constructs,
+  nodesNamed,
+  has,
+  census,
+  blockMaths,
+  renderMarkdown,
+  scopeOf,
+  unimplemented,
+  PROFILE_TABLE,
+  TAGS,
+  HANDLERS,
+  PROFILES,
+  frontMatterEndOf,
+  frontMatterOf,
+} = createRequire(import.meta.url)('./dialect.bundle.cjs');
 
 const j = (x) => JSON.stringify(x);
 
@@ -24,6 +38,21 @@ const covers = (src, name, text) => {
   if (found.length === 1 && found[0].text === text) return true;
   return `${name} in ${j(src)} came out as ${j(found.map((n) => n.text))}, wanted exactly [${j(text)}]`;
 };
+
+/**
+ * A node's own subtree as names and offsets relative to the node's start, which is the shape
+ * two occurrences of one construct can be compared by.
+ *
+ * Relative rather than absolute, so the second reference in a document is comparable with the
+ * first. Widths are included because a node could carry a number by growing rather than by
+ * appearing, and the whole list is compared rather than searched, because a node added to
+ * carry one could be named anything at all.
+ */
+const subtree = (src, node) =>
+  parse(src)
+    .filter((n) => n.from >= node.from && n.to <= node.to)
+    .map((n) => `${n.name}+${n.from - node.from}+${n.to - n.from}`)
+    .join(' ');
 
 /** No node of `name` anywhere in `text`. */
 const absent = (src, name) => {
@@ -189,13 +218,170 @@ const cases = [
     '[^x] inside a fence is never a footnote',
     () => absent('```\n[^x]\n```\n\n[^x]: a note\n', 'FootnoteReference'),
   ],
+  /*
+   * ---- The five rules the specification states and nothing measured ------------------
+   *
+   * Each of these five is a sentence in `16-specification.md` that was written by reading a
+   * module. The code is right about all five; what was missing is anything that would notice
+   * the code changing underneath the sentence. The only party to have built a renderer from
+   * that document got a construct wrong in exactly the way the document's silence invited,
+   * and ate every autolink in an 85-document corpus, so a sentence with nothing behind it is
+   * the shape of fault to care about here rather than a tidiness question.
+   *
+   * **All five pass against the tree as it stands, and that is the expected result rather
+   * than a tell.** They are not a fix; they are the measurement under rules that already
+   * hold. What separates a case that pins a behaviour from one that drives nothing is the
+   * control, and each control is recorded in the commit that added these cases: what was
+   * broken, what it printed, what had to be true for it to print anything, and that it was
+   * put back.
+   *
+   * **Three of the five assert an ABSENCE, and an absence has no lever in the dialect**,
+   * because the behaviour each one refuses — case folding, first-definition-wins, numbering
+   * — is computed in `src/webview/footnotes.ts` when the document is drawn. Breaking the
+   * drawing side is the wrong control: it would leave the parse exactly as these cases
+   * assert, so they would pass while the drawing was wrong, and the control would read as
+   * the check being useless. The honest control runs the other way, adding the behaviour to
+   * the grammar.
+   *
+   * **What this harness can and cannot see about an absence.** It reads node names,
+   * boundaries and the bytes each node covers. So it can show the tree holds no node that
+   * carries a number and no node that distinguishes one case of a label from another. It
+   * cannot show the tree holds no numbering *property*, and `parse` derives every node's
+   * text by slicing the source, so "the label is not folded in the tree" is not falsifiable
+   * here however the grammar behaves. Those two are conformance requirements on a
+   * reimplementer, stated in Part 2, rather than measurements of this parser, and the cases
+   * below assert only the falsifiable half.
+   */
+
+  // Case 1. Part 1's two doubled-dollar guards, which it stated as rules on 2026-10-05.
   [
-    'the first definition of a label wins',
+    '$$x$$ mid-sentence is no InlineMath, which takes both of the doubled-dollar guards',
     () => {
-      const src = 'see [^a]\n\n[^a]: first\n\n[^a]: second\n';
+      const src = 'a $$x$$ here';
+      const found = nodesNamed(src, 'InlineMath');
+      if (found.length === 0) return true;
+      /*
+       * Where the span opens says which guard went, because the two catch different
+       * positions and a case that printed only "there is a span" would not separate them.
+       */
+      const at = found.map((n) => `${n.from}:${j(n.text)}`).join(', ');
+      return (
+        `InlineMath in ${j(src)} came out as ${at}, wanted none. A span opening at 2 is the ` +
+        'guard on a `$` FOLLOWED by a `$`; one opening at 3 is the guard on a `$` PRECEDED by one.'
+      );
+    },
+  ],
+  /*
+   * And the same sentence mid-sentence, so the case above is a refusal rather than inline
+   * maths not parsing in the middle of a line at all. Without this, deleting the whole
+   * `InlineMath` parser would leave case 1 green.
+   */
+  ['a $x$ in the middle of a sentence is an InlineMath, so the case above is a refusal', () => covers('a $x$ here', 'InlineMath', '$x$')],
+
+  // Case 2. Part 1's label rule names the backslash since 2026-10-05.
+  ['[^a\\b] is no FootnoteReference, because a backslash ends a label', () => absent('see [^a\\b] here\n', 'FootnoteReference')],
+  /*
+   * And what it becomes, which is the half that "it is text" loses. Part 1 says the three
+   * rejected spellings are each still a bracket run the parser covers with a `Link`, and a
+   * case asserting only the absence would pass if the whole bracket run vanished.
+   */
+  ['and [^a\\b] is a Link over the whole bracket run, which "it is text" does not say', () => covers('see [^a\\b] here\n', 'Link', '[^a\\b]')],
+  ['see [^ab] here is a FootnoteReference, so the backslash is the lever and not the sentence', () => covers('see [^ab] here\n', 'FootnoteReference', '[^ab]')],
+
+  /*
+   * Case 3. Two definitions of one label both parse, and the parser picks no winner.
+   *
+   * **This replaces a case named "the first definition of a label wins", which asserted
+   * nothing of the kind.** It read the first `FootnoteDefinition` in document order and
+   * checked that it held the word `first`, which is true of any parser that reports nodes in
+   * document order and would stay true if the grammar did no resolution at all — which is
+   * what it does. So the case was named after a rule that lives in the
+   * drawing pass, and a reader sweeping the suite for what backs Part 1's footnote paragraph
+   * would have found it and stopped.
+   */
+  [
+    'two definitions of one label both parse, and the parser picks no winner',
+    () => {
+      /*
+       * The two notes are the same length on purpose. `subtree` carries each node's width,
+       * so notes reading `first` and `second` differ in the trailing `Paragraph`'s width and
+       * the comparison fails on the length of the prose rather than on anything ranking the
+       * two. That is what the first spelling of this case did, and the message it printed
+       * read exactly like the finding it was written to rule out.
+       */
+      const src = 'see [^a]\n\n[^a]: one\n\n[^a]: two\n';
       const defs = nodesNamed(src, 'FootnoteDefinition');
-      if (defs.length === 0) return 'no FootnoteDefinition at all';
-      return defs[0].text.includes('first') ? true : `the first definition read ${j(defs[0].text)}`;
+      if (defs.length !== 2)
+        return `${defs.length} FootnoteDefinition(s) in ${j(src)}, wanted 2: a grammar that resolved labels would drop or merge one`;
+      const texts = defs.map((d) => d.text);
+      if (texts[0] !== '[^a]: one' || texts[1] !== '[^a]: two') return `the two definitions came out as ${j(texts)}`;
+      // Nothing in the tree marks either one as the winner: the two carry the same node
+      // names at the same offsets from their own start, so there is no winner to read off.
+      if (subtree(src, defs[0]) !== subtree(src, defs[1]))
+        return `the two definitions have different shapes, so something is ranking them: ${subtree(src, defs[0])} against ${subtree(src, defs[1])}`;
+      return true;
+    },
+  ],
+
+  /*
+   * Case 4. `[^Note]` and `[^note]` parse identically, because the grammar folds no case.
+   *
+   * Asserted over names and boundaries, which is the falsifiable half: a grammar that folded
+   * case in order to resolve a definition would have to put the result somewhere this can
+   * see.
+   *
+   * **The third clause is the one a fold can actually break, and the first two are not.** A
+   * document with one definition gives a fold nothing to do, so `[^Note]` and `[^note]`
+   * parsing alike would stay true however hard the grammar folded; those two clauses pin the
+   * boundaries and no more. Two definitions differing **only in case** is the document where
+   * folding has a consequence, because folded resolution collapses them and the second stops
+   * being a node. The control adds exactly that, and it fires here and on case 3 together,
+   * which is what separates "the grammar picks no winner" from "the grammar does not fold".
+   */
+  [
+    '[^Note] and [^note] parse identically, and two definitions differing only in case both parse',
+    () => {
+      const shape = (src) =>
+        parse(src)
+          .map((n) => `${n.name} ${n.from}-${n.to}`)
+          .join(' | ');
+      const matched = shape('see [^Note]\n\n[^Note]: n\n');
+      const lower = shape('see [^note]\n\n[^note]: n\n');
+      if (matched !== lower) return `[^Note] and [^note] parse differently:\n   ${matched}\n   ${lower}`;
+      const mixed = shape('see [^Note]\n\n[^note]: n\n');
+      if (mixed !== matched)
+        return `a definition differing only in case parses differently from a matching one, so the grammar is folding:\n   ${matched}\n   ${mixed}`;
+      const src = 'see [^a]\n\n[^a]: one\n\n[^A]: two\n';
+      const defs = nodesNamed(src, 'FootnoteDefinition').map((n) => n.text);
+      if (defs.length !== 2 || defs[0] !== '[^a]: one' || defs[1] !== '[^A]: two')
+        return `[^a] and [^A] defined in one document came out as ${j(defs)}, wanted both: a grammar folding case would resolve them to one label and keep one`;
+      return true;
+    },
+  ],
+
+  /*
+   * Case 5. No node carries a footnote's number.
+   *
+   * Two references in one document, whose only difference is the order they appear in, which
+   * is where the drawn numbers come from. If the grammar numbered them, the first and the
+   * second would differ somewhere in the tree. They do not: same node names, same offsets
+   * from their own start, same widths.
+   *
+   * The node list is compared whole rather than searched for a number, because a numbering
+   * node could be called anything. Any extra node under a reference fails this.
+   */
+  [
+    'no node carries a footnote number: the first and second reference are the same shape',
+    () => {
+      const src = 'see [^a] and [^b]\n\n[^a]: one\n\n[^b]: two\n';
+      const refs = nodesNamed(src, 'FootnoteReference');
+      if (refs.length !== 2) return `${refs.length} FootnoteReference(s) in ${j(src)}, wanted 2`;
+      const want = 'FootnoteReference+0+4 FootnoteMark+0+2 FootnoteLabel+2+1 FootnoteMark+3+1';
+      for (const [i, ref] of refs.entries()) {
+        if (subtree(src, ref) !== want)
+          return `reference ${i + 1} is ${j(subtree(src, ref))}, wanted ${j(want)}: an extra node under a reference is where a number would go`;
+      }
+      return true;
     },
   ],
 ];
@@ -305,7 +491,86 @@ const renderCases = [
     },
   ],
 ];
-cases.push(...renderCases);
+/*
+ * The render path's answer about `$$` blocks, checked against the drawing rule above rather than
+ * against a second copy of it.
+ *
+ * A `$$` block is not a node, so nothing in the render walk meets one and a display equation came
+ * back as the paragraph text it parses as, with `outOfScope` empty: the delimiters and the formula
+ * as running prose, reported as understood. Both forms did, the three-line one and the one-line one,
+ * and the one-line one is the trap, because it sits one `trim` away from the inline span that must
+ * stay as it is.
+ *
+ * The inputs are the ones the rules are stated on a few cases up. Asserting the boundaries again
+ * here would be a second statement of "top level only, within one paragraph, not inside a fence",
+ * free to agree with the rule while both were wrong; comparing the two answers cannot.
+ */
+const BLOCK_MATHS_INPUTS = [
+  '$$E = mc^2$$\n',
+  '$$\nE = mc^2\n$$\n',
+  '```\n$$E = mc^2$$\n```\n',
+  '$$\nE = mc^2\n\nA later paragraph.\n',
+  '    $$E = mc^2$$\n',
+  '> $$E = mc^2$$\n',
+  'before $$x$$ after',
+  'text above\n$$\nE = mc^2\n$$\n',
+];
+
+const blockMathsRenderCases = [
+  [
+    'the render path refuses exactly the $$ blocks the drawing rule finds, in every profile',
+    () => {
+      for (const md of BLOCK_MATHS_INPUTS) {
+        const want = blockMaths(md).map((b) => `${b.from}-${b.to}`);
+        for (const profile of ['field', 'notes', 'document']) {
+          const got = renderMarkdown(md, profile)
+            .outOfScope.filter((o) => o.construct === 'BlockMath')
+            .map((o) => `${o.from}-${o.to}`);
+          if (j(got) !== j(want)) return `${j(md)} under ${profile}: reported ${j(got)}, the rule finds ${j(want)}`;
+        }
+      }
+      return true;
+    },
+  ],
+  [
+    'a three-line $$ block comes back as its own source inside a wrapper that names it',
+    () =>
+      renders(
+        '$$\nx^2\n$$',
+        'notes',
+        '<p><span class="sheaf-unrendered" data-construct="BlockMath">$$\nx^2\n$$</span></p>',
+        ['BlockMath/profile']
+      ),
+  ],
+  [
+    'a one-line $$ block does too, and in a field as well as in notes',
+    () => {
+      const want = '<p><span class="sheaf-unrendered" data-construct="BlockMath">$$E = mc^2$$</span></p>';
+      const notes = renders('$$E = mc^2$$', 'notes', want, ['BlockMath/profile']);
+      if (notes !== true) return notes;
+      return renders('$$E = mc^2$$', 'field', want, ['BlockMath/profile']);
+    },
+  ],
+  [
+    'a paragraph that holds a block keeps the prose above it and refuses only the block',
+    () =>
+      renders(
+        'text above\n$$\nx^2\n$$',
+        'notes',
+        '<p>text above\n<span class="sheaf-unrendered" data-construct="BlockMath">$$\nx^2\n$$</span></p>',
+        ['BlockMath/profile']
+      ),
+  ],
+  [
+    'CONTROL: $$x$$ in the middle of a sentence stays plain text with nothing reported',
+    () => renders('before $$x$$ after', 'notes', '<p>before $$x$$ after</p>', []),
+  ],
+  [
+    'the document profile names a block too, as a gap in this path rather than a decision',
+    () => reports('$$\nx^2\n$$', 'document', ['BlockMath/unimplemented']),
+  ],
+];
+cases.push(...renderCases, ...blockMathsRenderCases);
 
 // ---- The render path: what each construct becomes ---------------------------------------------
 
@@ -395,7 +660,10 @@ const owedCases = [
     'document owes only what needs a subsystem: emoji, maths and callouts',
     () => {
       const got = unimplemented('document').sort();
-      const want = ['Callout', 'Emoji', 'InlineMath', 'InlineMathMark'].sort();
+      // `BlockMath` joined the list when it got a row of its own rather than being read off the
+      // `InlineMath` one. It is owed for the same reason the inline form is: drawing an equation
+      // needs KaTeX, which this path does not load, so the source comes back named instead.
+      const want = ['BlockMath', 'Callout', 'Emoji', 'InlineMath', 'InlineMathMark'].sort();
       return j(got) === j(want) ? true : `unimplemented(document) was ${j(got)}, wanted ${j(want)}`;
     },
   ],
@@ -431,7 +699,29 @@ const removalCases = [
   },
 ]);
 
-cases.push(...drawnCases, documentDrawsEach, sameLines, ...owedCases, ...removalCases);
+/*
+ * The empty case, asserted rather than left to pass because nothing was compared.
+ *
+ * Every case above hands the renderer some construct, so a renderer that returned `<p></p>` for no
+ * input, or threw on it, would pass all of them. An empty value is the commonest one a consumer
+ * passes, a description nobody has written yet, so its answer is pinned in every profile: no
+ * element and nothing reported. A value of only whitespace gives back exactly the whitespace, which
+ * draws nothing in a page and keeps the source's line count, the property the cases above rely on.
+ */
+const BLANKS = ['', ' ', '\n', '   \n  ', '\n\n\n', '\t\n'];
+const emptyCases = BLANKS.map((md) => [
+  `${j(md)} renders as itself with nothing reported, in every profile`,
+  () => {
+    if (!PROFILES?.length) return `no profile to drive: PROFILES is ${j(PROFILES)}`;
+    for (const profile of PROFILES) {
+      const out = renderMarkdown(md, profile);
+      if (out.html !== md || out.outOfScope.length !== 0) return `${j(md)} under ${profile} came back as ${j(out)}, wanted ${j({ html: md, outOfScope: [] })}`;
+    }
+    return true;
+  },
+]);
+
+cases.push(...drawnCases, documentDrawsEach, sameLines, ...owedCases, ...removalCases, ...emptyCases);
 
 /*
  * What must not become markup. Each of these puts a document's text where an attribute or an
@@ -633,13 +923,21 @@ const definitionCases = [
       return rendersTrimmed('> [z]: https://z.com\n', 'notes', '<blockquote></blockquote>');
     },
   ],
+  /*
+   * The two guards against removing too much, asserted untrimmed.
+   *
+   * Over-eager removal eats content, which is a worse failure than printing a definition, so these
+   * two take the whole output rather than the output with its trailing whitespace off: a fix that
+   * stripped definition-shaped lines from the finished HTML would take the rest of the paragraph
+   * with them, and trimming the end is the one place that damage could hide.
+   */
   [
     'a line that only looks like a definition, in the middle of a sentence, is text',
-    () => rendersTrimmed('See [a]: this is prose here\n', 'notes', '<p>See [a]: this is prose here</p>'),
+    () => renders('See [a]: this is prose here\n', 'notes', '<p>See [a]: this is prose here</p>\n'),
   ],
   [
     'a line that looks like a definition and follows a line of its paragraph is text, because a definition cannot interrupt one',
-    () => rendersTrimmed('Some text\n[a]: https://e.com\n', 'notes', `<p>Some text\n[a]: ${A('https://e.com', 'https://e.com')}</p>`),
+    () => renders('Some text\n[a]: https://e.com\n', 'notes', `<p>Some text\n[a]: ${A('https://e.com', 'https://e.com')}</p>\n`),
   ],
   [
     'a definition inside a fenced block or an indented one is kept verbatim',
@@ -680,8 +978,241 @@ const definitionCases = [
     'a hostile address in a definition is refused wherever the definition sits',
     () => rendersTrimmed('[a][d]\n\n[d]: javascript:alert(1)\n', 'notes', '<p>a</p>'),
   ],
+  /*
+   * The whitespace a removed definition leaves behind, asserted rather than trimmed off.
+   *
+   * **A reader sees nothing**, and that is the whole reason nothing needs doing about it. The
+   * newlines a removed block leaves sit between block elements, or trailing inside a list item,
+   * and normal flow collapses them in both places: the rendered page is the same page whether
+   * they are there or not. That holds with no checker anywhere in the picture. It is bounded by
+   * the default handling of white-space, which is all a consumer gets unless it asks otherwise;
+   * one that sets `white-space: pre-wrap` on the container would see them.
+   *
+   * The bytes still differ from what a reader of the promise would expect, which is why this is
+   * written down rather than left as a leftover. Every case above goes through `rendersTrimmed`,
+   * so what a definition leaves is the one thing none of them looks at.
+   *
+   * A convenience follows rather than justifies it: the output keeps the source's line count, so
+   * the comparison against the editor can read the two a line at a time.
+   *
+   * So this is a guard rather than a verification. The plausible wrong fix is to strip the blank
+   * line as well, which reads like finishing the job.
+   */
+  [
+    'a removed definition leaves the source\'s line count, so the output still reads line for line',
+    () => {
+      const lineCount = (s) => s.split('\n').length;
+      const docs = [
+        'See [the docs][d] and [the site][s].\n\nA second paragraph.\n\n[d]: https://e.com/docs\n[s]: https://e.com\n',
+        'A paragraph.\n\n[z]: https://z.com\n',
+        '[a][d]\n\n[d]: https://e.com "The title"\n',
+        // A line that only looks like a definition keeps its words, so its count holds for the
+        // opposite reason: nothing was removed at all.
+        'See [a]: this is prose here\n',
+      ];
+      for (const md of docs) {
+        const html = renderMarkdown(md, 'notes').html;
+        if (lineCount(html) !== lineCount(md)) {
+          return `${j(md)} rendered ${lineCount(html)} line(s) where the source has ${lineCount(md)}: ${j(html)}`;
+        }
+      }
+      return true;
+    },
+  ],
 ];
 cases.push(...definitionCases);
+
+// ---- Front matter ------------------------------------------------------------------------------
+
+/*
+ * The fields parser, asked what it returns rather than whether it threw.
+ *
+ * Every case here prints the whole answer when it fails, because the failure this parser exists to
+ * prevent is a value that came back looking plausible and wrong. "It did not throw" is satisfied by
+ * a nested map read as its first leaf, which is the exact misparse that puts a wrong tag on a card,
+ * so a case that only caught an exception would pass over it.
+ */
+
+/** A document with `body` as its front matter and one line of prose under it. */
+const fm = (body) => `---\n${body}\n---\n\nBody.\n`;
+
+/** The fields and refusals `body` produces, as the two things a caller reads. */
+const parsed = (body) => {
+  const out = frontMatterOf(fm(body));
+  return { fields: out.fields, refused: out.notUnderstood.map((n) => `${n.key ?? '(line)'}/${n.reason}`) };
+};
+
+/** `body`'s fields are exactly `fields` and it refused exactly `refused`. */
+const gives = (body, fields, refused = []) => {
+  const got = parsed(body);
+  if (j(got.fields) === j(fields) && j(got.refused) === j(refused)) return true;
+  return `${j(body)} gave fields ${j(got.fields)} and refused ${j(got.refused)}, wanted ${j(fields)} and ${j(refused)}`;
+};
+
+const scalar = (text) => ({ kind: 'scalar', text });
+const list = (...items) => ({ kind: 'list', items });
+
+const frontMatterCases = [
+  // ---- Where the block ends, which the move must not disturb ----------------------------
+  ['front matter opening line 1 ends at its closing fence', () => frontMatterEndOf('---\na: 1\n---\n\nx\n') === 3 || `got ${frontMatterEndOf('---\na: 1\n---\n\nx\n')}`],
+  ['the `...` closing spelling is accepted', () => frontMatterEndOf('---\na: 1\n...\n\nx\n') === 3 || `got ${frontMatterEndOf('---\na: 1\n...\n\nx\n')}`],
+  ['a rule in the body is a divider and not front matter', () => frontMatterEndOf('# T\n\n---\n\nx\n') === 0 || `got ${frontMatterEndOf('# T\n\n---\n\nx\n')}`],
+  [
+    '`---` with a blank line under it is a heading underline rather than an opening fence',
+    () => frontMatterEndOf('---\n\n---\n') === 0 || `got ${frontMatterEndOf('---\n\n---\n')}`,
+  ],
+
+  // ---- The supported subset -------------------------------------------------------------
+  ['two ordinary keys give two fields', () => gives('title: Ship it\nstatus: Todo', { title: scalar('Ship it'), status: scalar('Todo') })],
+  ['a number and a boolean come back as the text that was written, because types are advisory', () => gives('estimate: 3\ndone: false', { estimate: scalar('3'), done: scalar('false') })],
+  ['a value holding a colon with no space after it is one value', () => gives('url: https://example.com/a:b', { url: scalar('https://example.com/a:b') })],
+  ['a quoted value containing a colon is read whole', () => gives("updated: '2025-09-06 21:22'", { updated: scalar('2025-09-06 21:22') })],
+  ['a quoted date is its text without the quotes', () => gives("created: '2025-07-23'", { created: scalar('2025-07-23') })],
+  ['a double-quoted value carries its escapes', () => gives('title: "a \\"b\\" c"', { title: scalar('a "b" c') })],
+  ["`''` inside a single-quoted value is one quote", () => gives("title: 'it''s here'", { title: scalar("it's here") })],
+  ['a flow sequence is one field with several values', () => gives('tags: [design, library]', { tags: list('design', 'library') })],
+  ['an empty flow sequence is an empty list rather than the text `[]`', () => gives('assignee: []', { assignee: list() })],
+  ['a quoted item in a flow sequence keeps its spaces and commas', () => gives('tags: ["a, b", c]', { tags: list('a, b', 'c') })],
+  [
+    'the indented `- item` form is a list, which is how the convention writes several values',
+    () => gives('labels:\n  - enhancement\n  - developer-experience', { labels: list('enhancement', 'developer-experience') }),
+  ],
+  ['a block sequence of quoted items reads the same way', () => gives("deps:\n  - 'task-24.1'\n  - task-208", { deps: list('task-24.1', 'task-208') })],
+  ['a key with nothing after it and nothing under it is an empty value', () => gives('status:', { status: scalar('') })],
+  ['a trailing comment is a comment and not part of the value', () => gives('title: Ship it # later', { title: scalar('Ship it') })],
+  ['a whole-line comment and a blank line are skipped', () => gives('# a note\n\ntitle: x', { title: scalar('x') })],
+  [
+    'a real file of the convention this reads parses whole',
+    () =>
+      gives(
+        [
+          'id: BACK-200',
+          'title: Add Claude Code integration',
+          'status: To Do',
+          'assignee: []',
+          "created_date: '2025-07-23'",
+          "updated_date: '2025-09-06 21:22'",
+          'labels:',
+          '  - enhancement',
+          '  - developer-experience',
+          'dependencies:',
+          '  - task-24.1',
+          '  - task-208',
+          'priority: medium',
+        ].join('\n'),
+        {
+          id: scalar('BACK-200'),
+          title: scalar('Add Claude Code integration'),
+          status: scalar('To Do'),
+          assignee: list(),
+          created_date: scalar('2025-07-23'),
+          updated_date: scalar('2025-09-06 21:22'),
+          labels: list('enhancement', 'developer-experience'),
+          dependencies: list('task-24.1', 'task-208'),
+          priority: scalar('medium'),
+        }
+      ),
+  ],
+
+  // ---- What it refuses, with the value it returns rather than the absence of a throw -----
+  ['a nested map yields no field for its key', () => gives('author:\n  name: Ada\n  role: writer', {}, ['author/nested map'])],
+  ['a flow map yields no field for its key', () => gives('author: {name: Ada}', {}, ['author/nested map'])],
+  ['a list of maps written over two lines each is refused whole', () => gives('people:\n  - name: a\n    role: b', {}, ['people/nested map'])],
+  /*
+   * The two shapes a half-read list takes, and they need separate cases because two different
+   * guards refuse them. The first is caught by the indent check, since the map's second key sits
+   * deeper than the item; these two are at one depth throughout, so only the test on the item
+   * itself is left to refuse them. A case aimed at the first one passes with that test deleted.
+   */
+  ['a list of one-line maps is refused rather than coming back as an empty list', () => gives('people:\n  - name: a\n  - name: b', {}, ['people/nested map'])],
+  ['a list of a scalar and a map is refused whole, rather than short by one', () => gives('tags:\n  - a\n  - name: b', {}, ['tags/nested map'])],
+  ['a `|` multi-line scalar yields no field', () => gives('body: |\n  one\n  two', {}, ['body/multi-line scalar'])],
+  ['a `>` multi-line scalar yields no field', () => gives('body: >\n  one\n  two', {}, ['body/multi-line scalar'])],
+  ['a plain scalar folded over two lines yields no field', () => gives('title: one\n  two', {}, ['title/multi-line scalar'])],
+  ['a quoted key containing a colon yields no field', () => gives('"a: b": x', {}, ['(line)/quoted key'])],
+  ['a key written twice yields no field and is refused on both lines', () => gives('status: Todo\nstatus: Done', {}, ['status/duplicate key', 'status/duplicate key'])],
+  [
+    'a key written twice is refused even when the second copy would have been refused anyway',
+    () => gives('a: 1\na:\n  b: 2', {}, ['a/duplicate key', 'a/duplicate key']),
+  ],
+  /*
+   * Anchors and references, in every position they can be written, because the position is what
+   * decides whether a refusal is reached at all. At the head of a value the first character is the
+   * tell and it is cheap; *inside* a sequence it sits where a plain scalar would, so the item
+   * reader has to ask before it takes the text. Reading `*defaults` as nine characters is a field
+   * holding a plausible wrong value, which is worse than a field holding none.
+   */
+  ['an anchor yields no field', () => gives('a: &ref 1', {}, ['a/anchor or alias'])],
+  ['a reference yields no field', () => gives('a: *ref', {}, ['a/anchor or alias'])],
+  ['an anchor on a flow sequence refuses the key rather than the sequence', () => gives('tags: &defaults [a, b]', {}, ['tags/anchor or alias'])],
+  [
+    'an anchor on a block sequence is refused as an anchor, not as a folded scalar',
+    () => gives('tags: &defaults\n  - a\n  - b', {}, ['tags/anchor or alias']),
+  ],
+  ['an anchor on a nested map is refused as an anchor', () => gives('defaults: &d\n  a: 1', {}, ['defaults/anchor or alias'])],
+  ['a reference inside a flow sequence refuses the whole list', () => gives('tags: [*a, b]', {}, ['tags/anchor or alias'])],
+  ['an anchor inside a flow sequence refuses the whole list', () => gives('tags: [&x a, b]', {}, ['tags/anchor or alias'])],
+  ['a reference as a block sequence item refuses the whole list', () => gives('tags:\n  - *defaults\n  - b', {}, ['tags/anchor or alias'])],
+  [
+    'CONTROL: a quoted `*ref` is the literal string YAML says it is, and stays a field',
+    () => gives("a: '*ref'\ntags: ['*a', b]", { a: scalar('*ref'), tags: list('*a', 'b') }),
+  ],
+  ['a merge key is not a key this parser reads', () => gives('<<: *defaults', {}, ['(line)/not a key'])],
+  ['a tag yields no field', () => gives('a: !!str 1', {}, ['a/tag'])],
+  ['a flow sequence that does not close on its line yields no field', () => gives('tags: [a, b', {}, ['tags/sequence'])],
+  ['a nested flow sequence is refused rather than flattened', () => gives('tags: [a, [b, c]]', {}, ['tags/sequence'])],
+  ['an unterminated quote yields no field', () => gives("title: 'a", {}, ['title/malformed scalar'])],
+  ['an escape this parser does not carry yields no field rather than a guess', () => gives('title: "a\\u00e9"', {}, ['title/malformed scalar'])],
+  ['a line that is not a key at all is reported as one', () => gives('title: x\njust some words', { title: scalar('x') }, ['(line)/not a key'])],
+  ['a document whose front matter is a sequence has no fields', () => gives('- a\n- b', {}, ['(line)/sequence', '(line)/sequence'])],
+  [
+    'a readable key beside an unreadable one still gives its field, because a refusal is per key',
+    () => gives('title: x\nauthor:\n  name: b\nstatus: Todo', { title: scalar('x'), status: scalar('Todo') }, ['author/nested map']),
+  ],
+
+  // ---- Non-vacuity: the empty answers, which must not read as a refusal ------------------
+  [
+    'CONTROL: a document with no front matter gives the empty answer rather than an error',
+    () => {
+      const out = frontMatterOf('# Title\n\nBody.\n');
+      return (out.end === 0 && j(out.fields) === '{}' && out.notUnderstood.length === 0) || `got ${j(out)}`;
+    },
+  ],
+  [
+    'CONTROL: an unterminated opening `---` gives the empty answer, which is not the same as a refusal',
+    () => {
+      const out = frontMatterOf('---\ntitle: x\n\nBody with no closing fence.\n');
+      return (out.end === 0 && j(out.fields) === '{}' && out.notUnderstood.length === 0) || `got ${j(out)}`;
+    },
+  ],
+  [
+    'CONTROL: an empty front-matter block gives the empty answer and refuses nothing',
+    () => {
+      const out = frontMatterOf('---\n\n---\n\nBody.\n');
+      if (out.end !== 0) return `an opening fence over a blank line is not front matter, and this read end ${out.end}`;
+      const spaced = frontMatterOf('---\n   \n---\n\nBody.\n');
+      return (spaced.end === 0 && spaced.notUnderstood.length === 0) || `got ${j(spaced)}`;
+    },
+  ],
+  [
+    'CONTROL: the empty answer and a block that refused everything are different answers',
+    () => {
+      const none = frontMatterOf('# T\n\nBody.\n');
+      const refused = frontMatterOf(fm('a:\n  b: 1'));
+      if (none.notUnderstood.length !== 0) return `no front matter refused ${j(none.notUnderstood)}`;
+      if (refused.notUnderstood.length !== 1) return `a block holding only a nested map refused ${j(refused.notUnderstood)}`;
+      return none.end === 0 && refused.end === 4 ? true : `ends were ${none.end} and ${refused.end}`;
+    },
+  ],
+  [
+    'CONTROL: a refusal names the line it was written on',
+    () => {
+      const out = frontMatterOf(fm('title: x\nauthor:\n  name: b'));
+      return j(out.notUnderstood) === j([{ line: 3, key: 'author', reason: 'nested map' }]) || `got ${j(out.notUnderstood)}`;
+    },
+  ],
+];
+cases.push(...frontMatterCases);
 
 /*
  * The corpus, parsed, as a ratchet rather than as assertions.
@@ -877,6 +1408,71 @@ if (process.argv.includes('--accept')) {
     console.log('   All 58 construct types are still covered by the documents git carries, so this is weaker, not blind.');
   } else {
     console.log(`\ncorpus: ${Object.keys(seen).length} documents, ${total} constructs, every count as the baseline has it`);
+  }
+}
+
+/*
+ * The corpus, rendered, in every profile, with the count printed rather than asserted.
+ *
+ * The cases above give the renderer one construct at a time. This gives it every document in
+ * `sample/` whole, which is where a construct meets its neighbours, and fails naming the document
+ * and profile if any of them throws or comes back as something other than a string and a list.
+ *
+ * **The denominator is the baseline file, not the documents this run happened to read.** A count of
+ * renders measured against the same directory listing that produced them could only ever read "all
+ * of them", including when the listing came back empty. So the number printed is the documents read
+ * against the documents the census baseline knows, and a run that rendered none fails.
+ *
+ * What the renderer owes and did not draw is printed per profile beside it. It is the corpus's view
+ * of the same gap `unimplemented()` states for the table, and it is a reading rather than a ratchet:
+ * the cases above already fail when the owed list changes.
+ */
+{
+  const known = existsSync(BASELINE) ? Object.keys(JSON.parse(readFileSync(BASELINE, 'utf8'))).length : 0;
+  const docs = Object.keys(seen);
+  const threw = [];
+  const owed = {};
+  let renders = 0;
+  for (const doc of docs) {
+    const text = readFileSync(join(CORPUS, doc), 'utf8');
+    for (const profile of PROFILES) {
+      try {
+        const out = renderMarkdown(text, profile);
+        if (typeof out.html !== 'string' || !Array.isArray(out.outOfScope)) {
+          threw.push(`${doc} under ${profile} returned ${j(Object.keys(out ?? {}))} rather than a string and a list`);
+          continue;
+        }
+        renders++;
+        for (const o of out.outOfScope) {
+          if (o.reason !== 'unimplemented') continue;
+          owed[profile] ??= {};
+          owed[profile][o.construct] = (owed[profile][o.construct] ?? 0) + 1;
+        }
+      } catch (err) {
+        threw.push(`${doc} under ${profile} threw: ${err?.message ?? err}`);
+      }
+    }
+  }
+  if (threw.length) {
+    console.log(`\n❌ the render path failed on ${threw.length} document render(s):`);
+    for (const line of threw.slice(0, 20)) console.log(`   ${line}`);
+    if (threw.length > 20) console.log(`   ... and ${threw.length - 20} more`);
+    failures.push('corpus render');
+  } else if (renders === 0 || !PROFILES?.length) {
+    console.log(`\n❌ the corpus render rendered nothing: ${docs.length} document(s) read, ${PROFILES?.length ?? 0} profile(s) to drive.`);
+    failures.push('corpus render');
+  } else {
+    console.log(
+      `\nrender: ${docs.length} of ${known} baseline documents rendered under ${PROFILES.join(', ')}, ` +
+        `${renders} renders, none threw.`
+    );
+    for (const profile of PROFILES) {
+      const names = Object.entries(owed[profile] ?? {}).sort((a, b) => b[1] - a[1]);
+      const sum = names.reduce((n, [, c]) => n + c, 0);
+      console.log(
+        `   ${profile}: ${sum} construct(s) owed and not drawn` + (names.length ? `, ${names.map(([n, c]) => `${c} ${n}`).join(', ')}` : '')
+      );
+    }
   }
 }
 

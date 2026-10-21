@@ -158,6 +158,124 @@ try {
   await page.waitForSelector('.sheaf-board-card', { timeout: 15_000 });
   await page.waitForTimeout(700);
 
+  /* ---- A board is centred in the window, on the same rule as the grid beside it ---------- */
+  //
+  // Added 2026-10-18 with the centring change, because until this the board half of that change
+  // was a CSS rule with nothing measuring it. The grid's half is in `check-table-widths`; this is
+  // the sibling element, which has its own stylesheet rule and had its own opposite behaviour.
+  //
+  // Two readings, and the second is what makes the first discriminate. The frame's inset from the
+  // pane says the board keeps a margin and never reaches the window's edge. The lanes' gaps either
+  // side of them inside that frame say the board is centred rather than merely inset, which a
+  // board held to the writing column would fail while still having a margin on one side.
+  const boardBox = await page.evaluate(() => {
+    /*
+     * **Found from the lanes outwards, not by three independent `querySelector` calls.**
+     *
+     * A page holds more than one table and every one of them has a `.sheaf-table-board` host, which
+     * is `hidden` and zero-width until that table is shown as a board. Taking the first match for
+     * each element separately paired the lanes of the board with the empty host of some other
+     * table: it measured `host 0px, lanes 708px` and reported the lanes as 196px in and 904px past
+     * an edge that was not theirs. Every number in that reading was real and none of them was about
+     * the same element.
+     */
+    const lanes = document.querySelector('.sheaf-board');
+    /*
+     * **Either container.** A table shown as a board puts its lanes in `.sheaf-table-board` inside
+     * a `.sheaf-table`; a view shown as a board puts the same lanes in `.sheaf-view-grid` inside a
+     * `.sheaf-view`. The second is how a board is usually made and was the one with no pane
+     * mechanism, so a reading that only knew the first measured nothing about the common case.
+     */
+    const host = lanes?.closest('.sheaf-table-board, .sheaf-view-grid');
+    const wrap = lanes?.closest('.sheaf-table, .sheaf-view');
+    const pane = document.querySelector('.cm-scroller') ?? document.scrollingElement;
+    if (!wrap || !host || !lanes || !pane)
+      return {
+        missing: true,
+        boards: [...document.querySelectorAll('.sheaf-board')].map((b) => ({
+          w: Math.round(b.getBoundingClientRect().width),
+          parent: b.parentElement?.className ?? null,
+          inHost: !!b.closest('.sheaf-table-board'),
+          inWrap: !!b.closest('.sheaf-table'),
+        })),
+        cards: document.querySelectorAll('.sheaf-board-card').length,
+        hosts: document.querySelectorAll('.sheaf-table-board').length,
+      };
+    const paneBox = pane.getBoundingClientRect();
+    const frame = wrap.getBoundingClientRect();
+    const hostBox = host.getBoundingClientRect();
+    /*
+     * **The lanes' own extent, not the row that holds them.** `.sheaf-board` is a block-level flex
+     * row, so it spans its host whatever the lane count, and the reading this replaces measured that
+     * row: "lanes 1056px in a host of 1056" and gaps of 0 and 0, which is true of every board and
+     * says nothing about whether the lanes are centred. The first lane's left and the last lane's
+     * right are where the lanes actually are.
+     */
+    const cols = [...lanes.querySelectorAll(':scope > .sheaf-board-col')].map((c) => c.getBoundingClientRect());
+    const laneBox = cols.length
+      ? { left: Math.min(...cols.map((c) => c.left)), right: Math.max(...cols.map((c) => c.right)), width: 0 }
+      : lanes.getBoundingClientRect();
+    if (cols.length) laneBox.width = laneBox.right - laneBox.left;
+    // The heading over a view's board, measured where its content starts, which is what reads as its position.
+    const head = wrap.querySelector(':scope > .sheaf-view-head');
+    const headBox = head?.getBoundingClientRect();
+    const headPad = head ? parseFloat(getComputedStyle(head).paddingLeft) || 0 : 0;
+    return {
+      lanesCount: cols.length,
+      headStart: headBox ? Math.round(headBox.left + headPad) : null,
+      laneStart: Math.round(laneBox.left),
+      insetLeft: Math.round(frame.left - paneBox.left),
+      insetRight: Math.round(paneBox.right - frame.right),
+      gapLeft: Math.round(laneBox.left - hostBox.left),
+      gapRight: Math.round(hostBox.right - laneBox.right),
+      overflows: host.scrollWidth > host.clientWidth + 2,
+      justify: getComputedStyle(lanes).justifyContent,
+      hostW: Math.round(hostBox.width),
+      laneW: Math.round(laneBox.width),
+      scrollW: host.scrollWidth,
+      clientW: host.clientWidth,
+      isDirectChild: lanes.parentElement === host,
+    };
+  });
+  if (!boardBox || boardBox.missing) {
+    console.log(`  board structure: ${JSON.stringify(boardBox)}`);
+    failures.push('the board, its frame or the pane was not found, so its placement was not measured');
+  } else {
+    console.log(
+      `  the board's frame is inset ${boardBox.insetLeft}px and ${boardBox.insetRight}px from the pane; ` +
+        `its lanes have ${boardBox.gapLeft}px and ${boardBox.gapRight}px either side inside it, overflowing ${boardBox.overflows}\n` +
+        `    host ${boardBox.hostW}px, ${boardBox.lanesCount} lanes spanning ${boardBox.laneW}px, heading at ${boardBox.headStart} over a first lane at ${boardBox.laneStart}, ` +
+        `justify-content ${boardBox.justify}, lanes are a direct child ${boardBox.isDirectChild}`
+    );
+    /*
+     * **The band is what discriminates here, not the equality, and that differs from the grid's
+     * reading.** The writing column is itself centred in the pane, so a board held to that column
+     * is inset *equally* on both sides: the control measured 196px and 196px. Equality alone
+     * therefore passes on the design this replaced, and only the 20..48 band tells them apart.
+     * Both are asserted because each catches what the other misses: the band catches a board held
+     * to the column, the equality catches one pushed to a side.
+     */
+    if (Math.abs(boardBox.insetLeft - boardBox.insetRight) > 2 || boardBox.insetLeft < 18 || boardBox.insetLeft > 52) {
+      failures.push(
+        `the board's frame is inset ${boardBox.insetLeft}px on the left and ${boardBox.insetRight}px on the right of its pane.\n` +
+          '    A board is centred in the window, so the two have to be equal, and inside the 20..48 the token allows.'
+      );
+    }
+    if (boardBox.headStart !== null && !boardBox.overflows && Math.abs(boardBox.headStart - boardBox.laneStart) > 2) {
+      failures.push(
+        `the view's heading starts at ${boardBox.headStart} and its first lane at ${boardBox.laneStart}, ${boardBox.headStart - boardBox.laneStart} out.\n` +
+          '    The heading names the board, so it sits over the lanes, which are centred rather than at the frame\'s edge.'
+      );
+    }
+    if (!boardBox.overflows && Math.abs(boardBox.gapLeft - boardBox.gapRight) > 2) {
+      failures.push(
+        `the board's lanes have ${boardBox.gapLeft}px to their left and ${boardBox.gapRight}px to their right inside its frame.\n` +
+          '    A board that fits is centred in what the margins leave, so those are equal. Unequal means it is held to one side, ' +
+          'which is what it did while it took the writing column\'s inset.'
+      );
+    }
+  }
+
   const at = await places(page);
   if (!at.card0 || !at.blocked) {
     failures.push('no board card or no Blocked column was drawn, so nothing was measured');

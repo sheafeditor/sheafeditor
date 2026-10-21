@@ -5,7 +5,7 @@
  * This is one of three files that were one. `imageMarkup.ts` reads and writes the markup and knows
  * nothing about the screen; `imageIngest.ts` gets bytes into the document through a drop, a paste or
  * the picker. **This half is the expensive one**, and until the split every module that wanted a
- * parser or a picker downloaded it: `linkTarget.ts`, `tables.ts`, `toolbar.ts` and `main.ts` all
+ * parser or a picker downloaded it: `linkTarget.ts`, `tables.ts`, `toolbar.ts` and `mount.ts` all
  * took one or two functions and got the widget with them. `livePreview.ts` is now the only module
  * that reaches this file, which is correct, because drawing is what it does.
  *
@@ -111,7 +111,7 @@ function replaceImage(view: EditorView, dom: HTMLElement): void {
     const file = input.files?.[0];
     input.remove();
     if (!file) return;
-    void saveImageFile(file)
+    void saveImageFile(view, file)
       .then((rel) => rewriteImage(view, dom, (p) => ({ ...p, src: rel })))
       .catch(() => {});
   });

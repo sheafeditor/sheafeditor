@@ -25,6 +25,16 @@ import { EditorView } from '@codemirror/view';
 import { ensureSyntaxTree, syntaxTree } from '@codemirror/language';
 import type { SyntaxNode, Tree } from '@lezer/common';
 import { referenceDestination } from './linkTarget';
+/*
+ * Where front matter ends, which the rail needs because the parser does not agree with it.
+ *
+ * The Markdown parser reads front matter's closing `---` as the underline of a setext heading whose
+ * text is the last metadata line, so left alone `tags: [spec, draft]` would be the first thing the
+ * rail listed. The rule is textual rather than a question for the tree, which is why it is a module
+ * in `src/dialect/` and why listing headings still costs no parse of its own: `Text` satisfies the
+ * line reader it takes, so `state.doc` goes straight in.
+ */
+import { frontMatterEnd } from '../dialect/frontMatter';
 
 /** A heading, as the rail lists it. */
 export interface TocHeading {
@@ -48,26 +58,6 @@ const NOT_PROSE = /^(FencedCode|CodeBlock|HTMLBlock|Table|LinkReference|CommentB
  * heading's own `HeaderMark` is handled on its own, because whether the tree gave one
  * is the difference between a resolved heading and one read past the parsed region. */
 const SPELLING = /^(EmphasisMark|StrikethroughMark|HighlightMark|CodeMark)$/;
-
-/**
- * The line that closes the YAML front matter opening the document, or 0 when the
- * document has none.
- *
- * Front matter is YAML, and the Markdown parser reads its closing `---` as the
- * underline of a setext heading whose text is the last metadata line. Left alone,
- * `tags: [spec, draft]` would be the first thing the rail listed. The rule is the
- * block model's, kept here in its textual form so listing headings costs no parse of
- * its own.
- */
-function frontMatterEnd(state: EditorState): number {
-  const doc = state.doc;
-  if (doc.lines < 3 || doc.line(1).text.trimEnd() !== '---' || doc.line(2).text.trim() === '') return 0;
-  for (let n = 2; n <= doc.lines; n++) {
-    const text = doc.line(n).text.trimEnd();
-    if (text === '---' || text === '...') return n;
-  }
-  return 0;
-}
 
 /**
  * True when a `[...]` is a link on the page rather than the brackets as typed. The
@@ -214,7 +204,7 @@ function textStart(state: EditorState, heading: SyntaxNode): number {
  */
 export function documentHeadings(state: EditorState): TocHeading[] {
   const tree = ensureSyntaxTree(state, state.doc.length, 100) ?? syntaxTree(state);
-  const front = frontMatterEnd(state);
+  const front = frontMatterEnd(state.doc);
   const headings: TocHeading[] = [];
   tree.iterate({
     enter: (node) => {

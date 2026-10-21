@@ -52,11 +52,11 @@ export type CommentFolds = Record<string, true>;
  * The settings the editor reads, as a host hands them over.
  *
  * This was declared three times: once by the extension host, once by the browser host in
- * `src/server/settings.ts`, and once by the editor in `src/webview/main.ts`. Three
+ * `src/server/settings.ts`, and once by the editor in `src/webview/mount.ts`. Three
  * statements of one wire type with nothing comparing them, which is the reason a host
  * could grow a setting the editor drew a button for and no check could see the gap.
  *
- * Two of the three are gone. The editor's copy in `src/webview/main.ts` is the one left,
+ * Two of the three are gone. The editor's copy in `src/webview/mount.ts` is the one left,
  * and it is tracked with the rest of the union it sits in rather than on its own.
  */
 export interface EditorConfig {
@@ -378,6 +378,48 @@ export type AnswersCoverEveryRequest = MustBeNever<
 export type AnswersPairOnlyRequests = MustBeNever<
   'this ANSWERS value is not a request: it carries no required id, so no answer is owed to it',
   Exclude<AnsweredRequestType, IdRequestType>
+>;
+
+/**
+ * Every member that declares an `id` key at all, required or optional.
+ *
+ * `'id' extends keyof T` rather than `Extract<FromWebview, { id?: string }>`. Both select the
+ * same twelve members today, so this is not a correctness fix. It is about which of the two can
+ * be wrong without saying so.
+ *
+ * **`Extract` tests assignability, so it answers "is this member's id a string" when the question
+ * is "does this member have an id".** A request declared `id: number` is not selected by it, and
+ * leaves the population in silence, which is the exact fault this guard exists to prevent. This
+ * form selects it. That asymmetry is the whole reason, and it is measured rather than reasoned
+ * about: the lever below exits 2 here and is invisible to `Extract`.
+ *
+ * What this form gets wrong instead is the loud direction. A member carrying an index signature
+ * puts `string` into its `keyof` and is selected although it has no `id`, which fails in front of
+ * whoever added it. Under-inclusion is a silence nobody is told about, so the two costs are not
+ * comparable.
+ *
+ * **The lever, to re-run rather than believe:** add `| { type: 'zzNumId'; id: number }` to
+ * `FromWebview` with a `DUTIES` entry and a `BROWSER_HOST` decision, and `check-types` exits 2
+ * naming `zzNumId`.
+ */
+type IdBearing<T> = T extends unknown ? ('id' extends keyof T ? T : never) : never;
+
+/**
+ * Messages that carry an **optional** id, with the reason beside each.
+ *
+ * An optional id puts a message outside `IdRequestType`, so nothing above will ever ask whether
+ * it is answered. That is correct for a notification and silent for a request, and one character
+ * separates the two. This is the list that makes the difference deliberate.
+ *
+ * `selection` is sent whenever the caret moves, which is a notification and owed nothing. It
+ * carries an id only on the occasions it is also answering the host's `getSelection`, which is
+ * why its id is optional rather than absent.
+ */
+export type OptionalIdNotificationType = 'selection';
+
+export type OptionalIdsAreRecorded = MustBeNever<
+  'this message declares an optional id, so it sits outside the request population and nothing will ever check that it is answered: make the id required if it is a request, or record it above with the reason',
+  Exclude<IdBearing<FromWebview>['type'], IdRequestType | OptionalIdNotificationType>
 >;
 
 /*

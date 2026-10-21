@@ -15,6 +15,8 @@ import { syntaxTree } from '@codemirror/language';
 import { undo, redo, undoDepth, redoDepth, insertNewlineAndIndent } from '@codemirror/commands';
 import { insertNewlineContinueMarkup } from '@codemirror/lang-markdown';
 import { formatStateAt, FormatState } from './formatState';
+import { mountSlot } from './mountScope';
+import type { MountScope } from './mountScope';
 import { drawKeyHint, hint, keyShortcuts } from './shortcuts';
 
 import { inlineOnlyEditor } from './inlineOnly';
@@ -1109,7 +1111,7 @@ export function removeLinkAtSelection(view: EditorView): boolean {
  */
 export function openLinkAtCaret(view: EditorView): boolean {
   const address = linkAddressAt(view.state, view.state.selection.main.head);
-  if (address) openLink(address);
+  if (address) openLink(address, view);
   return true;
 }
 
@@ -1466,13 +1468,72 @@ const ITEMS: Item[] = [
 
 /** A control that follows the selection, registered when the toolbar mounts. */
 type Reflect = (view: EditorView, fs: FormatState) => void;
-let reflectors: Reflect[] = [];
-/*
- * Every control that can be drawn unavailable, for the case where there is no editor to ask at
- * all. Collected as the toolbar is built, because a reflector takes a view and so has nothing to
- * say when there is not one.
+
+/**
+ * One toolbar's own controls.
+ *
+ * **Every field here belongs to one mounted editor**, and all five were module-level until
+ * `mountScope.ts` arrived. Two of them were *emptied* rather than overwritten by a second
+ * `mountToolbar`, which is a worse failure than a stale reading: `reflectors` is how a button
+ * follows the editor's state and `disablable` is what gets enabled and disabled, so the first
+ * toolbar's buttons froze in whatever state they were in and every press went on doing nothing.
+ * Nothing threw and nothing logged, and a toolbar whose buttons never change looks exactly like a
+ * document nobody has edited.
  */
-let disablable: (HTMLButtonElement | HTMLInputElement)[] = [];
+interface ToolbarControls {
+  reflectors: Reflect[];
+  /*
+   * Every control that can be drawn unavailable, for the case where there is no editor to ask at
+   * all. Collected as the toolbar is built, because a reflector takes a view and so has nothing to
+   * say when there is not one.
+   */
+  disablable: (HTMLButtonElement | HTMLInputElement)[];
+  /**
+   * The table-of-contents button, and how it is drawn when the panel is on.
+   *
+   * Unlike the line-number toggle, this one does not decide its own state: the setting
+   * does, and the setting comes back from the host after a round trip, so the button is
+   * told what to show rather than flipping itself.
+   */
+  tocButton: HTMLButtonElement | undefined;
+  /**
+   * What the button is currently drawn as, which is what a press moves on from.
+   *
+   * The setting is the truth, but it comes back from the host a round trip later, and two
+   * presses in that window would both work out the same next state and the second would do
+   * nothing. So the button keeps what it is showing, moves on its own press, and is
+   * corrected by the next `reflectTableOfContents` if the host disagrees.
+   */
+  tocState: TocButtonState;
+  /**
+   * The line-number button, kept so its state can be redrawn from outside `mountToolbar`.
+   *
+   * Whether the gutter is on is a setting, so it can change without this editor having been
+   * pressed: another editor's toggle, or an edit in the Settings pane. The button has to follow
+   * that, or it says the opposite of what the gutter is doing.
+   */
+  lineNumbersButton: HTMLButtonElement | null;
+}
+
+const controls = mountSlot<ToolbarControls>(() => ({
+  reflectors: [],
+  disablable: [],
+  tocButton: undefined,
+  tocState: 'hidden',
+  lineNumbersButton: null,
+}));
+
+/**
+ * Which toolbar a call is about: the mount it names, or the mount the view it was handed belongs
+ * to, or the one mount there is.
+ *
+ * The scope is explicit rather than derived from the view in every case because `refreshToolbar` is
+ * called with no view at all while a data cell has focus, and a page with two editors cannot work
+ * out which toolbar that meant.
+ */
+function toolbarOf(scope: MountScope | undefined, view?: EditorView): ToolbarControls {
+  return scope ? controls.of(scope) : controls.at(view);
+}
 
 /** Reflect the formatting at the selection in the toolbar's buttons. */
 /**
@@ -1484,14 +1545,15 @@ let disablable: (HTMLButtonElement | HTMLInputElement)[] = [];
  * last refresh while every press does nothing, which is the same "it looks available and it is
  * not" this whole area was wrong about.
  */
-export function refreshToolbar(view: EditorView | undefined): void {
-  if (!reflectors.length) return;
+export function refreshToolbar(view: EditorView | undefined, scope?: MountScope): void {
+  const bar = toolbarOf(scope, view);
+  if (!bar.reflectors.length) return;
   if (!view) {
-    for (const el of disablable) el.disabled = true;
+    for (const el of bar.disablable) el.disabled = true;
     return;
   }
   const fs = formatStateAt(view.state);
-  for (const reflect of reflectors) reflect(view, fs);
+  for (const reflect of bar.reflectors) reflect(view, fs);
 }
 
 const titleFor = (label: string, hintKey?: string): string => (hintKey ? `${label} (${hint(hintKey)})` : label);
@@ -1510,7 +1572,11 @@ function makeButton(icon: IconName, title: string, extraClass = ''): HTMLButtonE
 }
 
 /** A trigger and popup menu: the text style picker and the insert menu. */
-function makeDropdown(item: Extract<Item, { kind: 'dropdown' }>, getView: () => EditorView | undefined): HTMLElement {
+function makeDropdown(
+  item: Extract<Item, { kind: 'dropdown' }>,
+  getView: () => EditorView | undefined,
+  bar: ToolbarControls
+): HTMLElement {
   const wrap = document.createElement('div');
   wrap.className = 'sheaf-tb-dropdown';
   const canAct = item.enabled;
@@ -1571,7 +1637,7 @@ function makeDropdown(item: Extract<Item, { kind: 'dropdown' }>, getView: () => 
     if (focusFirst) entries()[0]?.focus();
     else menu.focus({ preventScroll: true });
   };
-  disablable.push(trigger);
+  bar.disablable.push(trigger);
   if (canAct) {
     /*
      * Asked once now rather than assumed available until the next refresh, for the reason the
@@ -1581,7 +1647,7 @@ function makeDropdown(item: Extract<Item, { kind: 'dropdown' }>, getView: () => 
      */
     const view = getView();
     trigger.disabled = view ? !canAct(view) : true;
-    reflectors.push((v) => void (trigger.disabled = !canAct(v)));
+    bar.reflectors.push((v) => void (trigger.disabled = !canAct(v)));
   }
   trigger.addEventListener('click', (e) => (menu.hidden ? open(e.detail === 0) : close(menu.contains(document.activeElement))));
   trigger.addEventListener('keydown', (e) => {
@@ -1642,7 +1708,7 @@ function makeDropdown(item: Extract<Item, { kind: 'dropdown' }>, getView: () => 
 
   if (item.label || checks.length) {
     const labelEl = trigger.querySelector('.sheaf-tb-dd-label');
-    reflectors.push((_view, fs) => {
+    bar.reflectors.push((_view, fs) => {
       if (item.label && labelEl) {
         const text = item.label(fs);
         labelEl.textContent = text;
@@ -1660,15 +1726,6 @@ function makeDropdown(item: Extract<Item, { kind: 'dropdown' }>, getView: () => 
   wrap.append(trigger, menu);
   return wrap;
 }
-
-/**
- * The table-of-contents button, and how it is drawn when the panel is on.
- *
- * Unlike the line-number toggle, this one does not decide its own state: the setting
- * does, and the setting comes back from the host after a round trip, so the button is
- * told what to show rather than flipping itself.
- */
-let tocButton: HTMLButtonElement | undefined;
 
 /** What the table of contents is drawn as: the three states the setting takes. */
 export type TocButtonState = 'shown' | 'collapsed' | 'hidden';
@@ -1692,48 +1749,33 @@ export function nextTocState(state: TocButtonState): TocButtonState {
   return state === 'shown' ? 'collapsed' : state === 'collapsed' ? 'hidden' : 'shown';
 }
 
-/**
- * What the button is currently drawn as, which is what a press moves on from.
- *
- * The setting is the truth, but it comes back from the host a round trip later, and two
- * presses in that window would both work out the same next state and the second would do
- * nothing. So the button keeps what it is showing, moves on its own press, and is
- * corrected by the next `reflectTableOfContents` if the host disagrees.
- */
-let tocState: TocButtonState = 'hidden';
-
-export function tocButtonState(): TocButtonState {
-  return tocState;
+/** What this mount's button is currently drawn as, which is what a press moves on from. */
+export function tocButtonState(scope?: MountScope): TocButtonState {
+  return toolbarOf(scope).tocState;
 }
 
-/**
- * The line-number button, kept so its state can be redrawn from outside `mountToolbar`.
- *
- * Whether the gutter is on is a setting, so it can change without this editor having been
- * pressed: another editor's toggle, or an edit in the Settings pane. The button has to follow
- * that, or it says the opposite of what the gutter is doing.
- */
-let lineNumbersButton: HTMLButtonElement | null = null;
-
 /** Draw the line-number button to match whether the gutter is on. */
-export function reflectLineNumbers(on: boolean): void {
-  if (!lineNumbersButton) return;
-  lineNumbersButton.classList.toggle('is-active', on);
-  lineNumbersButton.setAttribute('aria-pressed', String(on));
+export function reflectLineNumbers(on: boolean, scope?: MountScope): void {
+  const bar = toolbarOf(scope);
+  if (!bar.lineNumbersButton) return;
+  bar.lineNumbersButton.classList.toggle('is-active', on);
+  bar.lineNumbersButton.setAttribute('aria-pressed', String(on));
 }
 
 /** Draw the table-of-contents button to match the state the panel is in. */
-export function reflectTableOfContents(state: TocButtonState | boolean): void {
-  if (!tocButton) return;
+export function reflectTableOfContents(state: TocButtonState | boolean, scope?: MountScope): void {
+  const bar = toolbarOf(scope);
+  const button = bar.tocButton;
+  if (!button) return;
   const now: TocButtonState = state === true ? 'shown' : state === false ? 'hidden' : state;
-  tocState = now;
-  tocButton.classList.toggle('is-active', now !== 'hidden');
-  tocButton.classList.toggle('is-folded', now === 'collapsed');
-  tocButton.setAttribute('aria-pressed', String(now !== 'hidden'));
-  tocButton.title = TOC_TITLE[now];
+  bar.tocState = now;
+  button.classList.toggle('is-active', now !== 'hidden');
+  button.classList.toggle('is-folded', now === 'collapsed');
+  button.setAttribute('aria-pressed', String(now !== 'hidden'));
+  button.title = TOC_TITLE[now];
   // The name has to carry the state as well, because the tooltip is not read out and
   // pressed-ness cannot say which of three. `.sheaf-tb-toc` is what finds the button.
-  tocButton.setAttribute('aria-label', TOC_TITLE[now]);
+  button.setAttribute('aria-label', TOC_TITLE[now]);
 }
 
 /**
@@ -1750,21 +1792,27 @@ export function mountToolbar(
   onToggleLineNumbers: () => boolean,
   lineNumbersOn: boolean,
   onToggleTableOfContents: () => void = () => {},
-  tableOfContentsOn = false
+  tableOfContentsOn = false,
+  scope?: MountScope
 ): void {
-  reflectors = [];
-  disablable = [];
+  const bar = toolbarOf(scope);
+  /*
+   * Emptied for *this* mount, which is the whole of what changed here. These two were module-level
+   * arrays, so a second `mountToolbar` emptied the first toolbar's and that toolbar went inert.
+   */
+  bar.reflectors = [];
+  bar.disablable = [];
   for (const item of ITEMS) {
     if (item.kind === 'sep') {
       const sep = document.createElement('span');
       sep.className = 'sheaf-tb-sep';
       container.appendChild(sep);
     } else if (item.kind === 'dropdown') {
-      container.appendChild(makeDropdown(item, getView));
+      container.appendChild(makeDropdown(item, getView, bar));
     } else {
       const btn = makeButton(item.icon, titleFor(item.label, item.hintKey));
       btn.dataset.command = item.command;
-      disablable.push(btn);
+      bar.disablable.push(btn);
       btn.addEventListener('click', () => {
         const view = getView();
         if (view) item.run(view);
@@ -1772,7 +1820,7 @@ export function mountToolbar(
       if (item.active) {
         const active = item.active;
         btn.setAttribute('aria-pressed', 'false');
-        reflectors.push((_view, fs) => {
+        bar.reflectors.push((_view, fs) => {
           const on = active(fs);
           btn.classList.toggle('is-active', on);
           btn.setAttribute('aria-pressed', String(on));
@@ -1789,7 +1837,7 @@ export function mountToolbar(
          */
         const view = getView();
         btn.disabled = view ? !enabled(view) : true;
-        reflectors.push((v) => void (btn.disabled = !enabled(v)));
+        bar.reflectors.push((v) => void (btn.disabled = !enabled(v)));
       }
       container.appendChild(btn);
     }
@@ -1802,18 +1850,19 @@ export function mountToolbar(
   // View toggle: show/hide the line-number gutter. Reflects state via .is-active
   // and aria-pressed, updated from the boolean the toggle command returns.
   const lineNo = makeButton('lineNumbers', 'Toggle line numbers');
-  lineNumbersButton = lineNo;
-  reflectLineNumbers(lineNumbersOn);
-  lineNo.addEventListener('click', () => reflectLineNumbers(onToggleLineNumbers()));
+  bar.lineNumbersButton = lineNo;
+  reflectLineNumbers(lineNumbersOn, scope);
+  lineNo.addEventListener('click', () => reflectLineNumbers(onToggleLineNumbers(), scope));
   container.appendChild(lineNo);
 
   // View toggle: the table of contents. What it is drawn as follows `sheaf.tableOfContents`,
   // so the button is drawn from `reflectTableOfContents` once the setting has been written.
-  tocButton = makeButton('listTree', 'Table of contents', 'sheaf-tb-toc');
-  tocButton.setAttribute('aria-pressed', 'false');
-  reflectTableOfContents(tableOfContentsOn);
-  tocButton.addEventListener('click', onToggleTableOfContents);
-  container.appendChild(tocButton);
+  const toc = makeButton('listTree', 'Table of contents', 'sheaf-tb-toc');
+  bar.tocButton = toc;
+  toc.setAttribute('aria-pressed', 'false');
+  reflectTableOfContents(tableOfContentsOn, scope);
+  toc.addEventListener('click', onToggleTableOfContents);
+  container.appendChild(toc);
 
   const raw = makeButton('fileCode', 'Open raw Markdown');
   raw.addEventListener('click', onOpenRaw);

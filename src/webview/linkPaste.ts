@@ -20,7 +20,9 @@ import { syntaxTree } from '@codemirror/language';
 // The leaf module rather than `floatingState`'s `inFrontMatter`, which asks the
 // block model and would close an import cycle back through the toolbar and the
 // image handling into this file. Both rest on the same `frontMatterEnd`.
-import { posInFrontMatter } from './frontMatter';
+import { posInFrontMatter } from '../dialect/frontMatter';
+import { mountSlot } from './mountScope';
+import type { MountScope } from './mountScope';
 
 /**
  * The schemes a pasted address may carry. Everything a browser hands over is one
@@ -205,15 +207,21 @@ function plainProseAt(state: EditorState, pos: number): boolean {
 /** What the host says a pasted path names, or null when it names nothing to link. */
 type AskTitle = (path: string) => Promise<{ address: string; title: string } | null>;
 
-let askTitle: AskTitle | null = null;
+/**
+ * Which host each editor asks what a pasted path names.
+ *
+ * Per mount, because the answer is an address relative to **this** document, and only this
+ * editor's host can work that out.
+ */
+const own = mountSlot<{ askTitle: AskTitle | null }>(() => ({ askTitle: null }));
 
 /**
  * How to ask the host what a pasted path names. Without one — on the site's demo, and in
  * every test that does not set it — a pasted path stays a plain paste, which is what it was
  * before this existed.
  */
-export function setDocTitleHost(ask: AskTitle | null): void {
-  askTitle = ask;
+export function setDocTitleHost(ask: AskTitle | null, scope?: MountScope): void {
+  (scope ? own.of(scope) : own.at(null)).askTitle = ask;
 }
 
 /**
@@ -230,7 +238,7 @@ export function setDocTitleHost(ask: AskTitle | null): void {
  * silently does nothing.
  */
 export function handleDocPathPaste(view: EditorView, text: string): boolean {
-  const ask = askTitle;
+  const ask = own.at(view).askTitle;
   if (!ask) return false;
   const path = pastedDocPath(text);
   if (!path) return false;

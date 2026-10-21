@@ -25,6 +25,7 @@
  * gates runner is what decides whether a skip is acceptable, and by default it is not.
  */
 import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, relative, extname } from 'node:path';
 
@@ -141,8 +142,39 @@ function shipping() {
   return out;
 }
 
+/*
+ * Which of the scanned files git knows about, so the count can be split.
+ *
+ * **The number this script printed was a function of how many times the checkout had been built.**
+ * The same commit read 708 files in one worktree and 728 in another, because the walk is a
+ * filesystem walk and the build writes content-hashed names and never removes its predecessors:
+ * 129 files under `media/editor/` here, accumulating. A reader comparing two runs could not tell a
+ * real change in the tree from twenty more orphaned chunks.
+ *
+ * Splitting it is better than excluding them. **Generated output is the part review cannot see**,
+ * so a private term baked into a bundle is exactly what this check is for, and dropping it to make
+ * the number tidy would remove the coverage that is hardest to get any other way. What was wrong
+ * was reporting one total for two populations with different properties: one reproducible from the
+ * commit, one a property of this directory's history.
+ *
+ * An empty set rather than a throw when git cannot answer: the floor below then applies to the
+ * whole walk, which is what this did before, and the output says so.
+ */
+const tracked = (() => {
+  try {
+    return new Set(
+      execFileSync('git', ['ls-files', '-z'], { cwd: REPO, encoding: 'utf8', maxBuffer: 1 << 28 })
+        .split('\0')
+        .filter(Boolean)
+    );
+  } catch {
+    return null;
+  }
+})();
+
 const found = [];
 let scanned = 0;
+let scannedTracked = 0;
 
 for (const path of shipping()) {
   let text;
@@ -152,6 +184,7 @@ for (const path of shipping()) {
     continue;
   }
   scanned += 1;
+  if (tracked?.has(relative(REPO, path))) scannedTracked += 1;
   const lines = text.split('\n');
   for (let i = 0; i < lines.length; i += 1) {
     const isCopyright = COPYRIGHT.test(lines[i]);
@@ -167,8 +200,17 @@ for (const path of shipping()) {
   }
 }
 
-if (scanned < 200) {
-  console.log(`only ${scanned} shipping files read, which is too few: this is looking at the wrong tree rather than passing.`);
+/*
+ * The floor is held against the **tracked** count, which is the half a commit determines.
+ *
+ * Against the total it was one-sided in the direction that matters: nothing noticed the number
+ * drifting upward, and upward is where stale build artefacts push it, so a directory that silently
+ * stopped being scanned could be masked by twenty orphaned chunks arriving in another.
+ */
+const floorAgainst = tracked ? scannedTracked : scanned;
+const floorName = tracked ? 'tracked shipping files' : 'shipping files';
+if (floorAgainst < 200) {
+  console.log(`only ${floorAgainst} ${floorName} read, which is too few: this is looking at the wrong tree rather than passing.`);
   process.exit(1);
 }
 
@@ -178,4 +220,17 @@ if (found.length) {
   console.log('\nSay the thing itself. An identifier or an internal name belongs in the commit message and on the issue, which reach the people who have them.');
   process.exit(1);
 }
-console.log(`${scanned} shipping files read against ${rules.length} private terms, nothing private in any of them.`);
+if (tracked) {
+  const generated = scanned - scannedTracked;
+  console.log(
+    `${scanned} shipping files read against ${rules.length} private terms, nothing private in any of them.\n` +
+      `  ${scannedTracked} tracked, which this commit determines and two clean checkouts agree on, and the floor is held against.\n` +
+      `  ${generated} not in git, which is build output and vendored files. **That number is a property of this checkout rather than of the commit**:\n` +
+      `  hashed filenames accumulate, so it only grows, and a run reading more than the last one has not necessarily read more of the product.`
+  );
+} else {
+  console.log(
+    `${scanned} shipping files read against ${rules.length} private terms, nothing private in any of them.\n` +
+      `  git could not be asked which are tracked, so this is one total over two populations and the floor is held against all of it.`
+  );
+}

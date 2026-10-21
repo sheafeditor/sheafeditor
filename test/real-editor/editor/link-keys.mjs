@@ -257,7 +257,7 @@ export const scenarios = [
      * Pasting a path to another document writes a link carrying that document's title.
      *
      * A real window is the only place this can be checked end to end, and the part only it can
-     * see is the middle: the page's own request and reply plumbing lives in `main.ts`, which
+     * see is the middle: the page's own request and reply plumbing lives in `mount.ts`, which
      * boots a view the moment it loads and so is not reachable from the suites. Broken on
      * purpose there — the reply never matched to its request — every suite still passed.
      */

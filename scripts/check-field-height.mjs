@@ -16,30 +16,59 @@
  *
  * ## What it reads, and why the numbers are printed
  *
- * Five surfaces, at two viewport heights, before and after focus:
+ * Five surfaces, at two viewport heights and two viewport widths, before and after focus:
  *
  *   - a `field` with no height of its own, which is what the integration instructions tell a
  *     consumer to write;
- *   - the same at the 280px width a form gives a control, because the side gutters are a
- *     proportion of the window rather than of the field and only a narrow one shows what they cost;
- *   - the same again carrying the two properties the instructions name for the side inset;
+ *   - the same at the 280px width a form gives a control, because a side inset that is a
+ *     proportion of the window costs a narrow field most and only a narrow one shows it;
+ *   - the same again carrying the two properties the instructions name for putting the writing
+ *     column's inset *back*, which is the opposite of what they used to say;
+ *   - the same in a box with a border and padding, styled the way a form field usually is, which
+ *     is the only one of the four fields that can see spacing *around* the text at all (below);
  *   - a `notes` surface in a 320px box, which is the other half of the same instructions;
  *   - a `document`, the profile the extension itself runs, served by Sheaf's own local server.
  *
- * The last two are the control. All three profiles share one `.cm-scroller` padding declaration in
+ * The last two are the control, and it is read as the column rather than as a height. All three
+ * profiles share one `.cm-scroller` padding declaration and one `.cm-content` measure in
  * `src/webview/theme.ts`, so the way to get the field wrong is to flatten the writing column for
- * everybody. `notes` and `document` must keep the page inset and the room to scroll past the last
- * line, and this fails if either moves.
+ * everybody. A height-only reading passes straight over that: a flattened column changes where the
+ * text starts and how wide it runs without changing how tall one line is. So `notes` and
+ * `document` are checked on `.cm-content`'s own padding and `max-width`, and a field on the width
+ * its text is actually given.
  *
  * Every row is printed with its numbers rather than a verdict. A line reading "the field is the
  * right height" cannot be read by somebody checking whether the run measured anything.
  *
- * ## The two viewport heights are not a repetition
+ * ## Neither pair of viewports is a repetition
  *
  * The bottom inset is `40vh`, so a surface carrying it is a different height on a laptop and on a
  * monitor. Reading one viewport cannot tell a fixed 400px from a proportion of the window, and the
  * fault this check exists for was first reported as two numbers, 480 and 640, which is what gave
  * the cause away.
+ *
+ * ## A bare box cannot see spacing around the text, which is why one of the five has a border
+ *
+ * The four surfaces above all sat in elements with no padding and no border, and that is a blind
+ * spot rather than a simplification. A rendered field's text is a `<p>`, which takes the page's own
+ * paragraph spacing, and a surface is not a block formatting context, so in a bare box those
+ * margins collapse straight out through it into the surrounding layout: the element reports its one
+ * line, the box reports the same, and nothing anywhere shows the spacing. Put a border or any
+ * padding on the box and the collapse stops, the margins are held inside, and the box is suddenly
+ * much taller than the line in it until the first click replaces the `<p>` with a `.cm-line` that
+ * has no margin at all.
+ *
+ * Measured in this page: the boxed field reads 32px rendered against 38px as an editor, and 64px
+ * against 38px with the paragraph spacing left in, so the box moved 26px the first time anybody
+ * clicked a title. **Every reading taken in a bare box said a field does not change size**, which
+ * is how that reached a public instruction, so the boxed one is the row that can fail.
+ *
+ * The side inset was `clamp(24px, 8vw, 96px)` and is now `0px` for a field, which is the same
+ * shape of fault lying down: a field's usable text width tracked the window rather than the box it
+ * was given, so a 280px control was left 136px of it at one window and 88px at another. **One
+ * width cannot see that.** A single green number is exactly what a restored gutter would produce,
+ * so the reading that catches it is the same field measured at two viewport widths and required to
+ * come out the same. Static numbers are checked too, and they are the weaker half here.
  *
  * ## It needs a browser
  *
@@ -59,14 +88,24 @@ const REPO = dirname(dirname(fileURLToPath(import.meta.url)));
 const require = createRequire(join(REPO, 'package.json'));
 
 /*
- * 900 pixels wide, because the side gutters are `8vw` and the fault was reported at a 72px gutter.
  * The heights are a laptop and a monitor, far enough apart that `40vh` between them is 160px.
+ *
+ * The widths straddle the `clamp(24px, 8vw, 96px)` a `notes` surface still carries: 8vw is 72px at
+ * the first and clamps to 96px at the second, so a side inset that is still a proportion of the
+ * window reads as two different numbers across the pair and a field's own 0px reads as one. 900 is
+ * also where the side-inset fault was reported, so the old measurement is still comparable.
  */
-const WIDTH = 900;
+const WIDTHS = [900, 1300];
 const HEIGHTS = [1000, 1400];
+
+/** The gutter a surface that still carries the writing column gets at a given viewport width. */
+const clampedGutter = (width) => Math.min(96, Math.max(24, width * 0.08));
 
 /** The box the instructions tell a consumer to give a `notes` surface. */
 const NOTES_BOX = 320;
+
+/** Every surface the library page mounts, in the order they are read. */
+const SURFACES = ['wide', 'narrow', 'styled', 'boxed', 'notes'];
 
 /*
  * A second field at the width a form actually gives one.
@@ -77,6 +116,22 @@ const NOTES_BOX = 320;
  * nothing to do with the insets above and below. One width would have reported a one-line field.
  */
 const NARROW = 280;
+
+/*
+ * The inset the instructions name for a consumer who wants the writing column's gap back.
+ *
+ * A fixed length rather than the clamp, because what the document offers a consumer is a gap they
+ * chose; the clamp is the `document` profile's own and is the thing a field no longer inherits.
+ */
+const INSET = 24;
+
+/*
+ * The box a form gives a field, which is the one shape that can see spacing around the text.
+ *
+ * Border-box with a border and padding, as the fault was reported. The width is fixed so this row
+ * is comparable across viewport widths like `narrow` is.
+ */
+const BOXED = { width: 772, padding: '6px 10px', border: 1 };
 
 /*
  * What a focused `field` may be. One 24px line box, and room for a border or a pixel of rounding
@@ -164,8 +219,23 @@ const PAGE = `<!doctype html>
 <style>
   /* #wide gets no rule at all, which is what the instructions tell a consumer to give a field. */
   #narrow { width: ${NARROW}px; }
-  /* The two properties src/lib/README.md tells a consumer to set for the side inset. */
-  #styled .sheaf-surface-field { --md-gutter: 0px; --md-content-width: 100%; }
+  /*
+   * The two properties src/lib/README.md names for putting the writing column's inset back, for a
+   * consumer who wants one. They are read inside a calc() in src/webview/theme.ts, so a value of
+   * the wrong type here is dropped in silence; the document says so and this is that sentence,
+   * run. A percentage on the gutter leaves the default in place and a "none" on the measure
+   * removes it, which are opposite failures and neither announces itself.
+   *
+   * No backticks in this comment: it sits inside a template literal, and one ends the page.
+   */
+  #styled { width: ${NARROW}px; }
+  #boxed {
+    width: ${BOXED.width}px;
+    padding: ${BOXED.padding};
+    border: ${BOXED.border}px solid #888;
+    box-sizing: border-box;
+  }
+  #styled .sheaf-surface-field { --md-gutter: ${INSET}px; --md-content-width: 708px; }
   #notes { height: ${NOTES_BOX}px; }
 </style>
 </head>
@@ -173,6 +243,7 @@ const PAGE = `<!doctype html>
 <div id="wide"></div>
 <div id="narrow"></div>
 <div id="styled"></div>
+<div id="boxed"></div>
 <div id="notes"></div>
 <script type="module">
 import { mount } from '/lib/index.js';
@@ -181,6 +252,7 @@ window.sheaf = {
   wide: mount(document.getElementById('wide'), { value: title, profile: 'field' }),
   narrow: mount(document.getElementById('narrow'), { value: title, profile: 'field' }),
   styled: mount(document.getElementById('styled'), { value: title, profile: 'field' }),
+  boxed: mount(document.getElementById('boxed'), { value: title, profile: 'field' }),
   notes: mount(document.getElementById('notes'), { value: '# Notes\\n\\nA paragraph of prose.\\n', profile: 'notes' }),
 };
 window.sheafReady = true;
@@ -228,6 +300,15 @@ function serveLibrary() {
  * `textLeft` is the first line's own left edge rather than the content element's, because the two
  * differ by CodeMirror's own 6px and by the auto margins that centre the writing column, and the
  * question is where a reader sees the text start.
+ *
+ * `textWidth` is the same line's width, which is the quantity a side inset actually spends: a
+ * field 280px wide whose text runs 136px has had 144px taken off it, and no height anywhere says
+ * so. It is read off the line rather than computed from the gutter, because the gutter, the
+ * measure and the auto margins all reach it and a derivation from one of the three would agree
+ * with the stylesheet while disagreeing with the screen.
+ *
+ * `contentMaxWidth` is the measure as the engine resolved it, which is the other half of the
+ * column and the one a `calc()` with an invalid term silently drops.
  */
 function readSurface(id) {
   const outer = document.getElementById(id);
@@ -236,14 +317,18 @@ function readSurface(id) {
   const content = el && el.querySelector('.cm-content');
   const line = el && el.querySelector('.cm-line');
   const box = (n) => (n ? Math.round(n.getBoundingClientRect().height * 100) / 100 : null);
+  const wide = (n) => (n ? Math.round(n.getBoundingClientRect().width * 100) / 100 : null);
   const left = (n) => (n && el ? Math.round(n.getBoundingClientRect().left - el.getBoundingClientRect().left) : null);
   return {
     outer: box(outer),
     element: box(el),
+    elementWidth: wide(el),
     editing: !!window.sheaf[id].editing(),
     scrollerPadding: scroller ? getComputedStyle(scroller).padding : null,
     contentPadding: content ? getComputedStyle(content).padding : null,
+    contentMaxWidth: content ? getComputedStyle(content).maxWidth : null,
     textLeft: left(line),
+    textWidth: wide(line),
   };
 }
 
@@ -254,13 +339,17 @@ function readDocument() {
   const editor = document.querySelector('.cm-editor');
   const line = document.querySelector('.cm-line');
   const box = (n) => (n ? Math.round(n.getBoundingClientRect().height * 100) / 100 : null);
+  const wide = (n) => (n ? Math.round(n.getBoundingClientRect().width * 100) / 100 : null);
   return {
     outer: box(editor),
     element: box(editor),
+    elementWidth: wide(editor),
     editing: true,
     scrollerPadding: getComputedStyle(scroller).padding,
     contentPadding: getComputedStyle(content).padding,
+    contentMaxWidth: getComputedStyle(content).maxWidth,
     textLeft: line ? Math.round(line.getBoundingClientRect().left - editor.getBoundingClientRect().left) : null,
+    textWidth: wide(line),
   };
 }
 
@@ -276,26 +365,28 @@ const { server: libServer, base: libBase } = await serveLibrary();
 const browser = await chromium.launch({ executablePath: CHROME });
 
 try {
-  for (const height of HEIGHTS) {
-    const page = await browser.newPage({ viewport: { width: WIDTH, height } });
-    await page.goto(libBase);
-    await page.waitForFunction('window.sheafReady === true');
-    await page.evaluate(settle);
+  for (const width of WIDTHS) {
+    for (const height of HEIGHTS) {
+      const page = await browser.newPage({ viewport: { width, height } });
+      await page.goto(libBase);
+      await page.waitForFunction('window.sheafReady === true');
+      await page.evaluate(settle);
 
-    for (const id of ['wide', 'narrow', 'styled', 'notes']) {
-      rows.push({ profile: id, height, state: 'rendered', ...(await page.evaluate(readSurface, id)) });
-    }
+      for (const id of SURFACES) {
+        rows.push({ profile: id, width, height, state: 'rendered', ...(await page.evaluate(readSurface, id)) });
+      }
 
-    for (const id of ['wide', 'narrow', 'styled', 'notes']) {
-      await page.evaluate((which) => window.sheaf[which].focus(), id);
-      await page.waitForFunction((which) => window.sheaf[which].editing() === true, id);
-    }
-    await page.evaluate(settle);
+      for (const id of SURFACES) {
+        await page.evaluate((which) => window.sheaf[which].focus(), id);
+        await page.waitForFunction((which) => window.sheaf[which].editing() === true, id);
+      }
+      await page.evaluate(settle);
 
-    for (const id of ['wide', 'narrow', 'styled', 'notes']) {
-      rows.push({ profile: id, height, state: 'editor', ...(await page.evaluate(readSurface, id)) });
+      for (const id of SURFACES) {
+        rows.push({ profile: id, width, height, state: 'editor', ...(await page.evaluate(readSurface, id)) });
+      }
+      await page.close();
     }
-    await page.close();
   }
 } finally {
   libServer.close();
@@ -314,13 +405,15 @@ const { server: docServer, base: docBase } = await serveForCheck({
 });
 
 try {
-  for (const height of HEIGHTS) {
-    const page = await browser.newPage({ viewport: { width: WIDTH, height } });
-    await page.goto(`${docBase}/edit/doc.md`);
-    await page.waitForSelector('.cm-content');
-    await page.evaluate(settle);
-    rows.push({ profile: 'document', height, state: 'editor', ...(await page.evaluate(readDocument)) });
-    await page.close();
+  for (const width of WIDTHS) {
+    for (const height of HEIGHTS) {
+      const page = await browser.newPage({ viewport: { width, height } });
+      await page.goto(`${docBase}/edit/doc.md`);
+      await page.waitForSelector('.cm-content');
+      await page.evaluate(settle);
+      rows.push({ profile: 'document', width, height, state: 'editor', ...(await page.evaluate(readDocument)) });
+      await page.close();
+    }
   }
 } finally {
   docServer.kill('SIGKILL');
@@ -329,17 +422,26 @@ try {
 
 for (const r of rows) {
   console.log(
-    `${r.profile.padEnd(8)} ${String(r.height).padStart(4)}px viewport  ${r.state.padEnd(8)}` +
+    `${r.profile.padEnd(8)} ${String(r.width).padStart(4)}x${String(r.height).padEnd(4)}  ${r.state.padEnd(8)}` +
       `  element ${String(r.element).padStart(7)}px  outer ${String(r.outer).padStart(7)}px` +
       `  scroller padding ${String(r.scrollerPadding ?? '-').padEnd(18)}` +
       `  content padding ${String(r.contentPadding ?? '-').padEnd(12)}` +
-      `  text starts ${String(r.textLeft ?? '-').padStart(4)}px in`
+      `  measure ${String(r.contentMaxWidth ?? '-').padEnd(9)}` +
+      `  text starts ${String(r.textLeft ?? '-').padStart(4)}px in, runs ${String(r.textWidth ?? '-').padStart(7)}px` +
+      `  of a ${String(r.elementWidth ?? '-').padStart(7)}px surface`
   );
 }
 
-const pick = (profile, state, height) => rows.find((r) => r.profile === profile && r.state === state && r.height === height);
+const pick = (profile, state, height, width = WIDTHS[0]) =>
+  rows.find((r) => r.profile === profile && r.state === state && r.height === height && r.width === width);
 
-const FIELDS = ['wide', 'narrow', 'styled'];
+const FIELDS = ['wide', 'narrow', 'styled', 'boxed'];
+
+/** The ones a consumer's own box has a fixed width for, so a reading is comparable across windows. */
+const FIXED_WIDTH = ['narrow', 'styled', 'boxed'];
+
+/** The ones whose text should start at the box's own edge and run all of it. */
+const NO_INSET = ['wide', 'narrow', 'boxed'];
 
 /*
  * 0. The precondition, asserted rather than written down.
@@ -351,67 +453,161 @@ const FIELDS = ['wide', 'narrow', 'styled'];
  * the reading is used.
  */
 for (const id of [...FIELDS, 'notes']) {
-  for (const height of HEIGHTS) {
-    const r = pick(id, 'editor', height);
-    if (!r.editing || r.scrollerPadding === null) {
-      faults.push(`the ${id} surface at a ${height}px viewport has no editor behind it, so nothing below it was measured`);
+  for (const width of WIDTHS) {
+    for (const height of HEIGHTS) {
+      const r = pick(id, 'editor', height, width);
+      if (!r.editing || r.scrollerPadding === null) {
+        faults.push(`the ${id} surface at ${width}x${height} has no editor behind it, so nothing below it was measured`);
+      }
+      if (r.textWidth === null || r.textWidth === 0) {
+        faults.push(`the ${id} surface at ${width}x${height} has no drawn line to measure, so every width reading below it is vacuous`);
+      }
     }
   }
 }
 
 /* 1. A focused field is one line, at any width and in any window. */
 for (const id of FIELDS) {
-  for (const height of HEIGHTS) {
-    const r = pick(id, 'editor', height);
-    if (r.element > FIELD_CEILING) {
-      faults.push(`the ${id} field is ${r.element}px tall at a ${height}px viewport, over the ${FIELD_CEILING}px a one-line surface may be, with its scroller padded ${r.scrollerPadding}`);
+  for (const width of WIDTHS) {
+    for (const height of HEIGHTS) {
+      const r = pick(id, 'editor', height, width);
+      if (r.element > FIELD_CEILING) {
+        faults.push(`the ${id} field is ${r.element}px tall at ${width}x${height}, over the ${FIELD_CEILING}px a one-line surface may be, with its scroller padded ${r.scrollerPadding}`);
+      }
     }
   }
 }
 
 /* 2. And it is the same height whatever the window is, which is what says no `vh` is left in it. */
 for (const id of FIELDS) {
-  const [a, b] = HEIGHTS.map((h) => pick(id, 'editor', h));
-  if (a.element !== b.element) {
-    faults.push(`the ${id} field is ${a.element}px at a ${HEIGHTS[0]}px viewport and ${b.element}px at a ${HEIGHTS[1]}px one, so its height still follows the window`);
+  for (const width of WIDTHS) {
+    const [a, b] = HEIGHTS.map((h) => pick(id, 'editor', h, width));
+    if (a.element !== b.element) {
+      faults.push(`the ${id} field is ${a.element}px at a ${HEIGHTS[0]}px viewport and ${b.element}px at a ${HEIGHTS[1]}px one, ${width}px wide, so its height still follows the window`);
+    }
   }
 }
 
 /* 3. Clicking into a field does not resize the form around it. */
 for (const id of FIELDS) {
-  for (const height of HEIGHTS) {
-    const before = pick(id, 'rendered', height);
-    const after = pick(id, 'editor', height);
-    const jump = Math.abs(after.outer - before.outer);
-    if (jump > 8) {
-      faults.push(`the ${id} field jumps from ${before.outer}px to ${after.outer}px on first focus at a ${height}px viewport, a ${jump}px move of everything under it`);
+  for (const width of WIDTHS) {
+    for (const height of HEIGHTS) {
+      const before = pick(id, 'rendered', height, width);
+      const after = pick(id, 'editor', height, width);
+      const jump = Math.abs(after.outer - before.outer);
+      if (jump > 8) {
+        faults.push(`the ${id} field jumps from ${before.outer}px to ${after.outer}px on first focus at ${width}x${height}, a ${jump}px move of everything under it`);
+      }
     }
   }
 }
 
 /*
- * 4. The side inset a consumer can take off themselves, which is the one thing
- * `src/lib/README.md` now tells them to set. It is checked here because a sentence in a public
- * document telling somebody to write two declarations should be a sentence somebody has run.
+ * 4. A field's text starts at its own left edge and runs the width of the box.
+ *
+ * This is where the side inset used to go, and it is read as a width rather than as a position
+ * because a position alone cannot tell an inset from a centred column: both move the text right,
+ * and only one of them also takes room away.
  */
-for (const height of HEIGHTS) {
-  const r = pick('styled', 'editor', height);
-  if (r.textLeft !== 0) {
-    faults.push(`a field carrying the two properties the instructions name starts its text ${r.textLeft}px in rather than at its own left edge, so the instructions are wrong`);
+for (const id of NO_INSET) {
+  for (const width of WIDTHS) {
+    for (const height of HEIGHTS) {
+      const r = pick(id, 'editor', height, width);
+      if (r.textLeft !== 0) {
+        faults.push(`the ${id} field starts its text ${r.textLeft}px in from its own left edge at ${width}x${height}, so it is carrying a side inset`);
+      }
+      const lost = Math.round((r.elementWidth - r.textWidth) * 100) / 100;
+      if (Math.abs(lost) > 8) {
+        faults.push(`the ${id} field is ${r.elementWidth}px wide and gives its text ${r.textWidth}px of that at ${width}x${height}, ${lost}px spent on an inset or a measure`);
+      }
+    }
   }
 }
 
 /*
- * 5. The control. `notes` and `document` keep the writing column: the page inset above the first
- * line, and the room to scroll past the last one, which is a proportion of the window and so
- * differs between the two viewports.
+ * 5. The viewport reading, and it is the one that catches a restored gutter.
+ *
+ * A field's usable width must not follow the window. The inset this replaced was `clamp(24px, 8vw,
+ * 96px)`, so a 280px control was given 136px of itself at one window and 88px at another, and
+ * **either number read on its own looks like a field with an inset somebody chose.** The pair is
+ * what says the inset is not the box's. `narrow`, `styled` and `boxed` are the ones with a width
+ * of their own, so they are the ones whose text width is comparable across viewports at all;
+ * `wide` fills the page and is meant to change.
  */
-for (const profile of ['notes', 'document']) {
+for (const id of FIXED_WIDTH) {
   for (const height of HEIGHTS) {
-    const r = pick(profile, 'editor', height);
-    const wants = `56px 0px ${Math.round(height * 0.4)}px`;
-    if (r.scrollerPadding !== wants) {
-      faults.push(`${profile} at a ${height}px viewport has its scroller padded ${r.scrollerPadding}, not the ${wants} of the writing column`);
+    const [a, b] = WIDTHS.map((w) => pick(id, 'editor', height, w));
+    if (a.textWidth !== b.textWidth) {
+      faults.push(
+        `the ${id} field gives its text ${a.textWidth}px at a ${WIDTHS[0]}px window and ${b.textWidth}px at a ${WIDTHS[1]}px one, ` +
+          `in a box that is ${a.elementWidth}px and ${b.elementWidth}px, so its usable width still follows the window`
+      );
+    }
+  }
+}
+
+/*
+ * 6. The inset a consumer can put back, which is what `src/lib/README.md` now offers them.
+ *
+ * Checked here because a sentence in a public document telling somebody to write two declarations
+ * should be a sentence somebody has run, and because both of them are read inside a `calc()` where
+ * a value of the wrong type is dropped in silence.
+ */
+for (const width of WIDTHS) {
+  for (const height of HEIGHTS) {
+    const r = pick('styled', 'editor', height, width);
+    if (r.textLeft !== INSET) {
+      faults.push(`a field carrying the inset the instructions name starts its text ${r.textLeft}px in rather than ${INSET}px at ${width}x${height}, so the instructions are wrong`);
+    }
+    const wants = NARROW - 2 * INSET;
+    if (Math.abs(r.textWidth - wants) > 8) {
+      faults.push(`a field carrying the inset the instructions name gives its text ${r.textWidth}px of its ${r.elementWidth}px box at ${width}x${height}, not the ${wants}px two ${INSET}px insets leave`);
+    }
+  }
+}
+
+/*
+ * 7. The control. `notes` and `document` keep the writing column, and it is read as the column
+ * rather than as a height: the page inset above the first line and the room to scroll past the
+ * last one, which is a proportion of the window, and then the side gutters and the text measure,
+ * which a height cannot see. Flattening the column for everybody is the way to get the field
+ * right and the product wrong, and that is the shape this refuses.
+ */
+/*
+ * A length read off the page, and `NaN` when what came back was not one.
+ *
+ * **The `NaN` has to be refused where it is used, because a comparison against it is `false` and a
+ * `false` here means "no fault".** `max-width` computes to the keyword `none` when the measure is
+ * gone, `parseFloat('none')` is `NaN`, and `Math.abs(NaN - 852) > 1` is `false`, so the assertion
+ * below silently passed in exactly the case it exists for. That is not a hypothetical spelling:
+ * the note on `.sheaf-surface-field` in `media/webview.css` singles `none` out as the value that
+ * "would quietly remove the reading column" on a `notes` surface, so the one state this check is
+ * here to catch was the one state it could not report. The two assertions beside this one compare
+ * strings and fail correctly; only a number routed through `parseFloat` can go quiet this way.
+ *
+ * Measured both ways with `--md-content-width: none` on the `notes` fixture: without the finite
+ * check the run exits 0 while the column is plainly gone, its text running 756px at a 900px window
+ * and 1108px at a 1300px one against the 708px it should be; with it, four faults naming `none`.
+ */
+const px = (v) => parseFloat(String(v));
+for (const profile of ['notes', 'document']) {
+  for (const width of WIDTHS) {
+    for (const height of HEIGHTS) {
+      const r = pick(profile, 'editor', height, width);
+      const wants = `56px 0px ${Math.round(height * 0.4)}px`;
+      if (r.scrollerPadding !== wants) {
+        faults.push(`${profile} at ${width}x${height} has its scroller padded ${r.scrollerPadding}, not the ${wants} of the writing column`);
+      }
+      const gutter = clampedGutter(width);
+      const wantsPad = `0px ${gutter}px`;
+      if (r.contentPadding !== wantsPad) {
+        faults.push(`${profile} at ${width}x${height} has its content padded ${r.contentPadding}, not the ${wantsPad} of the writing column's side gutters`);
+      }
+      const wantsMeasure = 708 + 2 * gutter;
+      const measure = px(r.contentMaxWidth);
+      if (!Number.isFinite(measure) || Math.abs(measure - wantsMeasure) > 1) {
+        faults.push(`${profile} at ${width}x${height} measures ${r.contentMaxWidth}, not the ${wantsMeasure}px of a 708px column inside ${gutter}px gutters`);
+      }
     }
   }
 }
@@ -421,4 +617,7 @@ if (faults.length) {
   for (const f of faults) console.log(`FAIL ${f}`);
   process.exit(1);
 }
-console.log('\nA field is one line at both viewport heights, and the writing column is where it was.');
+console.log(
+  '\nA field is one line at both viewport heights, gives its text the whole box at both viewport widths,\n' +
+    'and the writing column `notes` and `document` are written in is where it was.'
+);

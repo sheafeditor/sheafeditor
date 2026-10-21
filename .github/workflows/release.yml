@@ -75,8 +75,10 @@ jobs:
       # because a runner has no screen, so nothing here says whether the commit being
       # published was ever driven through a window.
       # No gates here. They run twice otherwise: `npm run release:check` runs exactly these,
-      # on a clone of this commit, before the tag is pushed, and `ci.yml` runs them again on
-      # every push to main, which is where the Linux coverage belongs.
+      # on a clone of this commit, before the tag is pushed, and it refuses to continue unless
+      # `ci.yml` passed on the same commit, which is where the Linux coverage belongs.
+      # `ci.yml` no longer runs on every push, so that run is dispatched by hand before a cut,
+      # and the requirement in `release:check` is what keeps it from being skipped.
       #
       # Running them here as well cost three release builds in one evening. Each failed at the
       # gates for a different reason and each left a tag pushed with nothing published: a

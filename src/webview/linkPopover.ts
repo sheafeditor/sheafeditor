@@ -362,11 +362,11 @@ function buildPopover(view: EditorView, isNew: boolean): TooltipView {
   });
 
   open.addEventListener('click', () => {
-    if (link) openLink(link.url);
+    if (link) openLink(link.url, view);
   });
   copy.addEventListener('click', () => {
     if (!link) return;
-    writeClipboardText(link.url);
+    writeClipboardText(link.url, view);
     copy.classList.add('is-active');
     copy.setAttribute('aria-label', 'Link address copied');
     clearTimeout(copiedTimer);

@@ -44,9 +44,10 @@
 import { Decoration, EditorView, WidgetType } from '@codemirror/view';
 import { EditorState } from '@codemirror/state';
 import { syntaxTree } from '@codemirror/language';
-import { SyntaxNode, Tree } from '@lezer/common';
 import type { KatexOptions } from 'katex';
 import { lazyResource } from './lazyResource';
+import { blockMathsIn } from '../dialect/blockMaths';
+import type { BlockMathRange } from '../dialect/blockMaths';
 
 /**
  * KaTeX is fetched when a document first shows an equation, not when the editor loads.
@@ -365,72 +366,18 @@ export function blockMathError(message: string): Decoration {
 
 // ---- Block maths ----------------------------------------------------------
 
-/** A `$$…$$` block: the whole of the lines it occupies, and the TeX inside it. */
-export interface BlockMathRange {
-  /** The start of the opening line. */
-  from: number;
-  /** The end of the closing line. */
-  to: number;
-  /** The TeX between the delimiters. */
-  source: string;
-}
-
-/**
- * The top-level paragraph containing `pos`, or null when what is there is any
- * other kind of block: a fence, a quote, a list, a table, or a paragraph nested
- * inside one of those.
+/*
+ * Where the blocks are is `src/dialect/blockMaths.ts` and not here, which is the same split this
+ * file's own header describes for the inline form: grammar below, drawing above. A rule about where
+ * a construct is in the bytes is the dialect's, and it has to be, because the render path asks the
+ * same question and may not load this module — it needs `@codemirror/view` and KaTeX, which that
+ * path exists to be smaller than. A copy of the rule in each would let a surface draw an equation
+ * before it is focused and refuse one after, which is the state that file was written to prevent.
  */
-function topLevelParagraph(tree: Tree, pos: number): SyntaxNode | null {
-  let node: SyntaxNode | null = tree.resolveInner(pos, 1);
-  while (node && node.parent && node.parent.name !== 'Document') node = node.parent;
-  if (!node || !node.parent) return null;
-  return node.name === 'Paragraph' ? node : null;
-}
+export type { BlockMathRange } from '../dialect/blockMaths';
 
 /** Every `$$…$$` block in the document, in order. */
 export function blockMathRanges(state: EditorState): BlockMathRange[] {
-  const doc = state.doc;
-  const tree = syntaxTree(state);
-  const found: BlockMathRange[] = [];
-
-  for (let n = 1; n <= doc.lines; n++) {
-    const open = doc.line(n);
-    // Every line of the document passes through here on every redraw, so the
-    // cheap test that allocates nothing comes before the ones that do.
-    if (!open.text.includes('$$')) continue;
-    const indent = open.text.length - open.text.trimStart().length;
-    // Four spaces in is an indented code block, and its own delimiters are text.
-    if (indent >= 4) continue;
-    const trimmed = open.text.trim();
-    if (!trimmed.startsWith('$$')) continue;
-    const paragraph = topLevelParagraph(tree, open.from + indent);
-    if (!paragraph) continue;
-
-    // `$$E = mc^2$$`, written on one line.
-    if (trimmed.length >= 4 && trimmed.endsWith('$$')) {
-      const source = trimmed.slice(2, -2);
-      if (source.trim() !== '') found.push({ from: open.from, to: open.to, source });
-      continue;
-    }
-
-    // Otherwise the closer is a later line of the same paragraph that is `$$`
-    // and nothing else. An empty pair is someone who has just typed the
-    // delimiters, so it is left showing them rather than drawn as a blank.
-    const last = doc.lineAt(paragraph.to).number;
-    let close = 0;
-    for (let m = n + 1; m <= last; m++) {
-      if (doc.line(m).text.trim() === '$$') {
-        close = m;
-        break;
-      }
-    }
-    if (!close) continue;
-    const closeLine = doc.line(close);
-    const source = doc.sliceString(open.from + indent + 2, closeLine.from);
-    if (source.trim() !== '') found.push({ from: open.from, to: closeLine.to, source });
-    n = close;
-  }
-
-  return found;
+  return blockMathsIn(state.doc, syntaxTree(state));
 }
 

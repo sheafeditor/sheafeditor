@@ -16,7 +16,7 @@
  * **Nothing here draws anything, and that is the whole point of the file.** It was one module with
  * three jobs: this half, the ingestion in `imageIngest.ts`, and the widget in `images.ts`. Four
  * modules only ever wanted this half — `linkTarget.ts` for a parser, `tables.ts` for an address,
- * `toolbar.ts` through the picker, and `main.ts` for the base URI — and every one of them was
+ * `toolbar.ts` through the picker, and `mount.ts` for the base URI — and every one of them was
  * downloading the widget, the resize handles and the caption machinery to get it.
  *
  * The only CodeMirror this needs is a type: `imageNodeAt` reads a syntax tree to find the source

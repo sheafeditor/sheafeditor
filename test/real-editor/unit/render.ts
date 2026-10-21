@@ -1243,7 +1243,7 @@ export const scenarios: Scenario[] = [
       withDoc('A **bold** one\n\nafter', (p) => {
         p.select(4);
         const before = lineText(p, 1);
-        // What main.ts applyConfig does when the setting changes.
+        // What the mount's applyConfig does when the setting changes.
         setLivePreviewConfig({ revealSyntaxOnLine: true });
         p.view.dispatch({});
         const after = lineText(p, 1);

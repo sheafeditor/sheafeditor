@@ -9,6 +9,13 @@
  * here, because they say what a node is rather than how it is painted.
  *
  * Typesetting, the loader and the error cache are `src/webview/maths.ts`.
+ *
+ * **`$$…$$` blocks are not here and not a grammar at all**, which is the thing a reader of this file
+ * most needs told. A block is found by reading lines and asking the tree whether the line sits in a
+ * top-level paragraph, so there is no node and no `MarkdownConfig` for it. `blockMaths.ts` beside
+ * this file holds that rule, on this file's own argument: it is a statement about where a construct
+ * is in the bytes, so it belongs below anything that draws it. The doubled-dollar guard below is
+ * what keeps the two from meeting, by refusing an inline span on a `$` beside another `$`.
  */
 
 import { MarkdownConfig } from '@lezer/markdown';

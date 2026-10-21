@@ -143,7 +143,13 @@ interface Measured {
 const cache = new Map<string, Measured>();
 let cacheStamp = '';
 
-/** Everything currently on screen, so a font or visibility change can reach it. */
+/**
+ * Everything currently on screen, so a font or visibility change can reach it.
+ *
+ * Shared on purpose, across every editor on the page: a font loading is the page's news, not one
+ * document's. One of the five registries `mountScope.ts` names, which a sweep making module-level
+ * collections per-mount must leave alone.
+ */
 const live = new Set<ColumnLayout>();
 
 /** Ids for the screen-reader note, which several tables can be showing at once. */
@@ -482,7 +488,17 @@ export function createColumnLayout(
      * still centred by the two equal insets around it.
      */
     const usesPane = wrap.classList.contains('can-use-pane');
-    const pane = width - (usesPane ? env.gutter : inset) - (inset > 0 || usesPane ? 1 : 0);
+    /*
+     * **A frame that reached the pane is its own room, less the border pixel, because the margin
+     * that keeps a table off the window's edge is now outside the frame rather than inside it.**
+     *
+     * This subtracted `env.gutter` while the scroller carried that gutter as padding-right, holding
+     * the gap that marked the end of a scroll. The frame stops `--md-pane-edge` short of each pane
+     * edge now, so that gap is the margin and it is already not in `width`. Subtracting it again
+     * took it out of the columns' room twice: measured at a 1200px pane, a frame of 1152 handing out
+     * 1055 and a table ending 221px short of its own content box.
+     */
+    const pane = width - (usesPane ? 0 : inset) - (inset > 0 || usesPane ? 1 : 0);
     /*
      * The writing column only for a frame that reached the pane. A table in a quote, under a list
      * item, or in a frame that never grew has its own frame as its room, and that frame is narrower
@@ -565,7 +581,28 @@ export function createColumnLayout(
      * runs in a write phase and reading a rectangle here would force a layout. The inset is the frame's
      * own left padding, which is where the table starts, and the rest is the width just set.
      */
-    wrap.style.setProperty('--md-table-edge', `${inset + m.gutter + alloc.total}px`);
+    /*
+     * **Where the table starts, which stopped being the frame's padding when a table in the pane was
+     * centred in the window.** The table there is centred by `margin-inline: auto` in a scroller with
+     * no padding, so it starts half the spare room in from the frame's edge, and nothing outside the
+     * table could see that: the bar above it ended at `0 + width`, short of a centred table's right
+     * edge by exactly the offset, and the table's name sat at the frame's edge about 220px left of a
+     * table that fits the writing column. Neither had a check comparing it against the table.
+     *
+     * Computed here, from the width this function has just set, so the published start and the drawn
+     * table cannot disagree. A table wider than its scroller has no spare room and starts at the edge.
+     *
+     * **Held still while a column is being dragged.** `beginResize` pins the table's left margin for
+     * the gesture so it grows towards the pointer rather than re-centring under it; recomputing the
+     * start here would move the name and the bar while the table stood still. The edge still follows
+     * the width, because the table really does grow rightward.
+     */
+    const width0 = m.gutter + alloc.total;
+    const centred = wrap.classList.contains('can-use-pane');
+    const held = wrap.classList.contains('is-resizing') ? parseFloat(wrap.style.getPropertyValue('--md-table-start')) : NaN;
+    const start = Number.isFinite(held) ? held : centred ? inset + Math.max(0, Math.floor((frame - inset - width0) / 2)) : inset;
+    wrap.style.setProperty('--md-table-start', `${start}px`);
+    wrap.style.setProperty('--md-table-edge', `${start + width0}px`);
     wrap.classList.toggle('is-scroll-x', alloc.scrolls);
     describe(alloc.scrolls);
     edges();

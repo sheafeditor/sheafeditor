@@ -144,9 +144,12 @@ export const scenarios: Scenario[] = [
        * than one line. The initial document is not a change, so the filter never sees it. If this
        * fails, the prediction was wrong and that is a finding rather than a broken test.
        *
-       * It deliberately does not call `setValue`. That path flattens breaks to spaces in a field,
-       * which is its own open defect, and a scenario reaching it would fail for a reason this
-       * change is not about and read as the fix being incomplete.
+       * It deliberately does not call `setValue`, which when this was written was a second way a
+       * field lost a consumer's bytes: the field's one-line filter flattened a break arriving that
+       * way, so a scenario reaching it would have failed for a reason this change was not about.
+       * That is fixed, and `test/prose/fieldNewline.ts` drives the three write paths against each
+       * other. This scenario still stays on the mount-time path, because that is the door this
+       * file is about.
        */
       withEditor(
         CRLF,

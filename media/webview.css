@@ -57,6 +57,10 @@
   /* Notion frames that column in fixed ~96px side gutters; scale down on
      narrow panes so there's always a visible page margin. */
   --md-gutter: clamp(24px, 8vw, 96px);
+  /* The margin a block that takes the pane keeps on each side, so it is centred in the
+     window rather than aligned to the writing column and never reaches the pane's edge.
+     Much smaller than the gutter above, which frames prose and is far too wide for this. */
+  --md-pane-edge: clamp(20px, 2vw, 48px);
   --md-font: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial,
     'Apple Color Emoji', 'Segoe UI Emoji', sans-serif;
   /* Notion code/inline-code stack. */
@@ -633,113 +637,95 @@ body {
  */
 .sheaf-table.can-use-pane {
   --md-table-inset: calc(var(--md-gutter) + var(--md-pane-overhang, 0px));
-  margin-left: calc(-1 * var(--md-table-inset));
-  margin-right: calc(-1 * var(--md-table-inset));
+  /*
+   * The frame stops `--md-pane-edge` short of each pane edge rather than reaching them.
+   *
+   * **The inset is taken here and not inside the scroller, and that is the whole design.** The
+   * obvious spelling is a margin on the grid, and it breaks three things at once, each measured:
+   * the column allocator reads `clientWidth` and hands out a room that a margin shrinks, the
+   * drag-freeze holds a layout that is no longer the one that moves, and the gap that marks the end
+   * of a scroll is computed against a box that changed size. Everything inside the scroller is
+   * built on padding being outside `clientWidth`. Taking the inset on the frame leaves all of that
+   * untouched: the scroller still spans its frame, and the frame is simply smaller.
+   */
+  margin-left: calc(-1 * (var(--md-table-inset) - var(--md-pane-edge)));
+  margin-right: calc(-1 * (var(--md-table-inset) - var(--md-pane-edge)));
 }
 /*
- * The inset on both sides, and the two do different jobs.
+ * The same margin on both sides, and the content centred in what they leave.
  *
- * Left: at rest the first column lines up with the paragraph above it, and because this is
- * padding inside the scroller rather than margin outside it, the column slides past that line
- * as the table is scrolled. That is the whole of what makes the pane usable.
+ * **A table in the pane is positioned against the window, not against the prose**, which is the
+ * one sentence this rule exists for. Everything comparable left-aligns a table to the writing
+ * column, and that is right in a page-based document, where the column *is* the page and the two
+ * positions are the same. They are not the same here: this pane is an editor split whose width
+ * changes all day and the writing column floats centred inside it, so aligning to the column puts
+ * a table off to one side of the window with all of its spare room collected in one gap.
  *
- * Right: at rest it is invisible, sitting beyond the table's right edge in the scroll extent.
- * Scrolled fully right it is the gap after the last column, which is what says the table has
- * ended rather than continuing past the pane. Without it the last column ran flush into the
- * edge and the only way to know you were at the end was that the table stopped moving.
+ * **Margin rather than padding, and that is the part worth keeping.** This was padding inside the
+ * scroller so that the inset scrolled away and a wide table could use the whole pane. The cost was
+ * that a wide table's content reached the pane's edge, which is what the margin now prevents: the
+ * scrollport is narrower than the frame, so content is clipped at the margin and never crosses it.
+ * A wide table scrolls inside its margins instead of out to the edge, and a table keeps the same
+ * visible margin whether it fits or scrolls.
  *
- * Neither touches the laid-out widths: `roomFor` reads `clientWidth`, which is the padding box
- * and does not grow when padding is added. Measured on a twelve-column table before and after,
- * every column identical.
+ * **`margin-inline: auto` on the table is what centres it**, and it is chosen over a computed
+ * offset because auto margins share out free space when there is any and compute to zero when
+ * there is none. So the same two declarations cover a table that fits and one that overflows, with
+ * no second class to keep in step and no measurement that could disagree with the layout.
+ *
+ * Horizontal only. A vertical margin on a block widget is space CodeMirror's height map cannot
+ * see, which puts clicks below the widget on the wrong line, and `scripts/check-indent.mjs`
+ * sweeps for that on every run.
+ *
+ * **What this gives up, deliberately.** A table narrower than the writing column no longer starts
+ * on the same vertical line as the paragraph above it. That is the trade and it was taken on
+ * purpose, twice: a table never looking abandoned to one side of the window is worth more than its
+ * first column agreeing with the prose above it.
  */
 .sheaf-table.can-use-pane > .sheaf-table-grid {
-  padding-left: var(--md-table-inset);
-  padding-right: var(--md-table-inset);
-}
-/*
- * A table that took the pane begins at its frame's left edge, and keeps one gutter after its last
- * column.
- *
- * The inset above lines a table's first column up with the paragraph over it, which is worth having
- * for a table that fits its column: both insets stay there, the table fills the room between them,
- * and it is centred by them. For a table that took the pane that left inset was dead space. Measured
- * on the twelve-column fixture at a 1200px pane: frame `0..1200` with the first cell at `246`.
- *
- * **The two edges do different jobs once a table is that wide, so this is asymmetric on purpose.** At
- * rest the left edge is where you begin reading and there is nothing to signal, so a gap is waste.
- * The right edge is where you need to know whether there is more, so a gap there is information: it
- * says the table has ended rather than that the scroll has stuck. That is the click-through's own step
- * 11. Symmetry is right where neither edge carries a signal and the eye wants the thing centred,
- * which is the table that fits.
- *
- * `--md-gutter` rather than the full inset, because the signal needs some space rather than 246px of
- * it, and the gutter already separates a fitting table's content from its frame. So a wide table and
- * a narrow one come out with the same visual margin.
- *
- * **It costs the block handle its resting place, and that was decided rather than discovered.** The
- * handle lives in the margin to a block's left, and a table starting at the frame's edge leaves none,
- * so the handle sits clear above the block instead. `blocks.handle` R1 is written for that: in the
- * margin beside the first line, and above where the block leaves no margin to sit in. See
- * `--md-table-inset` below, whose third consumer this is.
- *
- * Keyed on `is-pane-wide`, which the layout sets from the room it chose, **not** on `is-scroll-x` and
- * not on a measured width. Either would be a cycle: the class would set the padding, the padding
- * would change the room, and the room would change the class.
- *
- * **The class is frozen while a column is being dragged, and that is done in `columnLayout.ts`
- * rather than here.** A drag that takes a table past its writing column would otherwise make it
- * pane-wide mid-gesture, moving the content from 246 to 0 and taking the grip with it, leaving the
- * pointer on nothing and the drag dead. A gesture that stops answering is worse than a thing that
- * moves: the obvious next move is to drag again, which also does nothing.
- *
- * This rule used to carry `:not(.is-resizing)` for that, and it held the wrong layout. A table that is
- * **already** pane-wide carries `is-resizing` through every column drag as well, so the rule was
- * suspended for the whole gesture and the table sat inset by the writing column's margin, then
- * snapped to the pane's edge on release. It stood still under the pointer, in the position it was
- * about to leave. Freezing the class holds whichever layout the table actually had.
- *
- * A window resize across the same threshold still moves it, which is accepted rather than
- * overlooked: during a window resize everything is already moving, so a table finding a new left
- * edge reads as reflow, while during a drag nothing else is moving and the table is the only event.
- */
-.sheaf-table.can-use-pane.is-pane-wide > .sheaf-table-grid {
   padding-left: 0;
-  padding-right: var(--md-gutter);
+  padding-right: 0;
+}
+.sheaf-table.can-use-pane > .sheaf-table-grid > table {
+  margin-inline: auto;
 }
 /*
- * The two labels above and below the grid line up with the grid, in both states.
+ * `is-pane-wide` no longer decides where a table rests, and the rule that used it is gone.
  *
- * A data block's name (```csv id=tasks) and the note saying why a board is a grid again are the
- * wrap's children, not the grid's, so the negative margins above put their boxes at the pane's edges
- * and neither took any of the inset back. Measured at 1440: the grid's content at 366, level with the
- * paragraph above it, and the caption's box `0..1440`, so a block's name sat in the pane's left gutter
- * on its own, over nothing. It read correct on a table that had taken the pane, because there the grid
- * is at 0 as well and the two agree again, which is why it survived four other findings about this
- * mechanism.
+ * It said a table that took the pane began at its frame's left edge with one gutter after its last
+ * column, on the argument that the two edges do different jobs: the left is where you begin reading
+ * and has nothing to signal, the right is where you need to know whether there is more. The
+ * argument is a good one and it was answered by the person it was built for, twice. A table that
+ * took the pane and did not fill it put every pixel of its spare room into one gap, which is the
+ * same dead space that reasoning set out to remove, on the other side.
  *
- * So these follow the grid rather than the prose: the same inset at rest, and the same drop to the
- * pane's edge once the table took the pane. A label belongs over the thing it labels, and on a wide
- * table that thing is at 0.
+ * So position is one rule for every table in the pane, above, and this class is left to the two
+ * things that still need it. `columnLayout.ts` still sets it, and still freezes it during a column
+ * drag, because `roomFor` and the width allocation read which room was chosen.
  *
- * Both edges, so a long name wraps inside the same column the grid's content occupies. The right
- * padding is **not** the end-of-scroll signal the grid's is: nothing here scrolls, and a label that
- * ran to the window's edge while the table stopped short would be the same disagreement the other way
- * round.
+ * **The block handle keeps its resting place because of this change rather than losing it.** The
+ * handle lives in the margin to a block's left, and the rule removed here left none, so the handle
+ * had to sit clear above the block. Every table in the pane now keeps `--md-pane-edge` on that
+ * side, so there is a margin for it again.
+ */
+/*
+ * `.sheaf-table-controls` is not with the two labels below. What matters about a bar is where it
+ * *ends*, so it is absolutely positioned and reconciled by its right edge from `--md-table-edge`.
+ * Three children, three mechanisms, and `scripts/check-wrap-children.mjs` checks each against the
+ * table itself rather than against the scroller that holds it.
+ */
+/*
+ * A table's name and its board note sit over the table, which is centred, so they take the table's
+ * start as padding on both sides and span exactly its width. `--md-table-start` is published by
+ * `columnLayout.ts` in the same write that sets the table's width, so the two cannot disagree.
  *
- * `.sheaf-table-controls` is deliberately not here. What matters about a bar is where it *ends*, so it
- * is absolutely positioned and reconciled by its right edge from `--md-table-edge`. Three children,
- * three mechanisms, and `scripts/check-wrap-children.mjs` is what keeps a fourth from being found by
- * somebody noticing it.
+ * Both sides rather than the left alone, so a long name wraps inside the table's own width instead
+ * of running on into the spare room past its right edge.
  */
 .sheaf-table.can-use-pane > .sheaf-table-caption,
 .sheaf-table.can-use-pane > .sheaf-table-board-note {
-  padding-left: var(--md-table-inset);
-  padding-right: var(--md-table-inset);
-}
-.sheaf-table.can-use-pane.is-pane-wide > .sheaf-table-caption,
-.sheaf-table.can-use-pane.is-pane-wide > .sheaf-table-board-note {
-  padding-left: 0;
-  padding-right: var(--md-gutter);
+  padding-left: var(--md-table-start, 0px);
+  padding-right: var(--md-table-start, 0px);
 }
 /*
  * The same gap after the last column for a table that cannot use the pane: one in a quote, one
@@ -1778,6 +1764,48 @@ body {
   overflow-x: auto;
   contain: inline-size;
 }
+/*
+ * A view showing a board reaches past the writing column and is centred in the window.
+ *
+ * **Two paths draw a board and only one of them is a table.** A table shown as a board puts its
+ * lanes in `.sheaf-table-board`, inside a frame that already knows how to take the pane. A *view*
+ * shown as a board puts the same lanes in `.sheaf-view-grid`, and a view had no pane mechanism at
+ * all: it sat in the writing column with its lanes running off the right of the window, which is
+ * the state this fixes and the one a person is most likely to meet, since **Show as board** on a
+ * view is how a board is usually made.
+ *
+ * Found by a check rather than by reading: the placement reading written for the table path
+ * reported a board 708px wide against a host 0px wide, because it had paired the lanes of a view's
+ * board with the empty, hidden board host of a table on the same page. Three independent
+ * `querySelector` calls, three elements, no two of them the same table.
+ *
+ * `:has()` rather than a class, because a view's frame carries nothing that says it is a board and
+ * the alternative is a class to keep in step with the layout it describes. Narrow on purpose: a
+ * view showing a *table* is left in the writing column, since widening it would change every
+ * view in the corpus for a change that was asked about boards.
+ *
+ * Quoted and listed views keep their block's indent, for the reason a table in a quote does: the
+ * block it belongs to is what decides where it starts.
+ */
+.sheaf-view:not(.is-quoted):has(> .sheaf-view-grid > .sheaf-board) {
+  --md-view-inset: calc(var(--md-gutter) + var(--md-pane-overhang, 0px));
+  margin-left: calc(-1 * (var(--md-view-inset) - var(--md-pane-edge)));
+  margin-right: calc(-1 * (var(--md-view-inset) - var(--md-pane-edge)));
+}
+/* Both board paths centre their lanes the same way. See the table-board rule for why `safe`. */
+.sheaf-view-grid > .sheaf-board {
+  justify-content: safe center;
+}
+/*
+ * The view's heading and its notes sit over the lanes, which are centred, so they take where the
+ * lanes start as padding on both sides. `--md-view-start` is measured by `viewBlock.ts` off the first
+ * lane after layout; a board that fills or overflows its frame publishes 0 and nothing moves.
+ */
+.sheaf-view:not(.is-quoted):has(> .sheaf-view-grid > .sheaf-board) > .sheaf-view-head,
+.sheaf-view:not(.is-quoted):has(> .sheaf-view-grid > .sheaf-board) > .sheaf-view-notes {
+  padding-left: var(--md-view-start, 0px);
+  padding-right: var(--md-view-start, 0px);
+}
 .sheaf-view table {
   border-collapse: collapse;
   width: 100%;
@@ -2141,21 +2169,40 @@ body {
   outline: none;
 }
 /*
- * A board lines up with the prose, the way the grid beside it does.
+ * A board is centred in the window, on the same rule as the grid beside it.
  *
- * `.can-use-pane` puts negative margins of `--md-table-inset` on the wrap so its box reaches both pane
- * edges, and the grid takes that inset back as its own padding. The board host is a sibling of the grid
- * and had `padding: 4px 0`, so it kept none of it and sat hard against the pane's left edge: measured at
- * x=0 with the heading above it at 366, a two-lane board occupying 490px of a 1440px window with all the
- * unused space to its right.
+ * This used to take `--md-table-inset` as padding so a board lined up under its own heading, on the
+ * reasoning that a board using a third of the width "has taken nothing" and so should sit with the
+ * prose. That is the position the grid has now given up, and a board has the same reason to give it
+ * up: a two-lane board held to the writing column puts every pixel it does not use into one gap on
+ * the right, in a pane whose width the person changes all day.
  *
- * The flush left edge is justified for a table that *took* the pane, where the first column is where you
- * begin reading. A board using a third of the width has taken nothing, so the justification does not
- * reach it, and the inset is what puts it under its own heading.
+ * Margin rather than padding, for the reason the grid's rule gives: the margin narrows the
+ * scrollport, so a board wider than the window scrolls inside its margins instead of reaching the
+ * window's edge.
  */
 .sheaf-table.can-use-pane > .sheaf-table-board {
-  padding-left: var(--md-table-inset);
-  padding-right: var(--md-table-inset);
+  padding-left: 0;
+  padding-right: 0;
+}
+/*
+ * The lanes are centred with `safe center`, and the two rejected spellings are both measured.
+ *
+ * **Not `width: fit-content` with auto margins**, which is what the grid's table uses and what this
+ * rule had first. A flex row is not a table: `fit-content` on it resolved to the sum of its lanes
+ * rather than clamping to the scroller, so a board that overflowed sat 196px in from the left with
+ * its last lane 904px past the right edge, offset *and* overflowing at once. The board placement
+ * check caught it, which is the whole reason that check was written before this rule was trusted.
+ *
+ * **Not plain `justify-content: center`** either: a centred flex row that then overflows puts its
+ * first item before the scroll origin, so the leftmost lane cannot be reached by scrolling at all.
+ *
+ * `safe` is exactly the keyword for that pair. It centres while there is room and falls back to
+ * `start` the moment there is not, which is the same shape as the auto margins on the grid's table
+ * and the behaviour a reader should expect from both.
+ */
+.sheaf-table.can-use-pane > .sheaf-table-board > .sheaf-board {
+  justify-content: safe center;
 }
 /* Why a table that was a board is a grid again. */
 .sheaf-table-board-note {
@@ -2399,15 +2446,74 @@ body {
  *
  * This works by inheritance rather than by winning the cascade, which is why it can live in
  * this file at all: see the note above about CodeMirror's base theme. `0px` rather than `0`
- * because these are read as lengths.
+ * throughout this rule, for one reason that holds for all four and is written out under the
+ * side inset below: it is the spelling that survives a registration being narrowed. A bare `0`
+ * is a length to CSS and works today.
  *
- * Only the vertical insets. A field still carries the writing column's side gutters and its
- * 708px measure, so its text starts some way in from its left edge. That is a separate fault
- * with a separate fix, and `src/lib/README.md` says what a consumer can set meanwhile.
+ * The side inset goes the same way, and for the same reason one step along: a field sits in an
+ * element somebody else sized and styled, so they own the box and this owns the text. The
+ * writing column's gutters are a proportion of the window rather than of the box, `clamp(24px,
+ * 8vw, 96px)`, so a 280px form control was left 136px of usable width on a 900px window and
+ * 88px on a 1200px one. A component whose inner padding tracks the window is wrong at every
+ * width, and a consumer who wants an inset pads a container they already control.
+ *
+ * `--md-content-width: 100%` takes the 708px reading measure off with it, because a field's
+ * measure is the box it was given. `margin: 0 auto` on the content needs no override: with the
+ * max-width at 100% there is no spare room to distribute, so the centring has nothing to do.
+ *
+ * **Both values have to be the right type, and the wrong type fails silently in two different
+ * ways.** `theme.ts` reads them inside `calc(var(--md-content-width) + 2 * var(--md-gutter))`.
+ *
+ * For `--md-content-width`, which is unregistered, `none` makes that `calc()` invalid and the
+ * `max-width` drops to its own initial value, which is `none` — so the measure disappears, the
+ * spelling that reads most like "no measure" appears to work here, and the same spelling on a
+ * `notes` surface would quietly remove the reading column. `100%` is the one that says it.
+ *
+ * For `--md-gutter`, which is registered as a `<length>`, a value of the wrong type is dropped
+ * and the property **inherits `:root`'s clamp** rather than going to zero or to the
+ * `initial-value`. Measured in Chromium: `banana` and `10%` both compute to `72px` on a 900px
+ * window, which is the gutter this rule exists to remove, arriving back with nothing said.
+ * A bare `0` is *not* such a value — CSS accepts a unitless zero as a length, and it computes
+ * to `0px` — but `0px` is written here anyway, because it is the spelling that keeps working if
+ * the registration is ever narrowed.
+ *
+ * A `notes` surface keeps both, and that is deliberate rather than untouched: a measure is a
+ * readability argument about paragraphs, which a one-line title does not have.
  */
 .sheaf-surface-field {
   --sheaf-page-top: 0px;
   --sheaf-page-bottom: 0px;
+  --md-gutter: 0px;
+  --md-content-width: 100%;
+}
+
+/*
+ * A rendered field is one line, so the paragraph holding it carries no block spacing.
+ *
+ * The render path wraps a field's content in a `<p>`, which is right: it is one paragraph of
+ * inline Markdown. In a consumer's page that `<p>` takes their own default, and the browser's
+ * is `margin: 1em 0`, so a 14px page gives it 14px above and below. The surface is not a block
+ * formatting context, so those margins do not stay inside it — and that is what made this
+ * invisible from inside. `.sheaf-surface` went on reporting the 21px of its one line while the
+ * box a consumer lays out around it was 63px, because the margins had escaped into that box's
+ * padding: 21 + 14 + 14 + 12 of padding + 2 of border.
+ *
+ * Then the editor replaces the `<p>` with a `.cm-line`, which has no such margin, and the same
+ * box becomes 38px. So clicking into a title moved everything under it up by 25px — 28px of
+ * margins less the 3px by which the editor's line is taller than the rendered one. Measured in
+ * Chromium at a 14px/21px page in a 1px-bordered, 6px/10px-padded, 772px box: 63px before the
+ * first click and 38px after it, and 35px before with this rule, which leaves the 3px.
+ *
+ * **A box with no padding and no border hid it too**, and that pairing is the whole of why the
+ * fault reached a public instruction. With nothing to stop the collapse the margins pass
+ * straight through into the surrounding layout, so that box reads 21px then 24px and a reading
+ * taken there says a field does not change size. Measured both ways in the same page.
+ *
+ * `notes` keeps its paragraph spacing. A description is prose with blocks in it and the gap
+ * between two paragraphs is what makes them two.
+ */
+.sheaf-surface-field p {
+  margin: 0;
 }
 
 /* No padding here: CodeMirror's base theme sets `.ͼ1 .cm-line`, two classes to

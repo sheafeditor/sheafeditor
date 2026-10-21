@@ -318,7 +318,10 @@ try {
       };
     });
 
-  const near = (a, b, slack = 2) => a !== null && b !== null && Math.abs(a - b) <= slack;
+  /** `GRIP_HEIGHT` in `src/webview/blockHandle.ts`, which places the lifted grip. */
+const GRIP_HEIGHT = 24;
+
+const near = (a, b, slack = 2) => a !== null && b !== null && Math.abs(a - b) <= slack;
 
   const openDoc = async (name) => {
     await page.goto(`${base}/edit/${name}`);
@@ -332,10 +335,26 @@ try {
     `  a 12-column table: frame ${wide.frame?.left}..${wide.frame?.right}, pane right ${wide.paneRight}, ` +
       `first cell at ${wide.firstCell?.left}, text at ${wide.para?.left}, overhang ${wide.overhang}`
   );
-  if (!near(wide.frame?.right, wide.paneRight)) {
+  /*
+   * The frame stops the same distance short of each pane edge, which **replaces** the assertion
+   * that it reached them.
+   *
+   * That one was right while a table in the pane was meant to fill it, and it is the measurement
+   * the previous design was built around. A table is now positioned against the window rather than
+   * against the writing column, which means a margin it never crosses on both sides: equal, so the
+   * table is centred in the window, and non-zero, so it never runs into the pane's edge.
+   *
+   * Retired rather than loosened, because the behaviour it described is the behaviour that changed.
+   * **It would pass on the old build if it only asserted a margin on the right**, which that build
+   * had; asserting the two are equal is what tells the designs apart, since the old one put nothing
+   * on the left.
+   */
+  const leftEdge = wide.frame?.left ?? 0;
+  const rightEdge = (wide.paneRight ?? 0) - (wide.frame?.right ?? 0);
+  if (!near(leftEdge, rightEdge) || leftEdge < 18 || leftEdge > 52) {
     failures.push(
-      `a wide table's frame ends at ${wide.frame?.right} and the pane at ${wide.paneRight}. ` +
-        `The gutter beside it is the empty space this was meant to give to the table.`
+      `a wide table's frame is inset ${leftEdge}px on the left and ${rightEdge}px on the right of a pane ending at ${wide.paneRight}.\n` +
+        `    A table in the pane is centred in the window, so the two have to be equal, and inside the 20..48 the token allows.`
     );
   }
   /*
@@ -389,17 +408,40 @@ try {
 
   // Scrolled right, the content crosses into the left margin: that is what the inset being
   // padding inside the scroller buys, and a margin outside it could not do.
-  await page.evaluate(() => {
+  /*
+   * Scrolled, the first column passes under the frame's own left edge.
+   *
+   * **Scrolled as far as it goes rather than by a fixed 200px.** The constant was load-bearing and
+   * nobody had said so: it asserted `scrollLeft > 100` as a precondition, so the case silently
+   * depended on this fixture overflowing by more than 100px. Narrowing the frame left less overflow
+   * than that and the case failed for a reason that had nothing to do with where the column was.
+   * A precondition that can stop being true is one to read off the element.
+   *
+   * The claim itself **replaces** "it should have passed into the left margin, so the whole pane is
+   * table". There is no left margin to pass into now: the content starts at the frame's edge and
+   * the margin is outside the frame, where scrolling cannot reach it. What still has to hold, and
+   * is the whole reason the inset is on the frame and not inside the scroller, is that the content
+   * really does scroll under its own left edge rather than stopping at it.
+   */
+  const maxScroll = await page.evaluate(() => {
     const grid = document.querySelector('.sheaf-table-grid');
-    if (grid) grid.scrollLeft = 200;
+    if (!grid) return 0;
+    grid.scrollLeft = grid.scrollWidth;
+    return Math.round(grid.scrollLeft);
   });
   await page.waitForTimeout(400);
   const scrolled = await geometry();
-  console.log(`  scrolled right by ${scrolled.scrollLeft}px: first cell at ${scrolled.firstCell?.left}, text at ${scrolled.para?.left}`);
-  if (!(scrolled.scrollLeft > 100 && scrolled.firstCell !== null && scrolled.firstCell.left < (scrolled.para?.left ?? 0) - 50)) {
+  console.log(
+    `  scrolled right as far as it goes (${scrolled.scrollLeft}px of ${maxScroll}): first cell at ${scrolled.firstCell?.left}, ` +
+      `frame left ${scrolled.frame?.left}, text at ${scrolled.para?.left}`
+  );
+  if (maxScroll < 8) {
+    failures.push(`the 12-column fixture has only ${maxScroll}px of sideways scroll, so nothing below measures a scrolled table.`);
+  } else if (!(scrolled.firstCell !== null && scrolled.firstCell.left < (scrolled.frame?.left ?? 0) - 8)) {
     failures.push(
-      `scrolled right by ${scrolled.scrollLeft}px the first column is at ${scrolled.firstCell?.left}, with the text at ${scrolled.para?.left}. ` +
-        `It should have passed into the left margin, so the whole pane is table.`
+      `scrolled fully right the first column is at ${scrolled.firstCell?.left} and the frame's left edge at ${scrolled.frame?.left}.\n` +
+        `    The column has to pass under that edge: if it stops at it, the inset has been taken inside the scroller instead of on the frame, ` +
+        `and a wide table has lost the leftmost part of its first column.`
     );
   }
 
@@ -554,20 +596,25 @@ try {
    * It moved from 1404 to 1286 when the gutter became readable: the room fell by the 96px gutter
    * and the border pixel, and rule 4 handed the columns 118px less between them. 1404 held only
    * while the gutter read as zero.
+   *
+   * **1286 to 1248 on 2026-10-18**, when a table in the pane stopped being positioned against the
+   * writing column and started being centred in the window. The margin that keeps it off the
+   * window's edge moved outside the frame, so the frame is 2 x `--md-pane-edge` narrower and the
+   * room is the frame less the border pixel, with nothing subtracted inside it. Rule 4 handed the
+   * columns 38px less between them.
+   *
+   * **The assertion that `--md-gutter` resolved to a length went with it**, and was replaced rather
+   * than dropped: that guard existed to catch a custom property failing to resolve, which showed up
+   * as a zero gutter. The property that can fail that way now is `--md-pane-edge`, and the frame
+   * inset measured at the top of this check is zero if it does not resolve, which fails there.
    */
-  const room = end ? end.frame - end.gutter - 1 : null;
-  if (room !== null) console.log(`  the room it was handed: frame ${end.frame} less a ${end.gutter}px gutter less the border pixel = ${room}px`);
-  if (!end || !(end.gutter > 0)) {
-    failures.push(
-      `the gutter after the last column measured ${end?.gutter}px.\n` +
-        `    Zero means \`--md-gutter\` did not resolve to a length, so \`columnLayout.ts\` is using its inset fallback and the table is laid out in the whole frame.`
-    );
-  }
+  const room = end ? end.frame - 1 : null;
+  if (room !== null) console.log(`  the room it was handed: frame ${end.frame} less the border pixel = ${room}px`);
   if (wideCols.length !== 13) failures.push(`the wide table laid out ${wideCols.length} columns rather than 13, so its widths were not measured`);
-  else if (Math.abs(wideTotal - 1286) > 24) {
+  else if (Math.abs(wideTotal - 1248) > 24) {
     failures.push(
-      `the wide table's columns total ${wideTotal}px against the 1286px this geometry was last measured at (frame ${end?.frame}, gutter ${end?.gutter}, room ${room}).\n` +
-        `    Padding is outside \`clientWidth\`, so the frame does not move when padding does; a change this size means the allocator is seeing a different pane.`
+      `the wide table's columns total ${wideTotal}px against the 1248px this geometry was last measured at (frame ${end?.frame}, room ${room}).\n` +
+        `    A change this size means the allocator is seeing a different pane. The margin that keeps a table off the window's edge is outside the frame now, so the room is the frame less the border pixel and nothing is subtracted twice.`
     );
   }
   if (!end || end.gap === null) failures.push('the wide table had no header cells to measure at its far end');
@@ -888,10 +935,20 @@ try {
       const table = grid?.querySelector('table');
       const padRight = parseFloat(getComputedStyle(grid).paddingRight) || 0;
       const contentRight = grid.getBoundingClientRect().right - padRight;
+      const pane = document.querySelector('.cm-scroller') ?? document.scrollingElement;
+      const paneBox = pane.getBoundingClientRect();
+      const frameBox = wrap.getBoundingClientRect();
+      const tableBox = table.getBoundingClientRect();
       return {
         scrollX: !!wrap?.classList.contains('is-scroll-x'),
         pad: getComputedStyle(grid).paddingRight,
         pastContentBox: Math.round(table.getBoundingClientRect().right - contentRight),
+        // The margin outside the frame, which is where the end-of-scroll signal lives now.
+        frameInset: Math.round(Math.min(frameBox.left - paneBox.left, paneBox.right - frameBox.right)),
+        // The two gaps either side of the table inside its frame, which is what centred means.
+        gapLeft: Math.round(tableBox.left - frameBox.left),
+        gapRight: Math.round(frameBox.right - tableBox.right),
+        canUsePane: !!wrap?.classList.contains('can-use-pane'),
       };
     });
     /*
@@ -918,10 +975,15 @@ try {
           const table = grid?.querySelector('table');
           grid.scrollLeft = grid.scrollWidth;
           const cols = [...table.querySelectorAll('colgroup col')].map((c) => Math.round(parseFloat(c.style.width) || 0));
+          const wrap = document.querySelector('.sheaf-table');
+          const pane = document.querySelector('.cm-scroller') ?? document.scrollingElement;
+          const paneBox = pane.getBoundingClientRect();
+          const frameBox = wrap.getBoundingClientRect();
           return {
             cols,
             total: cols.reduce((a, b) => a + b, 0),
             gap: Math.round(grid.getBoundingClientRect().right - table.getBoundingClientRect().right),
+            frameInset: Math.round(Math.min(frameBox.left - paneBox.left, paneBox.right - frameBox.right)),
           };
         })
       );
@@ -940,6 +1002,12 @@ try {
           scrollX: !!wrap?.classList.contains('is-scroll-x'),
           padRight: Math.round(parseFloat(getComputedStyle(grid).paddingRight) || 0),
           gap: Math.round(grid.getBoundingClientRect().right - table.getBoundingClientRect().right),
+          frameInset: (() => {
+            const pane = document.querySelector('.cm-scroller') ?? document.scrollingElement;
+            const paneBox = pane.getBoundingClientRect();
+            const frameBox = wrap.getBoundingClientRect();
+            return Math.round(Math.min(frameBox.left - paneBox.left, paneBox.right - frameBox.right));
+          })(),
         };
       })),
     };
@@ -1020,7 +1088,20 @@ try {
     if (r.rounds) {
       console.log(`    across three drags: ${r.rounds.map((x) => `total ${x.total} gap ${x.gap}`).join(', ')}`);
       const grew = r.rounds.every((x, i) => i === 0 || x.total > r.rounds[i - 1].total);
-      const kept = r.rounds.every((x) => x.gap >= 8);
+      /*
+       * **The end-of-scroll gap is the frame's own margin now, and it is not inside the scroller.**
+       *
+       * This read `x.gap >= 8`, the space left after the last column *within* the scroller, which
+       * was where that signal lived while the inset was padding. A table in the pane is centred in
+       * the window, so the margin that marks the end sits outside the frame, where scrolling
+       * cannot consume it. Measured inside, the gap is now legitimately 0 on a table scrolled to
+       * its end, and this read [72, 0, 0] across three drags as the thing it was built to catch.
+       *
+       * So the claim moves out with the margin: whatever the columns do, the frame keeps its inset
+       * from the pane. That is the measurement a reader can see, and the one a regression would
+       * take away.
+       */
+      const kept = r.rounds.every((x) => (x.frameInset ?? 0) >= 18);
       if (!grew) {
         // The other half the requirement allows: the drag may simply stop. Then the total holds
         // still, which is a pass, and the gap still has to be there.
@@ -1062,11 +1143,34 @@ try {
       }
     }
     if (!r.scrollX) failures.push(`${name}: a column dragged 900px wider did not make the frame scroll, so the gap after the last column proves nothing`);
-    else if (r.gap < 8) failures.push(`${name}: scrolled fully right leaves ${r.gap}px after the last column, so nothing says the table has ended`);
+    else if ((r.frameInset ?? 0) < 18)
+      failures.push(
+        `${name}: scrolled fully right the frame is inset ${r.frameInset}px from the pane, so nothing says the table has ended.\n` +
+          `    The gap after the last column is the frame's margin, outside the scroller where scrolling cannot eat it.`
+      );
     if (r.rest.scrollX) failures.push(`${name}: the table was already scrolling before the drag, so this measured the wrong thing`);
     // Short of the content box means the right padding was taken out of the room the columns
     // divide, which is how a fix for a table that does not fit would break one that does.
-    if (r.rest.pastContentBox < -2) failures.push(`${name}: at rest the table ends ${-r.rest.pastContentBox}px short of its content box, so the right padding is being taken out of the columns' room`);
+    /*
+     * At rest a table that fits is **centred in its frame**, which replaces "it ends at or past its
+     * content box, never short of it".
+     *
+     * That assertion existed to catch a right padding being taken out of the room the columns
+     * divide, and it read any table narrower than its frame as that fault. Centring makes a table
+     * narrower than its frame on purpose, so the old reading now fires on the intended behaviour:
+     * it measured 221px short on a table doing exactly what it is meant to do.
+     *
+     * The fault it was guarding against is still worth catching and shows up as **asymmetry**: room
+     * taken out of one side leaves the gaps unequal, while a table that is simply narrower than its
+     * frame leaves them equal. So the replacement is the issue's own first verify item, and it is
+     * the measurement that would have failed on every build before this one.
+     */
+    if (r.rest.canUsePane && !r.rest.scrollX && Math.abs(r.rest.gapLeft - r.rest.gapRight) > 2) {
+      failures.push(
+        `${name}: at rest the table has ${r.rest.gapLeft}px to its left and ${r.rest.gapRight}px to its right inside its frame.\n` +
+          `    A table in the pane that fits is centred, so those are equal; unequal means room was taken out of one side.`
+      );
+    }
   }
 
   /*
@@ -1155,6 +1259,34 @@ try {
 
   const narrow = await openDoc('narrow.md');
   console.log(`  a 3-column table: total ${Math.round(narrow.total)}px, frame ${narrow.frame?.left}..${narrow.frame?.right}, text at ${narrow.para?.left}`);
+  /*
+   * **This assertion stopped discriminating on 2026-10-18 and it is kept anyway, deliberately.**
+   *
+   * `narrow.md`'s table is laid out to the writing column's width, and the writing column is itself
+   * centred in the pane. A table of exactly that width therefore lands on the same x whether it is
+   * centred in the window or aligned to the prose: measured at a 1200px pane, both put its first
+   * column at 246. So this passes on the design it was written for **and** on the one that replaced
+   * it, and it can no longer tell them apart.
+   *
+   * It is not vacuous: it still catches a narrow table laid out somewhere neither design would put
+   * it, which is what it was guarding. What it cannot do is stand as evidence that a table is
+   * centred, and a reader looking for that evidence should read the gap comparison in `endGap`
+   * instead, which is the one that failed when centring was removed.
+   *
+   * **A second fixture at some other width was tried on 2026-10-19 and cannot be built.** Two short
+   * columns still come out at the writing column's width: the allocator divides the room it is
+   * given rather than sizing to content, so `| A | B |` measured 708px against a writing column of
+   * 708px. A table in the pane fills its room at every width this check drives, so there is no
+   * table whose left edge distinguishes "centred in the window" from "aligned to the prose".
+   *
+   * That makes this a structural limit rather than a bad fixture, and it changes where the evidence
+   * for centring lives. It is the **frame** assertion at the top of this check, which reads the
+   * inset from each pane edge and has a control, plus the gap comparison in `endGap`. Neither
+   * depends on a table being narrower than its room.
+   *
+   * The attempt was reverted rather than left in: a fixture that fails its own precondition is a
+   * red gate that teaches nothing, and the precondition is what caught it.
+   */
   if (!near(narrow.firstCell?.left, narrow.para?.left)) {
     failures.push(`a narrow table's first column is at ${narrow.firstCell?.left} and the text at ${narrow.para?.left}; it should sit in the column with the prose.`);
   }
@@ -1385,8 +1517,41 @@ try {
       await page.waitForTimeout(700);
       const before = await page.evaluate(() => {
         const h = document.querySelector('.sheaf-block-handle:not([hidden])');
-        return h ? Math.round(h.getBoundingClientRect().top) : null;
+        const head = document.querySelector('.sheaf-board-col-head')?.getBoundingClientRect();
+        const card = document.querySelector('.sheaf-board-card')?.getBoundingClientRect();
+        const blk = document.querySelector('.sheaf-view')?.getBoundingClientRect();
+        return {
+          top: h ? Math.round(h.getBoundingClientRect().top) : null,
+          gripH: h ? Math.round(h.getBoundingClientRect().height) : null,
+          headTop: head ? Math.round(head.top) : null,
+          headH: head ? Math.round(head.height) : null,
+          cardLeft: card ? Math.round(card.left) : null,
+          viewLeft: blk ? Math.round(blk.left) : null,
+        };
       });
+      /*
+       * **The grip is already lifted here, and that is the behaviour rather than a fault.**
+       *
+       * This used to assert that the grip's `top` *changed* when the board scrolled: it sits beside
+       * a block normally and lifts clear of the header once content scrolls under it, so a change
+       * was evidence that the scroll listener had fired.
+       *
+       * A board in the pane never has the beside position to start from. The grip is placed at
+       * `max(the writing column's left, the block's left)`, so for a block that starts left of the
+       * writing column it lands *inside* the block, which is what `scrolledUnder` reads, and the
+       * grip is lifted from the first frame. Measured: head top 375, grip 349, which is exactly
+       * `375 - 24 - 2`, before anything had been scrolled.
+       *
+       * That is `blocks.handle` R1's own second half, "and above where the block leaves no margin to
+       * sit in", and it was true of a wide table before this too. Centring every table and board in
+       * the window simply puts far more blocks on that path, so the transition this case was built
+       * to catch no longer happens here at all.
+       *
+       * So the claim moves to what is load-bearing and true at any scroll position: the grip is
+       * clear of the header strip, it stays there, and it is over no card. A listener that stopped
+       * firing cannot be caught here any more, and catching it wants a block that *does* have a
+       * margin, which is a table inside the writing column rather than a board in the pane.
+       */
       // The pointer is not touched from here on.
       await page.evaluate(() => {
         const host = document.querySelector('.sheaf-view-grid');
@@ -1403,18 +1568,22 @@ try {
           .filter((b) => b.width > 0 && b.right > r.left + 1 && b.left < r.right - 1 && b.bottom > r.top + 1 && b.top < r.bottom - 1);
         return { top: Math.round(r.top), scrollLeft: Math.round(host?.scrollLeft ?? 0), over: over.map((b) => Math.round(b.left)) };
       });
-      console.log(`  the grip when a board scrolls under a still pointer: top ${before} -> ${after.top}, scrollLeft ${after.scrollLeft}, over ${after.over.length ? JSON.stringify(after.over) : 'nothing'}`);
-      if (before === null) failures.push('no grip was up before the board was scrolled, so the scroll listener was not measured');
+      console.log(`  the grip when a board scrolls under a still pointer: top ${before.top} -> ${after.top}, scrollLeft ${after.scrollLeft}, over ${after.over.length ? JSON.stringify(after.over) : 'nothing'}`);
+      if (before.top === null) failures.push('no grip was up before the board was scrolled, so the scroll listener was not measured');
       else if (after.scrollLeft === 0) failures.push('the board did not scroll, so the scroll listener was not measured');
       else if (after.over.length) {
         failures.push(
           `a board scrolled under a still pointer left the grip over ${after.over.length} card(s) at ${JSON.stringify(after.over)}.\n` +
             `    Placement alone is not enough: the grip is only re-placed by a listener on the board's own scroller.`
         );
-      } else if (after.top === before) {
+      } else if (before.headTop === null) {
+        failures.push('no column head was drawn, so there is nothing to say where the grip should be.');
+      } else if (Math.abs(before.top - (before.headTop - GRIP_HEIGHT - 2)) > 2 || Math.abs(after.top - before.top) > 2) {
         failures.push(
-          `the grip stayed at top ${before} while the board scrolled to ${after.scrollLeft}, so nothing re-placed it.\n` +
-            `    It happens to clear the cards at this scroll position, which is why this asserts the move and not only the overlap.`
+          `the grip is at ${before.top} before the scroll and ${after.top} after, against the clear-above position ` +
+            `${before.headTop - GRIP_HEIGHT - 2} (head top ${before.headTop} less the grip's ${GRIP_HEIGHT} and a 2px gap).\n` +
+            `    A board in the pane leaves no margin for the grip to sit beside it, so the grip is lifted clear of the header ` +
+            `strip and stays there at every scroll position.`
         );
       }
     }

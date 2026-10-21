@@ -67,6 +67,20 @@ export const STEPS = [
   ['Dialect imports', process.execPath, [join(REPO, 'scripts', 'check-dialect-imports.mjs')]],
   ['Field imports', process.execPath, [join(REPO, 'scripts', 'check-field-imports.mjs')]],
   ['Render safety', process.execPath, [join(REPO, 'scripts', 'check-render-safety.mjs')]],
+  /*
+   * What the editor draws in place of each construct's source, under jsdom. **463ms, no browser.**
+   *
+   * Here because of how it was found broken rather than because it was always meant to be. It was an
+   * npm script and nothing else, so it ran when somebody typed it, and it had been exiting 1 on
+   * `ReferenceError: Window is not defined` for an unknown length of time. **Two of its tables print
+   * before the crash**, so the failure is below the fold and a reader who skims the top sees a
+   * working tool. A check outside the gates decays silently; this one decayed into something that
+   * looks like output, which is worse, because the thing that gets read is the part that still works.
+   *
+   * It builds the editor it reads on every run, so it is not one of the checks that can measure
+   * whatever was last built: its own comment records that fault being found and fixed here.
+   */
+  ['Reveal map', process.execPath, [join(REPO, 'scripts', 'check-reveal.mjs')]],
   ['Type check', bin('tsc'), ['--noEmit']],
   /*
    * The suites' own TypeScript, which until 2026-10-02 nothing compiled: `tsconfig.json` includes
@@ -128,6 +142,23 @@ export const STEPS = [
    * wiring half is in the prose suite, which runs whether there is a browser here or not.
    */
   ['Mounted click', process.execPath, [join(REPO, 'scripts', 'check-mount-click.mjs')]],
+  /*
+   * Whether the library ever asks for a file of its own that the `exports` map does not name, which
+   * is the question `Package` above cannot ask. That one checks every entry resolves; this one
+   * checks nothing outside them is fetched, in a tree built out of the map and served from
+   * somewhere that is not this checkout.
+   *
+   * The distinction is not academic. The diagram loader resolves its module against the page's
+   * `webview.css`, and this repository keeps `media/mermaid/` beside that stylesheet, so every host
+   * here serves it by accident of layout while the map names no path that reaches it. Every probe
+   * rooted at the checkout reports a working diagram.
+   *
+   * Unconditional, as `Mounted click` is and for the same reason: a real browser is the only thing
+   * that can watch a module fetch, the jsdom suite that covers these constructs replaces the loader
+   * to do its job, and the subjects it would be conditional on are the whole of `src/` plus the
+   * manifest. It costs seconds.
+   */
+  ['Consumer assets', process.execPath, [join(REPO, 'scripts', 'check-consumer-assets.mjs')]],
   /*
    * And the other thing a consumer is handed, which is a surface the size of what it holds. A
    * `field` used to take its one line from 18px to 480px on first focus, because all three profiles

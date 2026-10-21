@@ -108,7 +108,7 @@ export function pressOnLinkIn(view: EditorView, e: MouseEvent): { opened: boolea
     const address = linkAtPointer(view, e);
     if (!address) return { opened: false, hold: null };
     e.preventDefault();
-    openLink(address);
+    openLink(address, view);
     return { opened: true, hold: null };
   }
   const address = followableAtPointer(view, e);
@@ -121,7 +121,7 @@ export function releaseOnLinkIn(view: EditorView, e: MouseEvent, held: HeldLink 
   if (!held) return false;
   if (Math.abs(e.clientX - held.x) > CLICK_SLOP || Math.abs(e.clientY - held.y) > CLICK_SLOP) return false;
   if (followableAtPointer(view, e) !== held.address) return false;
-  openLink(held.address);
+  openLink(held.address, view);
   return true;
 }
 

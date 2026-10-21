@@ -125,12 +125,16 @@ const measure = (page) =>
       return {
         cls: (el.className || el.tagName.toLowerCase()).split(/\s+/)[0],
         frame: Math.round(r.left),
+        right: Math.round(r.right),
         pad: Math.round(pad),
         content: Math.round(r.left + pad),
         drawn: s.display !== 'none' && s.visibility !== 'hidden' && Math.round(r.width) > 2,
       };
     };
+    const tableEl = wrap.querySelector(':scope > .sheaf-table-grid > table');
+    const tr = tableEl?.getBoundingClientRect();
     return {
+      table: tr ? { left: Math.round(tr.left), right: Math.round(tr.right) } : null,
       prose: lead ? Math.round(lead.getBoundingClientRect().left) : null,
       usesPane: wrap.classList.contains('can-use-pane'),
       paneWide: wrap.classList.contains('is-pane-wide'),
@@ -194,7 +198,12 @@ async function showAsBoard(page) {
 }
 
 const CASES = [
-  { file: 'named-narrow.md', paneWide: false, mustDraw: ['sheaf-table-caption'] },
+  /*
+   * At three window widths, because this is the case where the table's start is computed, and a
+   * computation is a claim about every width rather than the one it was seen at. The other two cases
+   * put the table at the frame's edge, where there is nothing to compute.
+   */
+  { file: 'named-narrow.md', paneWide: false, mustDraw: ['sheaf-table-caption'], widths: [1440, 1100, 900] },
   { file: 'named-wide.md', paneWide: true, mustDraw: ['sheaf-table-caption'] },
   { file: 'board.md', paneWide: false, mustDraw: ['sheaf-table-board'], board: true },
 ];
@@ -210,14 +219,17 @@ let measured = 0;
 
 try {
   const page = await browser.newPage({ viewport: VIEW });
-  for (const spec of CASES) {
+  for (const spec0 of CASES) for (const width of spec0.widths ?? [VIEW.width]) {
+    // The fixture, and the label every message below uses for this run of it.
+    const spec = { ...spec0, label: width === VIEW.width ? spec0.file : `${spec0.file} at ${width}px` };
+    await page.setViewportSize({ width, height: VIEW.height });
     await page.goto(`${base}/edit/${spec.file}`);
     await page.waitForSelector('.sheaf-table-grid', { timeout: 15_000 });
     await page.waitForTimeout(2200);
     if (spec.board) {
       const stopped = await showAsBoard(page);
       if (stopped) {
-        failures.push(`${spec.file}: the table was never shown as a board, so the board was never measured — ${stopped}`);
+        failures.push(`${spec.label}: the table was never shown as a board, so the board was never measured — ${stopped}`);
         continue;
       }
       await page.waitForTimeout(400);
@@ -225,29 +237,29 @@ try {
 
     const r = await measure(page);
     if (r.error) {
-      failures.push(`${spec.file}: ${r.error}`);
+      failures.push(`${spec.label}: ${r.error}`);
       continue;
     }
 
     /* Preconditions. Each of these makes the readings below mean nothing rather than mean "fine", so
        they are failures rather than skips. */
     if (!r.usesPane) {
-      failures.push(`${spec.file}: the frame has no \`can-use-pane\`, so there is no negative margin and nothing to reconcile`);
+      failures.push(`${spec.label}: the frame has no \`can-use-pane\`, so there is no negative margin and nothing to reconcile`);
       continue;
     }
     if (r.paneWide !== spec.paneWide) {
       failures.push(
-        `${spec.file}: written for is-pane-wide ${spec.paneWide} and the frame is ${r.paneWide}, so this is not the state the case is about`
+        `${spec.label}: written for is-pane-wide ${spec.paneWide} and the frame is ${r.paneWide}, so this is not the state the case is about`
       );
       continue;
     }
     if (r.prose === null) {
-      failures.push(`${spec.file}: the lead paragraph was not found, so the grid's own position cannot be pinned`);
+      failures.push(`${spec.label}: the lead paragraph was not found, so the grid's own position cannot be pinned`);
       continue;
     }
     for (const cls of spec.mustDraw) {
       if (!r.kids.some((k) => k.cls === cls && k.drawn)) {
-        failures.push(`${spec.file}: \`${cls}\` is not drawn, so this case measured nothing about the child it exists for`);
+        failures.push(`${spec.label}: \`${cls}\` is not drawn, so this case measured nothing about the child it exists for`);
       }
     }
 
@@ -271,26 +283,83 @@ try {
     let anchor;
     let anchorName;
     if (grid?.drawn) {
-      const want = spec.paneWide ? r.wrap.frame : r.prose;
-      const where = spec.paneWide ? "the frame's left edge" : 'the prose';
+      /*
+       * **The grid spans its frame whether or not the table filled the pane**, which replaces the
+       * old pair of answers: the frame's edge for a pane-wide table and the prose for one that was
+       * not.
+       *
+       * That split existed while the scroller carried the writing column's inset as padding, so a
+       * table that fitted lined up with the paragraph above it. A table in the pane is centred in
+       * the window now and the inset is taken on the frame instead, so the scroller spans whatever
+       * the frame is and the *table inside it* is what moves. `is-pane-wide` no longer decides
+       * where anything sits, which is why it is gone from this reading.
+       *
+       * The scroller is checked against the frame here, and everything else against the table
+       * inside it, below.
+       */
+      const want = r.wrap.frame;
+      const where = "the frame's left edge";
       if (grid.content !== want) {
         failures.push(
-          `${spec.file}: the grid's content starts at ${grid.content} and ${where} is at ${want}, ${grid.content - want} out. ` +
+          `${spec.label}: the grid's content starts at ${grid.content} and ${where} is at ${want}, ${grid.content - want} out. ` +
             'Everything else here is measured against the grid, so this is checked first.'
         );
         continue;
       }
-      anchor = grid.content;
-      anchorName = 'the grid';
+      /*
+       * **The children line up with the table, not with the scroller that holds it.** The scroller
+       * spans the frame and the table is centred inside it, so the scroller's edge is not where
+       * anything a reader sees begins. This anchored to the scroller after the centring change and
+       * passed on a table's name sitting about 220px left of its table, because the name *was* level
+       * with the scroller. The table's own left edge is what the name is over.
+       */
+      if (!r.table) {
+        failures.push(`${spec.label}: the grid is drawn and holds no table, so there is nothing to line the children up with.`);
+        continue;
+      }
+      anchor = r.table.left;
+      anchorName = 'the table';
     } else {
-      anchor = r.prose;
-      anchorName = 'the prose';
+      /*
+       * A board's host spans the frame too, so the anchor is the frame rather than the prose.
+       *
+       * This read the prose because a board was drawn at its own width and held to the writing
+       * column, on the reasoning that a board using a third of the width "has taken nothing". A
+       * board is centred in the window now, by the same rule as the grid beside it, and its lanes
+       * are centred inside a host that spans the frame. So the two branches agree again, which is
+       * the point: there is one answer to where a child of a frame starts.
+       */
+      anchor = r.wrap.frame;
+      anchorName = "the frame's left edge, the grid being hidden by a board";
     }
 
     console.log(
-      `\n${spec.file}: can-use-pane, is-pane-wide ${r.paneWide}; prose ${r.prose}, frame ${r.wrap.frame}, lining up against ${anchorName} at ${anchor}`
+      `\n${spec.label}: can-use-pane, is-pane-wide ${r.paneWide}; prose ${r.prose}, frame ${r.wrap.frame}, lining up against ${anchorName} at ${anchor}`
     );
     for (const k of r.kids) {
+      // The scroller spans the frame by design and was checked against it above.
+      if (k.cls === 'sheaf-table-grid') {
+        console.log(`  ${k.cls.padEnd(24)} content ${String(k.content).padStart(5)}, spans the frame from ${r.wrap.frame}; the table inside starts at ${anchor}`);
+        continue;
+      }
+      /*
+       * The controls bar is placed by its right edge, so that edge is what is checked, against where
+       * the table ends or the frame does when the table scrolls past it. It was in the deliberate
+       * list with nothing comparing that edge to anything, and after the centring change it ended
+       * short of a centred table's right edge by the whole offset.
+       */
+      if (k.cls === 'sheaf-table-controls' && k.drawn && r.table && grid?.drawn) {
+        const want = Math.min(r.table.right, r.wrap.right);
+        if (Math.abs(k.right - want) > 2) {
+          failures.push(
+            `${spec.label}: the controls bar ends at ${k.right} and the table at ${r.table.right} (frame ends ${r.wrap.right}), ${k.right - want} out.\n` +
+              '    The bar is placed by `--md-table-edge`, which has to be where the table actually ends.'
+          );
+        } else {
+          console.log(`  ${k.cls.padEnd(24)} right edge ${k.right}, level with where the table ends at ${want}`);
+        }
+        continue;
+      }
       if (INVISIBLE.has(k.cls)) {
         console.log(`  ${k.cls.padEnd(24)} nothing drawn to line up`);
         continue;
@@ -307,7 +376,7 @@ try {
       measured++;
       if (off !== 0) {
         failures.push(
-          `${spec.file}: \`${k.cls}\` content starts at ${k.content}, ${anchorName} at ${anchor}, ${off} out.\n` +
+          `${spec.label}: \`${k.cls}\` content starts at ${k.content}, ${anchorName} at ${anchor}, ${off} out.\n` +
             `    frame ${k.frame}, padding-left ${k.pad}${grid?.drawn ? `; the grid's padding-left is ${grid.pad}` : ''}.\n` +
             "    A child of `.can-use-pane` starts at the pane's edge unless it takes the inset back as its own\n" +
             "    padding. Give it the grid's pair of rules in `media/webview.css`, or add it to this check's\n" +
@@ -343,6 +412,6 @@ if (failures.length) {
 }
 
 console.log(
-  `\n${measured} drawn children compared across ${CASES.length} tables, every one level with the grid inside its frame, or with the prose where a board has replaced the grid.`
+  `\n${measured} drawn children compared across ${CASES.length} tables, every one level with the frame's left edge, which is where the grid starts and where a board's host starts when a board has replaced it.`
 );
 console.log(`Reconciled some other way, with a reason each: ${Object.keys(DELIBERATE).join(', ')}.`);

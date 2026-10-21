@@ -1,7 +1,7 @@
 /*
  * The editor's behaviour, shared by the webview and the test harness: Markdown
  * parsing, live preview, tables, the prose editing modules, theme and keymaps.
- * Host wiring (compartments, listeners, messages) stays in main.ts.
+ * Host wiring (compartments, listeners, messages) stays in mount.ts, which `main.ts` calls.
  */
 
 import { EditorState, Extension, Prec } from '@codemirror/state';
@@ -200,21 +200,22 @@ export function editorExtensions(onShowShortcuts: () => void): Extension[] {
     frontMatterView,
     tables,
     /*
-     * A `view` fence draws as a view here rather than in `main.ts`, beside everything else that
+     * A `view` fence draws as a view here rather than in the mount, beside everything else that
      * draws a construct.
      *
-     * It was composed one level up, in the array `main.ts` builds, which made the editor two things:
-     * what `editorExtensions` returns, and that plus whatever `main.ts` adds. Everything mounting
+     * It was composed one level up, in the array the mount builds, which made the editor two things:
+     * what `editorExtensions` returns, and that plus whatever the mount adds. Everything mounting
      * the first drew a `view` fence as an ordinary code block — `test/harness.ts`, and so the prose
      * scenarios, `check-render.mjs`, `check-render-agrees.mjs` and the jsdom half of the real-editor
      * scenarios. `sample/views.md` has four of them and `check-render.mjs` reported it clean.
      *
-     * `main.ts` is not the VS Code side of anything: it is the entry of `media/webview.js`, the one
-     * bundle both hosts load. So this was never host drift and both hosts drew views correctly. What
-     * it was is two definitions of the editor, one of which only the checks ever saw.
+     * The mount is not the VS Code side of anything: `main.ts` calls it and is the entry of
+     * `media/webview.js`, the one bundle both hosts load. So this was never host drift and both
+     * hosts drew views correctly. What it was is two definitions of the editor, one of which only
+     * the checks ever saw.
      *
      * Nothing has to be wired for it. `viewBlock.ts` asks the host for a data file through
-     * `setDataFileHost`, which `main.ts` sets and which already takes `null`: four call sites guard
+     * `setDataFileHost`, which the mount sets and which already takes `null`: four call sites guard
      * on it, and `test/tables.entry.ts` passes `null` deliberately. So a mount with no host draws a
      * view of a block it can read and reports a file it cannot, which is what it should do.
      */

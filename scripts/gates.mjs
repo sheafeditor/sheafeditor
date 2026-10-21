@@ -27,9 +27,9 @@
  * reached, because "all gates passed" is the same sentence whether that was nine or
  * twenty-three.
  *
- * A step that *skips* is not a step that passed. **Fourteen** of these are browser-driven,
+ * A step that *skips* is not a step that passed. **Fifteen** of these are browser-driven,
  * and each one skips and exits 0 when it cannot find Chrome or `playwright-core`.
- * Those fourteen are the whole layout half of the bar, and jsdom can see none of what
+ * Those fifteen are the whole layout half of the bar, and jsdom can see none of what
  * they cover, so one missing dependency used to take all of them out at once and the
  * run still said "All gates passed". This reads each step's output for the line the
  * scripts already print and refuses to claim success when one appears.
@@ -40,9 +40,38 @@
  * Diagrams, Caret at markers, Paging, Sticky header, Frame children, Touch layout,
  * Indent and rhythm, Board drag, Hover bar, Cell source, Code colours. They were 336s
  * of a 551s run. `Mounted click` and `Field height` were both added the same day and
- * are the thirteenth and fourteenth, so the twelve and the 336s are from before them
- * and neither number has been taken again. **This count is a thing to re-derive with
- * the command above rather than to increment**, which is how it came to say five.
+ * are the thirteenth and fourteenth, so the twelve and the 336s are from before them.
+ * **This count is a thing to re-derive with the command above rather than to
+ * increment**, which is how it came to say five.
+ *
+ * Re-derived on 2026-10-17 with that command, after `Consumer assets` was added:
+ * **fifteen** printed `skipped`, which is the twelve above plus those three. The run
+ * reported `37 of 37 gates ran, 15 failed` and exited 1, each of the fifteen named as
+ * `did not run`, so the refusal above covers the new gate without an entry of its own.
+ *
+ * **The lever is `PLAYWRIGHT_CORE`, and `SHEAF_CHROME` cannot stand in for it.** A
+ * nonexistent value there falls through to the next candidate path, which on a machine
+ * with Chrome in `/Applications` is the real browser: the run passes and reads as there
+ * being nothing to find. That is the first thing to reach for and it is the wrong one.
+ *
+ * **A second route asks a different question, and it is here because the first one's
+ * answer is only as complete as the lever.** The census above counts what skipped when
+ * `PLAYWRIGHT_CORE` was broken. It covers these fifteen because every one of them
+ * reaches a browser through `playwright-core` — measured, in that run every skip line
+ * cited `playwright-core is not installed` and none cited a missing Chrome. **A gate
+ * that reached a browser some other way would skip nothing, be counted as having run,
+ * and be invisible to that count.** So the other route is a static one: the scripts
+ * under `scripts/` that name `playwright-core`, `chromium.launch` or `SHEAF_CHROME`,
+ * less this runner, less any of them that `lib/gateSteps.mjs` does not register as a
+ * gate. Today those last are `build-icons.mjs`, `measure-tables.mjs` and
+ * `profile-table-keystroke.mjs`, excluded because nothing runs them as part of the
+ * bar. No count is written for that route on purpose, for the same reason the one
+ * above is re-derived rather than incremented.
+ * **The 336s was not retaken and is still a figure from before the last three gates
+ * existed**: in that run they had skipped, so it measures nothing about their cost, and
+ * the clock was shared with another gates run, which the timings file marks as
+ * incomparable. Take a cost from `node scripts/gate-timings.mjs` instead, which medians
+ * over runs that did not overlap.
  * **Four gates in the same stretch need no browser at all**, and one
  * of them, `Editing matrix`, is 90s on its own, so anyone moving "the browser block"
  * to a nightly on the strength of where these sit in the list would leave it behind.

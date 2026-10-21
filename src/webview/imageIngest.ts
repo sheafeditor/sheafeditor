@@ -9,7 +9,7 @@
  * **Ingestion is not drawing, and that distinction is why this file exists.** The seam was first
  * described as parse-versus-draw, which would have left `toolbar.ts` where it was: its only use of
  * the old module is `pickImage`, and a picker needs none of the widget machinery. With this split
- * `toolbar.ts`, `linkTarget.ts`, `tables.ts` and `main.ts` all stop reaching the drawing half, and
+ * `toolbar.ts`, `linkTarget.ts`, `tables.ts` and `mount.ts` all stop reaching the drawing half, and
  * `livePreview.ts` is the only module that still does.
  *
  * The direction is a chain and not a cycle: drawing reaches in here for `saveImageFile`, which the
@@ -21,45 +21,60 @@ import type { FromWebview } from '../protocol';
 import { EditorView } from '@codemirror/view';
 import { installLinkPaste } from './linkPaste';
 import { mdDestination } from './imageMarkup';
+import { mountSlot } from './mountScope';
+import type { MountScope } from './mountScope';
 
 // ---- Drag / drop / paste ingestion ----------------------------------------
 
 type VsPost = (message: FromWebview) => void;
 
-let seq = 0;
-const pending = new Map<string, { resolve: (path: string) => void; reject: (err: Error) => void }>();
-/** Set once at init so widget actions (e.g. Replace) can reach the host. */
-let ingestPost: VsPost | null = null;
+/**
+ * One editor's way of reaching its host, and the saves it is waiting on.
+ *
+ * Per mount, because the host behind one editor is not the host behind another: with this at module
+ * scope a second editor's `setupImageIngestion` took the first editor's host, and a picture dropped
+ * into the first document was saved beside the second one.
+ */
+interface Ingestion {
+  /** Set when ingestion is attached, so widget actions (e.g. Replace) can reach the host. */
+  post: VsPost | null;
+  seq: number;
+  pending: Map<string, { resolve: (path: string) => void; reject: (err: Error) => void }>;
+}
+
+const own = mountSlot<Ingestion>(() => ({ post: null, seq: 0, pending: new Map() }));
 
 /** Ask the host to persist an image; resolves with the workspace-relative path. */
-function requestSaveImage(post: VsPost, name: string, data: string): Promise<string> {
-  const id = `img-${++seq}`;
+function requestSaveImage(here: Ingestion, post: VsPost, name: string, data: string): Promise<string> {
+  const id = `img-${++here.seq}`;
   return new Promise((resolve, reject) => {
-    pending.set(id, { resolve, reject });
+    here.pending.set(id, { resolve, reject });
     post({ type: 'saveImage', id, name, data });
   });
 }
 
 /**
- * Encode a file and hand it to the host; resolves with the workspace-relative path.
+ * Encode a file and hand it to this editor's host; resolves with the workspace-relative path.
  *
  * Exported for the drawing half's Replace action, which is the one thing a widget does that needs
  * the host rather than the document. It is the only edge from `images.ts` into this file.
  */
-export async function saveImageFile(file: File | Blob): Promise<string> {
-  if (!ingestPost) throw new Error('image ingestion not ready');
+export async function saveImageFile(view: EditorView, file: File | Blob): Promise<string> {
+  const here = own.at(view);
+  if (!here.post) throw new Error('image ingestion not ready');
   const anyFile = file as File;
   const stamp = String(Date.now()).slice(-6);
   const name = anyFile.name || `pasted-image-${stamp}${extFor(file, '')}`;
   const data = await fileToBase64(file);
-  return requestSaveImage(ingestPost, name, data);
+  return requestSaveImage(here, here.post, name, data);
 }
 
-/** Host reply router — called from main.ts's message handler. */
-export function handleImageSaved(id: string, path?: string, error?: string): void {
-  const p = pending.get(id);
+/** Host reply router — called from the mount's message handler. */
+export function handleImageSaved(id: string, path?: string, error?: string, scope?: MountScope): void {
+  const here = scope ? own.of(scope) : own.at(null);
+  const p = here.pending.get(id);
   if (!p) return;
-  pending.delete(id);
+  here.pending.delete(id);
   if (error || !path) p.reject(new Error(error ?? 'save failed'));
   else p.resolve(path);
 }
@@ -96,7 +111,7 @@ async function ingest(view: EditorView, files: File[], at: number): Promise<void
   for (const file of files) {
     let relPath: string;
     try {
-      relPath = await saveImageFile(file);
+      relPath = await saveImageFile(view, file);
     } catch (err) {
       // The host says why it could not save, in a notification naming the
       // reason, so nothing is inserted and nothing more is said here. Every
@@ -189,7 +204,7 @@ function imageFilesFrom(dt: DataTransfer | null): File[] {
 
 /** Attach drop/paste handlers so images become saved files + Markdown. */
 export function setupImageIngestion(view: EditorView, post: VsPost): void {
-  ingestPost = post;
+  own.at(view).post = post;
   const dom = view.dom;
 
   // A web address pasted over chosen words links them rather than replacing them.

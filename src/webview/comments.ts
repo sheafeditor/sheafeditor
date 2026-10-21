@@ -42,6 +42,8 @@ import { syntaxTree } from '@codemirror/language';
 import { digest } from './columnLayout';
 import { activeLines, setReveal, sourceModeOn } from './revealState';
 import { revealRange } from './revealBlock';
+import { mountSlot } from './mountScope';
+import type { MountScope } from './mountScope';
 
 /** Whether comments are drawn in full or shrunk to a marker. */
 export type CommentsMode = 'show' | 'hidden';
@@ -129,47 +131,72 @@ export function commentBlocks(state: EditorState): CommentBlock[] {
 
 // ---- What the page remembers ----------------------------------------------
 
-/** The comments collapsed in this document, by comment key. */
-const collapsed = new Set<string>();
+/**
+ * What one mounted editor remembers about its own document's comments.
+ *
+ * **Every field here is about one document**, which is why none of them may be module-level while a
+ * page can hold more than one editor. `collapsed` is the sharpest: it was cleared and refilled from
+ * whichever host answered last, so a second editor's folds arriving replaced the first editor's and
+ * the first then wrote them back under its own document's key. That is worse than reading a stale
+ * value, because it sends the wrong content to the right host, and the host keeps it.
+ */
+interface DocumentComments {
+  /** The comments collapsed in this document, by comment key. */
+  collapsed: Set<string>;
+  /**
+   * Comments a person asked to see again while `sheaf.comments` is `hidden`, by
+   * key. Pressing a marker is about this one comment now, so it is not written
+   * down anywhere: turning the setting back and forth clears it, and so does a
+   * reload.
+   */
+  revealedWhileHidden: Set<string>;
+  mode: CommentsMode;
+  /**
+   * Bumped whenever anything above changes. The field compares it on every
+   * update, so the next transaction redraws with the new answer rather than
+   * waiting for the document or the selection to change.
+   */
+  version: number;
+  foldsHost: ((message: FromWebview) => void) | null;
+  foldsSeq: number;
+}
+
+const own = mountSlot<DocumentComments>(() => ({
+  collapsed: new Set<string>(),
+  revealedWhileHidden: new Set<string>(),
+  mode: 'show',
+  version: 0,
+  foldsHost: null,
+  foldsSeq: 0,
+}));
 
 /**
- * Comments a person asked to see again while `sheaf.comments` is `hidden`, by
- * key. Pressing a marker is about this one comment now, so it is not written
- * down anywhere: turning the setting back and forth clears it, and so does a
- * reload.
+ * Every mounted editor's way to redraw when something outside a transaction changes.
+ *
+ * **Shared on purpose, and it stays that way.** It is a registry of all the editors there are, not
+ * state about one of them, so a sweep making module-level collections per-mount must leave it alone.
+ * It is one of five such registries in this directory; `mountScope.ts` names the other four.
+ * The broadcast costs an empty transaction in editors that have nothing to redraw: each one's field
+ * compares its own mount's version, and only the mount whose version moved rebuilds.
  */
-const revealedWhileHidden = new Set<string>();
-
-let mode: CommentsMode = 'show';
-
-/**
- * Bumped whenever anything above changes. The field compares it on every
- * update, so the next transaction redraws with the new answer rather than
- * waiting for the document or the selection to change.
- */
-let version = 0;
-
-/** Every mounted editor's way to redraw when something outside a transaction changes. */
 const redrawers = new Set<() => void>();
 
-function changed(): void {
-  version++;
+function changed(where: DocumentComments): void {
+  where.version++;
   for (const redraw of redrawers) redraw();
 }
 
 /** Draw comments in full, or shrink each to a marker. */
-export function setCommentsMode(next: CommentsMode): void {
-  if (next === mode) return;
-  mode = next;
+export function setCommentsMode(next: CommentsMode, scope?: MountScope): void {
+  const here = scope ? own.of(scope) : own.at(null);
+  if (next === here.mode) return;
+  here.mode = next;
   // A marker pressed under the old setting says nothing about the new one.
-  revealedWhileHidden.clear();
-  changed();
+  here.revealedWhileHidden.clear();
+  changed(here);
 }
 
 // ---- Keeping a collapse ----------------------------------------------------
-
-let foldsHost: ((message: FromWebview) => void) | null = null;
-let foldsSeq = 0;
 
 /**
  * Where the stored collapses come from and go to. Setting a host asks it for
@@ -177,9 +204,10 @@ let foldsSeq = 0;
  * arrives when the page asks first, so a comment is usually drawn collapsed
  * from the start rather than shutting a moment later.
  */
-export function setCommentFoldsHost(send: ((message: FromWebview) => void) | null): void {
-  foldsHost = send;
-  send?.({ type: 'commentFoldsRead', id: `comments-${++foldsSeq}` });
+export function setCommentFoldsHost(send: ((message: FromWebview) => void) | null, scope?: MountScope): void {
+  const here = scope ? own.of(scope) : own.at(null);
+  here.foldsHost = send;
+  send?.({ type: 'commentFoldsRead', id: `comments-${++here.foldsSeq}` });
 }
 
 /**
@@ -188,29 +216,31 @@ export function setCommentFoldsHost(send: ((message: FromWebview) => void) | nul
  * Anything that is not a key marked `true` is dropped, which is how a damaged
  * or foreign value reads as none.
  */
-export function handleCommentFolds(_id: string, folds: unknown): void {
-  collapsed.clear();
+export function handleCommentFolds(_id: string, folds: unknown, scope?: MountScope): void {
+  const here = scope ? own.of(scope) : own.at(null);
+  here.collapsed.clear();
   if (folds && typeof folds === 'object' && !Array.isArray(folds)) {
     for (const [key, value] of Object.entries(folds as Record<string, unknown>)) {
-      if (key && value === true) collapsed.add(key);
+      if (key && value === true) here.collapsed.add(key);
     }
   }
-  changed();
+  changed(here);
 }
 
 /** Hand the host every collapse in this document, for it to keep. */
-function saveFolds(): void {
-  foldsHost?.({
+function saveFolds(here: DocumentComments): void {
+  here.foldsHost?.({
     type: 'commentFoldsWrite',
-    folds: Object.fromEntries(Array.from(collapsed, (key) => [key, true])),
+    folds: Object.fromEntries(Array.from(here.collapsed, (key) => [key, true])),
   });
 }
 
-function setCollapsed(key: string, on: boolean): void {
-  if (on) collapsed.add(key);
-  else collapsed.delete(key);
-  saveFolds();
-  changed();
+function setCollapsed(view: EditorView, key: string, on: boolean): void {
+  const here = own.at(view);
+  if (on) here.collapsed.add(key);
+  else here.collapsed.delete(key);
+  saveFolds(here);
+  changed(here);
 }
 
 // ---- The box ---------------------------------------------------------------
@@ -325,7 +355,7 @@ class CommentWidget extends WidgetType {
     fold.addEventListener('click', (e) => {
       e.preventDefault();
       e.stopPropagation();
-      setCollapsed(this.key, !this.shut);
+      setCollapsed(view, this.key, !this.shut);
       // The box has just changed height; without this the lines under it are
       // drawn at the old one until something else forces a measure.
       view.requestMeasure();
@@ -409,8 +439,9 @@ class CommentMarkerWidget extends WidgetType {
     marker.addEventListener('click', (e) => {
       e.preventDefault();
       e.stopPropagation();
-      revealedWhileHidden.add(this.key);
-      changed();
+      const here = own.at(view);
+      here.revealedWhileHidden.add(this.key);
+      changed(here);
       view.requestMeasure();
     });
     row.appendChild(marker);
@@ -430,6 +461,13 @@ function buildCommentDecorations(state: EditorState): DecorationSet {
   const decos: Range<Decoration>[] = [];
   const doc = state.doc;
   const active = activeLines(state);
+  /*
+   * Which collapses to draw, taken from the mount this state belongs to.
+   *
+   * A state field is handed an `EditorState` and never a view, which is why the mount travels as a
+   * facet in the editor's own configuration rather than as a `WeakMap` on the view.
+   */
+  const here = own.at(state);
 
   for (const comment of commentBlocks(state)) {
     const first = doc.lineAt(comment.from).number;
@@ -438,10 +476,10 @@ function buildCommentDecorations(state: EditorState): DecorationSet {
     for (let n = first; n <= last; n++) if (active.has(n)) shown = true;
     // The caret is in it, or a reveal covers it: it shows its own text instead.
     if (shown) continue;
-    const hidden = mode === 'hidden' && !revealedWhileHidden.has(comment.key);
+    const hidden = here.mode === 'hidden' && !here.revealedWhileHidden.has(comment.key);
     const widget = hidden
       ? new CommentMarkerWidget(comment.key)
-      : new CommentWidget(comment.key, comment.lines, collapsed.has(comment.key), comment.from, comment.to);
+      : new CommentWidget(comment.key, comment.lines, here.collapsed.has(comment.key), comment.from, comment.to);
     decos.push(Decoration.replace({ widget, block: true }).range(comment.from, comment.to));
   }
 
@@ -454,10 +492,11 @@ interface CommentDecorations {
 }
 
 const commentField = StateField.define<CommentDecorations>({
-  create: (state) => ({ version, decorations: buildCommentDecorations(state) }),
+  create: (state) => ({ version: own.at(state).version, decorations: buildCommentDecorations(state) }),
   update(value, tr) {
     // A long document is parsed in stages, so a comment further down can enter
     // the syntax tree in a transaction that changes nothing else.
+    const version = own.at(tr.state).version;
     if (
       tr.docChanged ||
       tr.selection ||

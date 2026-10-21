@@ -15,7 +15,7 @@ import { Decoration, EditorView } from '@codemirror/view';
 import { ensureSyntaxTree, language, syntaxTree } from '@codemirror/language';
 import { sheafMarkdown } from './markdownDialect';
 import { sheafMarkdownLanguage } from './markdownLanguage';
-import { frontMatterEnd } from './frontMatter';
+import { frontMatterEnd } from '../dialect/frontMatter';
 import { alertMarkerOnText } from './alerts';
 import { isolateHistory } from '@codemirror/commands';
 import type { SyntaxNode, Tree } from '@lezer/common';

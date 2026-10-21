@@ -1760,7 +1760,7 @@ const cases = [
       const body = text.slice(start + declaration.length, text.indexOf('\n}\n', start));
       return new Set([...body.matchAll(/^\s{2}(\w+)\??:/gm)].map((m) => m[1]));
     };
-    const page = await fields('src/webview/main.ts', 'interface EditorConfig {');
+    const page = await fields('src/webview/mount.ts', 'interface EditorConfig {');
     const sent = new Set(Object.keys(DEFAULT_CONFIG));
     const missing = [...page].filter((key) => !sent.has(key));
     const spare = [...sent].filter((key) => !page.has(key));

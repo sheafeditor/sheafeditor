@@ -14,7 +14,7 @@
  * in a real window; these checks cover the decisions Sheaf makes.
  *
  * A few checks put the real webview behind the panel (`test/webview.mjs`), so a
- * document goes from the stand-in's text through the host and into `main.ts` and
+ * document goes from the stand-in's text through the host and into the page and
  * back again, the whole way a keystroke travels.
  */
 
@@ -24,7 +24,7 @@ import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { bootWebview } from './webview.mjs';
+import { bootTwoMounts, bootWebview, loadMountEntry } from './webview.mjs';
 import { eagerOutputs } from '../scripts/eager-closure.mjs';
 
 const require = createRequire(import.meta.url);
@@ -954,6 +954,121 @@ async function hostCases() {
     };
   });
 
+  check('mount: loading the editor entry in a page with no host and no elements changes nothing', () => {
+    /*
+     * CONTROL, and the thing it protects is the whole reason the entry is split. `main.ts` reads the
+     * `acquireVsCodeApi` global and two elements by literal id while it loads, and appends the
+     * shortcuts overlay to `document.body`. So importing the editor used to need a page shaped like
+     * the webview's, and a consumer who imported it and rendered nothing got a throw.
+     *
+     * The page here has neither the global nor the ids, and a paragraph of its own to notice the
+     * loss of. The instrument is asserted as well as the rule: a load that quietly produced no
+     * `mountWebview` would leave the body unchanged for the wrong reason, and that reads identically.
+     */
+    const loaded = loadMountEntry();
+    const ok = loaded.error === null && loaded.mounted && loaded.after === loaded.before;
+    const detail = loaded.error
+      ? `loading it threw ${loaded.error.message}`
+      : !loaded.mounted
+        ? 'loading it left no mountWebview, so an unchanged body says nothing'
+        : `the body was ${JSON.stringify(loaded.before)} and became ${JSON.stringify(loaded.after)}`;
+    loaded.close();
+    return { ok, detail };
+  });
+
+  check('mount: two editors on a page, and a write from outside to one does not swallow typing in the other', () => {
+    /*
+     * CONTROL for `applyingRemote`. It is the re-entrancy flag held across writing a merged outside
+     * change back, and without it the file ends up with a line in it twice. Held at module scope it
+     * was shared, so while one editor applied a change from outside, the other editor's change
+     * handler read the flag as set and posted nothing: an edit that silently did not register, in
+     * the editor nobody had touched.
+     *
+     * **Which editor is read is the point.** The editor applying the change behaves correctly either
+     * way, so a check watching that one passes against the defect. The typing goes into the *second*
+     * editor, from inside the first one's own update, which is the only moment the flag is up.
+     */
+    const both = bootTwoMounts();
+    both.a.init('First document.\n');
+    both.b.init('Second document.\n');
+    /*
+     * The precondition, and it is the one that makes this control mean anything. Typing into the
+     * second editor at an ordinary moment must post an `edit`; if it does not, nothing below
+     * distinguishes a suppressed edit from an editor that posts no edits at all.
+     */
+    both.b.type('!');
+    const ordinary = both.b.edits();
+    // Now type into the second editor from inside the first editor's own remote write, which is the
+    // only moment the flag is up.
+    const fired = both.duringNextChangeIn(both.a, () => both.b.type('X'));
+    const before = both.b.edits().length;
+    const fellBackAt = both.fallbacks();
+    both.a.editor.receive({ type: 'setContent', text: 'First document, rewritten from outside.\n' });
+    const during = both.b.edits().slice(before);
+    const reached = fired();
+    /*
+     * And nothing took the page's scope while both mounts were open. A fallback is the right answer
+     * on a page with one editor and this defect on a page with two, so an assertion about which
+     * editor registered an edit is only worth as much as the resolution under it. In the editor's
+     * own hosts every editor comes from a mount, so this must be zero.
+     */
+    const fellBack = both.fallbacks() - fellBackAt;
+    const ok =
+      ordinary.length === 1 &&
+      ordinary[0].includes('!') &&
+      reached &&
+      during.length === 1 &&
+      during[0].includes('X') &&
+      both.a.doc() === 'First document, rewritten from outside.\n' &&
+      fellBack === 0;
+    const detail =
+      `typing at an ordinary moment posted ${ordinary.length} edit(s); the hook ${reached ? 'ran' : 'never ran'} inside the first editor's write; ` +
+      `typing during it posted ${during.length} edit(s), last ${JSON.stringify(during[during.length - 1] ?? null)}; ` +
+      `the first editor holds ${JSON.stringify(both.a.doc())}; ${fellBack} read(s) fell back to the page`;
+    both.close();
+    return { ok, detail };
+  });
+
+  check('mount: a data file in one editor marks its own root, and gives the page class back when it goes', () => {
+    /*
+     * The one thing a mount still writes outside its own elements. `media/webview.css` names
+     * `body.sheaf-csv-mode`, so the class has to go there, and on a page with two editors it reaches
+     * the other one: the data file's grid wants the formatting toolbar hidden and the Markdown
+     * document beside it does not.
+     *
+     * What is held here is the half that is this file's to get right. The root carries the class
+     * too, which is what a narrowed selector would read, and only the data file's root carries it.
+     * And the body gives it back when the last data file goes, rather than leaving the page marked
+     * for whatever opens next.
+     */
+    const both = bootTwoMounts();
+    both.a.init('A Markdown document.\n');
+    both.b.init('a,b\n1,2\n', { mode: 'csv' });
+    const { document: doc } = both.window;
+    const rootA = doc.getElementById('ed-a');
+    const rootB = doc.getElementById('ed-b');
+    const marked = {
+      markdownRoot: rootA.classList.contains('sheaf-csv-mode'),
+      dataRoot: rootB.classList.contains('sheaf-csv-mode'),
+      body: doc.body.classList.contains('sheaf-csv-mode'),
+    };
+    both.b.editor.destroy();
+    const after = {
+      dataRoot: rootB.classList.contains('sheaf-csv-mode'),
+      body: doc.body.classList.contains('sheaf-csv-mode'),
+    };
+    const ok =
+      marked.markdownRoot === false &&
+      marked.dataRoot === true &&
+      marked.body === true &&
+      after.dataRoot === false &&
+      after.body === false;
+    const detail = `while open ${JSON.stringify(marked)}; after the data file was taken down ${JSON.stringify(after)}`;
+    both.a.editor.destroy();
+    both.window.close();
+    return { ok, detail };
+  });
+
   check('commands: every command Sheaf offers is one activation registers, and it registers no other', () => {
     /*
      * `package.json` is what a person sees in the Command Palette and `registerCommand` is
@@ -1209,7 +1324,7 @@ async function hostCases() {
 
   /**
    * A document open in Sheaf with the real webview behind the panel: the host code and
-   * `src/webview/main.ts` talking through the panel's messages and nothing else.
+   * `src/webview/main.ts` and the mount it calls, talking through the panel's messages and nothing else.
    */
   const openWithWebview = async (text, eol, settings) => {
     const win = makeWindow(settings);
@@ -4961,7 +5076,7 @@ async function hostCases() {
   check('shape: every setting the host sends is one the editor page reads, and neither side is alone', () => {
     /*
      * `EditorConfig` is still declared twice: once in `src/protocol.ts`, which every host
-     * reads, and once in `webview/main.ts` for what the page accepts. The protocol check
+     * reads, and once in `webview/mount.ts` for what the page accepts. The protocol check
      * above compares the messages, and `config` is one field of `init`, so what is inside
      * it is not held by that check at all. This is the inside.
      *
@@ -4987,7 +5102,7 @@ async function hostCases() {
       return out;
     };
     const host = fieldsOf(read('src', 'protocol.ts'), 'interface EditorConfig {');
-    const page = fieldsOf(read('src', 'webview', 'main.ts'), 'interface EditorConfig {');
+    const page = fieldsOf(read('src', 'webview', 'mount.ts'), 'interface EditorConfig {');
     for (const [side, parsed] of [
       ['the host', host],
       ['the page', page],
@@ -5038,7 +5153,7 @@ async function hostCases() {
   check('shape: every message the host can send is one the editor page declares, field for field', () => {
     /*
      * `ToWebview` is declared in `src/protocol.ts` for what a host sends, and again in
-     * `webview/main.ts` for what the page accepts.
+     * `webview/mount.ts` for what the page accepts.
      *
      * The reasoning here used to be that one declaration was impossible, because sharing it
      * would mean the page importing from host code and the boundary check exists to stop
@@ -5054,7 +5169,7 @@ async function hostCases() {
      */
     const read = (...parts) => readFileSync(path.join(here, '..', ...parts), 'utf8');
     const host = messagesIn(read('src', 'protocol.ts'), 'ToWebview');
-    const page = messagesIn(read('src', 'webview', 'main.ts'), 'ToWebview');
+    const page = messagesIn(read('src', 'webview', 'mount.ts'), 'ToWebview');
     // A parse that quietly found nothing would agree with anything, so it has to say so.
     for (const [side, parsed] of [
       ['the host', host],

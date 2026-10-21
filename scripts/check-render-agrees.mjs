@@ -34,6 +34,13 @@
  * One known difference is excluded by name and said out loud. jsdom mounts no block widget the size
  * of a table, so `drawMap` reports a table's source as prose, which looks like a rule and is an
  * artefact of the harness. Tables are out of scope here anyway, so the two reasons agree.
+ *
+ * Two differences are the two paths disagreeing on purpose, and each is counted on its own line of
+ * the report rather than charged to the renderer. A **link reference definition** is drawn by the
+ * editor and drawn by nothing here, so its line is taken out of the comparison; there is no part of
+ * it left to compare. An **ordered item written `1)`** has its delimiter folded to the full stop
+ * HTML draws, and its number and its words stay in the comparison, because only the one character
+ * is a difference between the media. Each is explained where it is applied.
  */
 import { JSDOM } from 'jsdom';
 import { createRequire } from 'node:module';
@@ -213,12 +220,29 @@ const corpusLine = wild
 let compared = 0;
 let skipped = 0;
 let definitionLines = 0;
+/** Ordered items written `1)`, compared with their delimiter folded to the one HTML draws. */
+let delimiterLines = 0;
 let undrawn = 0;
 const undrawnBy = new Map();
 /** Every construct that appeared somewhere a line was actually compared. */
 const seenConstructs = new Set();
 const disagreements = [];
 const skippedBy = new Map();
+/**
+ * Every document that could not be compared, with the reason. **Named in full at the end, because
+ * a count is not an identification.**
+ *
+ * It used to be a bare counter, with only the *first* thrower named inline and the rest appearing
+ * solely inside the disagreement list, which truncates at twelve without `--verbose`. Two
+ * truncations over one fact: a second thrower was unnamed inline, and the corpus it came from
+ * sorts last, so its row landed past the cap in any run with a dozen disagreements.
+ *
+ * That cost a real dispute. A run reported `2 document(s) threw` and the pass reading it could
+ * identify only one, so whether the second was a new regression or had always thrown became an
+ * argument rather than a lookup, with the two readings fitting the facts equally well. Neither
+ * reader was careless; the instrument named one of two and counted the other.
+ */
+const notCompared = [];
 let threw = 0;
 
 for (const file of files) {
@@ -229,10 +253,13 @@ for (const file of files) {
     drawn = drawMap(text);
     rendered = renderMarkdown(text);
   } catch (e) {
-    // Said as it happens rather than collected, because a run where everything throws exits at the
-    // empty-set guard below and would otherwise print the count and none of the reasons.
+    // Said as it happens as well as collected, because a run where everything throws exits at the
+    // empty-set guard below and would otherwise print the count and none of the reasons. The
+    // inline line is still only the first, to keep a corpus-wide failure from scrolling past; every
+    // one of them is named in full at the end, which is the part that was missing.
     if (threw === 0) console.log(`${relative(REPO, file)} threw: ${e.message}\n`);
     threw++;
+    notCompared.push({ file: relative(REPO, file), why: e.message });
     disagreements.push({ file: relative(REPO, file), line: 0, detail: `threw: ${e.message}` });
     continue;
   }
@@ -267,9 +294,45 @@ for (const file of files) {
    * the middle of a paragraph, is still compared.
    */
   const dropped = new Set();
+  /*
+   * And the lines where an ordered item's delimiter is a `)`, which the two media spell differently
+   * with nothing wrong on either side.
+   *
+   * CommonMark allows `1.` and `1)`. The editor keeps the file's own characters, because an ordered
+   * marker is **boxed** and boxing is the one mechanism of the three that restyles the bytes in
+   * place; so the editor's line reads `1)First again`. The renderer emits `<ol>` and no marker at
+   * all, and the browser draws the marker from `list-style-type`, which writes a full stop whatever
+   * the file holds. `withMarkers` puts that full stop into the string on this side for exactly that
+   * reason, so the two strings differ by one character on every such line.
+   *
+   * **Neither side is wrong and the renderer has nothing to fix.** Part 2's own rule for the third
+   * mechanism is that boxing cannot be followed by an implementation with no caret, and that a
+   * reimplementer should ask what its output format already provides rather than emit the source
+   * characters. HTML provides the marker. Emitting the file's `1)` as content beside an `<ol>` that
+   * draws its own marker is the double-numbering defect that was already found and removed from this
+   * path once.
+   *
+   * So the delimiter is folded rather than the line dropped. A dropped line would take its words out
+   * of the comparison with it, and the words are the part either side could still get wrong: the
+   * number is compared through the fold, so a list starting at 3 that rendered as 1 still fails.
+   *
+   * Found from the marker in the tree rather than by matching `^\d+\)` over the text, so a line that
+   * only looks like one — a year at the start of a sentence, a `)` inside an indented code block —
+   * is compared as it stands.
+   */
+  const parenMarker = new Set();
+  const lineOf = (pos) => {
+    for (let n = 0; n < lineStarts.length; n++) {
+      const from = lineStarts[n];
+      const to = n + 1 < lineStarts.length ? lineStarts[n + 1] - 1 : text.length;
+      if (pos >= from && pos <= to) return n + 1;
+    }
+    return 1;
+  };
   {
     const cursor = dialectParser.parse(text).cursor();
     do {
+      if (cursor.name === 'ListMark' && /^\d+\)$/.test(text.slice(cursor.from, cursor.to))) parenMarker.add(lineOf(cursor.from));
       if (cursor.name !== 'LinkReference') continue;
       for (let n = 0; n < lineStarts.length; n++) {
         const from = lineStarts[n];
@@ -316,7 +379,9 @@ for (const file of files) {
      * An unordered item's `- ` is replaced by a bullet widget in the editor, so its drawn text begins
      * with a literal bullet character. In HTML that same bullet is the list marker a browser draws
      * from `<li>`, and it is not text at all. Both show a bullet; only one has it in the string. An
-     * ordered item needs nothing here, because there the number is the file's own characters in both.
+     * ordered item needs no strip, because both sides carry a number in the string: the editor's is
+     * the file's own and this side's is put there by `withMarkers`. Its *delimiter* does need a fold,
+     * and that is `sameDelimiter` below rather than this one.
      */
     /*
      * And one more, on both sides equally: the whitespace between an ordered item's marker and its
@@ -345,8 +410,21 @@ for (const file of files) {
      * those lines were out of scope and never reached this.
      */
     const hasMarker = /^[\s>]*[-*+]\s/.test(row.source);
-    const theirs = (hasMarker ? row.drawn.replace(/^\s*\u2022\s*/, '') : row.drawn).replace(markerGap, '$1');
-    const ours = (mine[row.line - 1] ?? '').replace(markerGap, '$1');
+    /*
+     * An ordered marker's delimiter, folded to the one HTML draws, on a line the tree says carries a
+     * `)` marker. Put through both sides rather than one, though only the editor's string holds a
+     * `)`: the fold is a fact about the two media and not a correction to either implementation, and
+     * a reader of this line should not have to work out which side it was aimed at.
+     */
+    let folded = false;
+    const sameDelimiter = (s) => {
+      if (!parenMarker.has(row.line)) return s;
+      const out = s.replace(/^(\s*\d+)\)/, '$1.');
+      folded ||= out !== s;
+      return out;
+    };
+    const theirs = sameDelimiter(hasMarker ? row.drawn.replace(/^\s*\u2022\s*/, '') : row.drawn).replace(markerGap, '$1');
+    const ours = sameDelimiter(mine[row.line - 1] ?? '').replace(markerGap, '$1');
     /*
      * A line the editor could not draw is not a disagreement, and counting it as one puts a fifth of
      * this number on the renderer's account. `drawMap` says so in as many words, so this reads its
@@ -359,6 +437,13 @@ for (const file of files) {
       continue;
     }
     compared++;
+    /*
+     * Counted when the fold actually changed a string, and after the line is known to have been
+     * compared. Counting the lines it was *offered* would report a number whatever the fold did,
+     * which is the shape of a figure that cannot fall: with the fold disabled on purpose the report
+     * went on saying six.
+     */
+    if (folded) delimiterLines++;
     for (const c of constructsOnLine(row.line)) seenConstructs.add(c);
     if (ours.trim() !== theirs.trim()) {
       disagreements.push({ file: relative(REPO, file), line: row.line, source: row.source, theirs, ours });
@@ -408,7 +493,25 @@ if (definitionLines) {
   console.log(`  ${definitionLines} line(s) of link reference definitions, left out of the comparison by name:`);
   console.log('      the editor draws a definition as its source and the renderer draws nothing, on purpose');
 }
-if (threw) console.log(`  ${threw} document(s) threw`);
+if (delimiterLines) {
+  console.log(`  ${delimiterLines} ordered item(s) written "1)", compared with the delimiter folded to "1.":`);
+  console.log('      the editor keeps the file\'s own delimiter, because an ordered marker is boxed; HTML');
+  console.log('      draws the marker from the <ol> and writes a full stop whatever the file holds. The');
+  console.log('      number and the words either side of it are still compared.');
+}
+/*
+ * The denominator, every run, whether or not anything went wrong.
+ *
+ * `compared` against the population is the number a reader needs to know what a pass is worth, and
+ * a run that quietly compares fewer documents than the last one should not look like a run that
+ * compared them all. Each document that was not compared is named with its reason, outside the
+ * disagreement list so the twelve-row cap cannot hide one.
+ */
+console.log(
+  `  ${files.length - notCompared.length} of ${files.length} document(s) compared` +
+    (notCompared.length ? `, ${notCompared.length} not:` : ', none skipped.')
+);
+for (const { file, why } of notCompared) console.log(`      ${file}  —  ${why}`);
 if (undrawn) {
   console.log(`  ${undrawn} line(s) the editor could not draw, which is the instrument rather than the renderer:`);
   for (const [f, n] of [...undrawnBy].sort((a, b) => b[1] - a[1]).slice(0, 5)) console.log(`      ${String(n).padStart(4)}  ${f}`);

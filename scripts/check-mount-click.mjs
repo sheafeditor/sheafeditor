@@ -10,11 +10,17 @@
  * description was inserted at the top of it however far down they had clicked, and every click
  * after that was correct.
  *
- * **The control is in every case, and it is the identical click once the surface is already an
- * editor.** That is the reading that makes this a measurement rather than an opinion about where a
- * caret ought to be: the same point, converted by the same code, on a surface that was focused
- * before the click rather than by it. The two indexes have to agree. A fix that moved the first
- * click by breaking the second would pass an assertion about the first alone.
+ * **The first click is measured against the text the person was looking at.** Before anything is
+ * clicked, the browser is asked which character of the rendered surface is under the point, and
+ * that text is found in the value. The caret has to land there. It is read from the page rather
+ * than from anything Sheaf computes, which is what makes this a measurement rather than an opinion
+ * about where a caret ought to be. The editor draws the value in a different place from the
+ * rendered surface, so the same point is over different text in the two states, and comparing the
+ * first click with a click into the built editor would compare two different targets.
+ *
+ * **A click into an editor that already exists is still in every case, as a control.** It is
+ * converted by the editor's own layout and must still land somewhere the case recognises, so a fix
+ * that moved the first click by breaking the second would fail here too.
  *
  * **Both numbers are printed, every run, pass or fail.** 0 is the answer the defect gives and 0 is
  * also the answer an unmeasured view gives, so a line reading "the caret moved correctly" cannot
@@ -126,18 +132,13 @@ const SHORT_FIRST = [
 const FENCED = ['A line before the fence.', '', '```js', 'const a = 1;', 'const b = 2;', 'const c = 3;', '```', '', 'After.', ''].join('\n');
 
 /**
- * One line of inline Markdown for the `field` profile, and it has to be a long one.
+ * One line of inline Markdown for the `field` profile, longer than the box.
  *
- * A `field` is given no height, so the rendered line and the editor's line are both at the top of
- * the box and the editor's is 40px lower: the writing column's own top padding. On a short value
- * they do not overlap at all, so every point a first click can land on is above the editor's text
- * and the caret goes to 0 whether a position was carried or not. Measured: a 90-character value
- * rendered 56 to 92 down the page against an editor line at 96 to 168. A value long enough to wrap
- * several times is what gives the two states a band of screen in common, and so the only reading a
- * field's first click can be measured by.
+ * A `field` is one line in both states and a value too long for it runs on past the right edge, so
+ * the click has to be on that one line, a few pixels down, and on a word left of the edge.
  */
 const FIELD =
-  'A single line of **inline** Markdown that runs on for long enough to wrap several times inside a four hundred pixel box, which is what gives the rendered line and the editor line a band of the page in common.';
+  'A single line of **inline** Markdown that runs on for longer than the four hundred pixel box it is mounted in, past the right edge.';
 
 /**
  * The box a surface is mounted in: fixed, so a click lands at the same point in every state.
@@ -219,6 +220,20 @@ async function probe({ value, profile, dx, dy, marker, alreadyEditing, at }) {
   await page.evaluate(([v, p]) => window.make(v, p), [value, profile]);
   const rendered = await page.locator('#host').boundingBox();
   const point = at ?? { x: Math.round(rendered.x + dx), y: Math.round(rendered.y + dy) };
+  /*
+   * What the rendered surface has under the point, read before anything is clicked, as the source
+   * text either side of the browser's own caret position there. It is read from the page and not
+   * from anything Sheaf computes, so it is the ground truth the first click is compared with.
+   */
+  const under = alreadyEditing
+    ? null
+    : await page.evaluate(([x, y]) => {
+        const pos = document.caretPositionFromPoint(x, y);
+        const host = document.getElementById('host');
+        if (!pos || pos.offsetNode.nodeType !== 3 || !host.contains(pos.offsetNode)) return null;
+        const data = pos.offsetNode.data;
+        return { before: data.slice(Math.max(0, pos.offset - 16), pos.offset), after: data.slice(pos.offset, pos.offset + 16) };
+      }, [point.x, point.y]);
   if (alreadyEditing) {
     await page.evaluate(() => window.surface.focus());
     await page.waitForFunction(() => window.surface.editing());
@@ -229,7 +244,7 @@ async function probe({ value, profile, dx, dy, marker, alreadyEditing, at }) {
     .waitForFunction(() => window.surface.editing(), null, { timeout: 5000 })
     .then(() => true)
     .catch(() => false);
-  if (!built) return { index: null, editingBefore: was, point, why: 'the click focused nothing, so no editor was built' };
+  if (!built) return { index: null, editingBefore: was, point, under, why: 'the click focused nothing, so no editor was built' };
   // A frame, so a position that had to wait for a measure has arrived before the typing does.
   await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
   await page.keyboard.type(marker);
@@ -237,9 +252,25 @@ async function probe({ value, profile, dx, dy, marker, alreadyEditing, at }) {
     .waitForFunction((m) => window.surface.value().includes(m), marker, { timeout: 5000 })
     .then(() => true)
     .catch(() => false);
-  if (!typed) return { index: null, editingBefore: was, point, why: `typing ${marker} reached no document` };
+  if (!typed) return { index: null, editingBefore: was, point, under, why: `typing ${marker} reached no document` };
   const index = await page.evaluate((m) => window.surface.value().indexOf(m), marker);
-  return { index, editingBefore: was, point };
+  return { index, editingBefore: was, point, under };
+}
+
+/**
+ * The source index the rendered text under a point names, or `null` with the reason.
+ *
+ * The text after the point is looked for in the value when there is any, which is a click on a
+ * character; the text before it when there is none, which is a click past the end of a line and
+ * names the end of that line. A context string found twice in the value is refused rather than
+ * guessed between, so a fixture that repeats itself fails loudly here.
+ */
+function sourceIndex(value, under) {
+  if (!under) return { index: null, why: 'the rendered surface had no text under the point' };
+  const unique = (s) => s && value.indexOf(s) >= 0 && value.indexOf(s) === value.lastIndexOf(s);
+  if (under.after.trim() && unique(under.after)) return { index: value.indexOf(under.after) };
+  if (under.before.trim() && unique(under.before)) return { index: value.indexOf(under.before) + under.before.length };
+  return { index: null, why: `neither ${JSON.stringify(under.before)} nor ${JSON.stringify(under.after)} is in the value exactly once` };
 }
 
 const failures = [];
@@ -266,12 +297,31 @@ async function compare({ name, value, profile = 'notes', dx, dy, wanted }) {
       return;
     }
   }
+  /*
+   * The control keeps its old job: a click into an editor that already exists is converted by the
+   * editor's own layout, and it must still land somewhere this case recognises.
+   */
   const usable = wanted(control.index, value);
   if (!usable.ok) {
-    say(name, false, `the control is not a reading this case can be checked against: ${usable.why}. ${where}`);
+    say(name, false, `the click into a built editor did not land where it used to: ${usable.why}. ${where}`);
     return;
   }
-  say(name, first.index === control.index, where);
+  /*
+   * The first click is compared with the rendered text under the point, which is what the person
+   * was looking at. It is not compared with the control: the editor draws the value in a different
+   * place from the rendered surface, so the same screen point is over different text in the two
+   * states, and "the first click agrees with the second" was the defect rather than the contract.
+   */
+  const truth = sourceIndex(value, first.under);
+  if (truth.index === null) {
+    say(name, false, `the rendered text under the point could not be read: ${truth.why}. ${where}`);
+    return;
+  }
+  say(
+    name,
+    first.index === truth.index,
+    `${where}; the rendered text there was ${JSON.stringify(first.under.before)}|${JSON.stringify(first.under.after)}, which is index ${truth.index}`
+  );
 }
 
 try {
@@ -296,7 +346,7 @@ try {
     value: FIELD,
     profile: 'field',
     dx: 160,
-    dy: 64,
+    dy: 8,
     wanted: (at) => ({ ok: at > 0, why: `it landed at ${at}, which is where the defect puts a caret too` }),
   });
 
@@ -336,9 +386,13 @@ try {
    * once. 104 is the middle of the band, where the rendered state holds the closing paragraph and
    * the editor holds the first line of code. A font or a default margin that moves the band would
    * leave the click focusing nothing, which `probe` reports as such rather than as a pass.
+   *
+   * So the two halves of this case check different text. The first click is checked against the
+   * rendered paragraph under the point, which is what the person was looking at, and the control
+   * click into the built editor is the half that checks a click inside a fence.
    */
   await compare({
-    name: 'a click on a fenced block lands inside it rather than throwing',
+    name: 'a click over a fence lands on the rendered text under it, and inside the fence once built',
     value: FENCED,
     dx: 120,
     dy: 104,
@@ -362,4 +416,4 @@ if (failures.length) {
   console.log(`\n${failures.length} mounted-surface click check(s) failed`);
   process.exit(1);
 }
-console.log('\nmounted surfaces: the first click puts the caret where the second one would');
+console.log('\nmounted surfaces: the first click puts the caret on the text under the pointer');

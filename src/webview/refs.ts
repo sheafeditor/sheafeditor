@@ -17,6 +17,9 @@
 
 import { EditorView } from '@codemirror/view';
 import { coveredEnd } from './selectionExtent';
+import { mountSlot, scopeNear } from './mountScope';
+import type { MountScope } from './mountScope';
+import type { EditorState } from '@codemirror/state';
 
 /* ---- Building ------------------------------------------------------------- */
 
@@ -76,15 +79,28 @@ export function tableRowRef(fileName: string, ref: { start: number; end: number;
  * editor, which sits below the selection toolbar: a toolbar that imported it directly
  * would close that loop. The page wires it once, so every surface gets the one answer.
  */
-let cellRefs: ((el: Element) => string | null) | null = null;
+/**
+ * What one mounted editor knows about naming a place in its own document.
+ *
+ * Both are per mount: the host names *this* document and writes *this* editor's host's clipboard,
+ * and the cell source counts lines of *this* document's file. Shared, Copy ref in the first editor
+ * named the second document.
+ */
+interface Refs {
+  cellRefs: ((el: Element) => string | null) | null;
+  host: BlockRefHost | null;
+}
 
-/** Give the page a way to name the cell an element is inside. */
-export function setCellRefSource(fn: ((el: Element) => string | null) | null): void {
-  cellRefs = fn;
+const own = mountSlot<Refs>(() => ({ cellRefs: null, host: null }));
+
+/** Give one editor a way to name the cell an element is inside. */
+export function setCellRefSource(fn: ((el: Element) => string | null) | null, scope?: MountScope): void {
+  (scope ? own.of(scope) : own.at(null)).cellRefs = fn;
 }
 
 /** The ref for the cell `el` sits in, or null outside a grid or where no page wired one. */
 export function cellRefAt(el: Element | null): string | null {
+  const cellRefs = own.of(scopeNear(el)).cellRefs;
   return el && cellRefs ? cellRefs(el) : null;
 }
 
@@ -103,19 +119,17 @@ export interface BlockRefHost {
   hasEditorKeys?: () => boolean;
 }
 
-let host: BlockRefHost | null = null;
-
-/** Give the page a way to name the document and write the clipboard; Copy ref is hidden until then. */
-export function setBlockRefHost(next: BlockRefHost | null): void {
-  host = next;
+/** Give one editor a way to name the document and write the clipboard; Copy ref is hidden until then. */
+export function setBlockRefHost(next: BlockRefHost | null, scope?: MountScope): void {
+  (scope ? own.of(scope) : own.at(null)).host = next;
 }
 
-/** The host, or null where the page has none. */
-export function blockRefHost(): BlockRefHost | null {
-  return host;
+/** This editor's host, or null where the page gave it none. */
+export function blockRefHost(near?: EditorView | EditorState | Node | null): BlockRefHost | null {
+  return own.of(scopeNear(near)).host;
 }
 
 /** Whether a Copy ref may print its key: true only where the window binds the sharing keys. */
-export function hasRefKey(): boolean {
-  return host?.hasEditorKeys?.() ?? false;
+export function hasRefKey(near?: EditorView | EditorState | Node | null): boolean {
+  return own.of(scopeNear(near)).host?.hasEditorKeys?.() ?? false;
 }

@@ -1,7 +1,7 @@
 // Unit scenarios for selecting with the mouse and for tables that stay grids:
 //   prose.mouse-selection  double-click selects the word, triple-click selects the paragraph
 //   tables.stays-grid      a table is only ever edited as a grid: entering edit mode near it never shows its raw Markdown
-// The click handler itself lives in main.ts, which cannot be imported under jsdom, so these check the model the
+// The click handler itself lives in mount.ts, which these do not drive, so they check the model the
 // handler must act on: which word and paragraph a click position belongs to, and whether a reveal or selection
 // next to a table leaves the grid drawn. The e2e file of the same name does the real clicks.
 import { EditorState, EditorSelection } from '@codemirror/state';

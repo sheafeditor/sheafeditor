@@ -38,6 +38,8 @@ import type { SyntaxNode } from '@lezer/common';
 import { undo as undoDocument, redo as redoDocument, undoDepth, redoDepth, isolateHistory, invertedEffects } from '@codemirror/commands';
 import type { SearchQuery } from '@codemirror/search';
 import { revealField, setReveal } from './revealState';
+import { mountSlot, scopeOf } from './mountScope';
+import type { MountScope } from './mountScope';
 import { resolveImageSrc } from './imageMarkup';
 import { openLink } from './linkTarget';
 import { CellEditor, createCellEditor } from './cellEditor';
@@ -726,6 +728,52 @@ function renderInline(src: string): string {
   // Put the set-aside pieces back.
   s = s.replace(/\u0000(\d+)\u0000/g, (_m, n: string) => held[Number(n)].html);
   return s;
+}
+
+/**
+ * Hold a centred table's left edge still for the length of a column drag, and give it back after.
+ *
+ * A table in the pane is centred by `margin-inline: auto`, so its left edge is a function of its
+ * width. Widening a column during a drag therefore slides the whole table leftward by half of
+ * whatever the column gained, taking the grip out from under the pointer: measured at 246 before
+ * the gesture and 166 during it, after which the rest of the drag reached nothing.
+ *
+ * This is the hazard the pane-wide freeze in `columnLayout.ts` exists for, and it needs a different
+ * answer, because there the layout changes in one step and here it moves continuously. Pinning the
+ * computed offset as an explicit `margin-left`, with `auto` kept on the right, lets the table grow
+ * rightward, which is the direction the pointer is going.
+ *
+ * At module scope rather than in the grip's closure because `toDOM` has a line budget and the
+ * shape check is right about why: this is a decision taken from inputs, not DOM wiring.
+ *
+ * The `is-resizing` class is set and cleared here too, rather than beside the call. The freeze and
+ * the flag are one fact about the gesture, and `columnLayout.ts` reads that class to hold the room
+ * choice still for the same reason this holds the left edge still. Two calls that must always come
+ * in pairs are a pair waiting to come apart.
+ */
+function centredTableIn(wrap: HTMLElement): { table: HTMLElement; host: HTMLElement } | null {
+  if (!wrap.classList.contains('can-use-pane')) return null;
+  const host = wrap.querySelector<HTMLElement>(':scope > .sheaf-table-grid');
+  const table = host?.querySelector<HTMLElement>(':scope > table');
+  return host && table ? { table, host } : null;
+}
+
+function beginResize(wrap: HTMLElement): void {
+  wrap.classList.add('is-resizing');
+  const found = centredTableIn(wrap);
+  if (!found) return;
+  const left = found.table.getBoundingClientRect().left - found.host.getBoundingClientRect().left + found.host.scrollLeft;
+  found.table.style.marginLeft = `${Math.round(left)}px`;
+  found.table.style.marginRight = 'auto';
+}
+
+/** Hand the table back to the stylesheet; the caller's `remeasure()` settles it. */
+function endResize(wrap: HTMLElement): void {
+  wrap.classList.remove('is-resizing');
+  const found = centredTableIn(wrap);
+  if (!found) return;
+  found.table.style.marginLeft = '';
+  found.table.style.marginRight = '';
 }
 
 /**
@@ -1722,24 +1770,23 @@ export const TABLE_COMMANDS = [
 /**
  * What moves a data block out to a file: `moveBlockToFile` in viewBlock.ts, which
  * holds the host's file writing, given the view and the start of the block's first
- * line. Set by the page for a Markdown document; null for a data file's own grid,
+ * line. Set by the mount for a Markdown document; null for a data file's own grid,
  * where there is nothing to move, and the command is then not offered.
+ *
+ * Per mount, because null is a property of the document: a page holding a data file's grid beside a
+ * Markdown document took the command away from the document as well.
  */
-let moveToFile: ((view: EditorView, from: number) => void) | null = null;
-
-export function setMoveToFile(move: ((view: EditorView, from: number) => void) | null): void {
-  moveToFile = move;
+export function setMoveToFile(move: ((view: EditorView, from: number) => void) | null, scope?: MountScope): void {
+  (scope ? arrangement.of(scope) : arrangement.at(null)).moveToFile = move;
 }
 
 /**
  * What writes a view of a data block below it: `createViewOf` in viewBlock.ts,
- * which knows how a view is spelled. Set by the page beside `setMoveToFile`, and
+ * which knows how a view is spelled. Set by the mount beside `setMoveToFile`, and
  * for the same reason: the block model lives here and the view does not.
  */
-let createView: ((view: EditorView, from: number) => void) | null = null;
-
-export function setCreateView(create: ((view: EditorView, from: number) => void) | null): void {
-  createView = create;
+export function setCreateView(create: ((view: EditorView, from: number) => void) | null, scope?: MountScope): void {
+  (scope ? arrangement.of(scope) : arrangement.at(null)).createView = create;
 }
 
 export type TableCommand = (typeof TABLE_COMMANDS)[number];
@@ -1898,8 +1945,9 @@ const liveArrived = new WeakMap<Element, (changes?: ChangeDesc) => void>();
 // its rows are edited, and a table whose headers changed while it was closed is
 // simply laid out the ordinary way again: there is nothing to reconcile.
 
-/** The widths set by hand in this document, by table key, each by column index. */
-const pinnedWidths = new Map<string, Map<number, number>>();
+// The widths set by hand live on the mount, in `Arrangement` below, keyed there by table key. They
+// cannot be module-level: the key is a table's header row, which says nothing about which document
+// the table is in, so two documents holding a table of the same shape shared one entry.
 
 /**
  * The rows a reader has fitted to their content, by table, for as long as the document is open.
@@ -2088,11 +2136,55 @@ function markFittableRows(host: Element, touched: Iterable<HTMLElement>): void {
   haveTall.forEach((tr) => tr.classList.add('has-tall-cell'));
 }
 
-/** Every live grid's way to lay its columns out again when the stored widths arrive. */
+/**
+ * Every live grid's way to lay its columns out again when the stored widths arrive.
+ *
+ * **Shared on purpose**, like `comments.ts`'s `redrawers`: a registry of every grid there is rather
+ * than state about one document. A grid in another editor laying out again when it has nothing new
+ * to read costs arithmetic and draws the same thing, because each one reads its own mount's widths.
+ * `mountScope.ts` names all five registries of this kind, so a sweep can tell them from the rest.
+ */
 const pinListeners = new Set<() => void>();
 
-let widthsHost: ((message: FromWebview) => void) | null = null;
-let widthsSeq = 0;
+/**
+ * What one mounted editor keeps about how its own tables are arranged.
+ *
+ * All of it is per mount, and the two maps are the reason it matters: a table's widths and its board
+ * are keyed by its header row, which says nothing about which document it is in. Two documents with
+ * a table of the same shape shared one entry, and `saveWidths` writes the **whole** map, so one
+ * editor saved the other document's widths under its own key, to whichever host had registered last.
+ */
+interface Arrangement {
+  widthsHost: ((message: FromWebview) => void) | null;
+  widthsSeq: number;
+  /** The widths set by hand in this document, by table key, each by column index. */
+  pinnedWidths: Map<string, Map<number, number>>;
+  boardsHost: ((message: FromWebview) => void) | null;
+  boardsSeq: number;
+  /** The tables shown as boards in this document: by table key, the header text of the column each is grouped by. */
+  boardTables: Map<string, string>;
+  /**
+   * What moves a data block out to a file beside the document: `moveBlockToFile` in viewBlock.ts.
+   * Null in a data file's own grid, which is already the file.
+   */
+  moveToFile: ((view: EditorView, from: number) => void) | null;
+  /**
+   * What writes a view of a data block below it: `createViewOf` in viewBlock.ts.
+   * Null in a data file's own grid, where a view belongs in a document instead.
+   */
+  createView: ((view: EditorView, from: number) => void) | null;
+}
+
+const arrangement = mountSlot<Arrangement>(() => ({
+  widthsHost: null,
+  widthsSeq: 0,
+  pinnedWidths: new Map(),
+  boardsHost: null,
+  boardsSeq: 0,
+  boardTables: new Map(),
+  moveToFile: null,
+  createView: null,
+}));
 
 /** What a table's hand-set widths are kept under: its column count and its header row. */
 export function tableWidthKey(headers: readonly string[]): string {
@@ -2105,9 +2197,10 @@ export function tableWidthKey(headers: readonly string[]): string {
  * when the page asks first, so a table is usually drawn at its own widths from
  * the start.
  */
-export function setTableWidthsHost(send: ((message: FromWebview) => void) | null): void {
-  widthsHost = send;
-  send?.({ type: 'tableWidthsRead', id: `widths-${++widthsSeq}` });
+export function setTableWidthsHost(send: ((message: FromWebview) => void) | null, scope?: MountScope): void {
+  const here = scope ? arrangement.of(scope) : arrangement.at(null);
+  here.widthsHost = send;
+  send?.({ type: 'tableWidthsRead', id: `widths-${++here.widthsSeq}` });
 }
 
 /** Read one table's stored widths, keeping only what can be a width. */
@@ -2126,26 +2219,27 @@ function readPins(value: unknown): Map<number, number> | null {
  * null or holding nothing usable is dropped. Every table on the page is laid out
  * again, which costs arithmetic only.
  */
-export function handleTableWidths(_id: string, widths: unknown): void {
+export function handleTableWidths(_id: string, widths: unknown, scope?: MountScope): void {
+  const here = scope ? arrangement.of(scope) : arrangement.at(null);
   if (widths && typeof widths === 'object') {
     for (const [key, value] of Object.entries(widths as Record<string, unknown>)) {
       const pins = readPins(value);
-      if (pins) pinnedWidths.set(key, pins);
-      else pinnedWidths.delete(key);
+      if (pins) here.pinnedWidths.set(key, pins);
+      else here.pinnedWidths.delete(key);
     }
   }
   for (const relayout of pinListeners) relayout();
 }
 
-/** Hand the host every width set by hand in this document, for it to keep. */
-function saveWidths(): void {
-  if (!widthsHost) return;
+/** Hand this editor's host every width set by hand in its document, for it to keep. */
+function saveWidths(here: Arrangement): void {
+  if (!here.widthsHost) return;
   const out: Record<string, Record<string, number>> = {};
-  for (const [key, pins] of pinnedWidths) {
+  for (const [key, pins] of here.pinnedWidths) {
     if (!pins.size) continue;
     out[key] = Object.fromEntries(Array.from(pins, ([c, w]) => [String(c), w]));
   }
-  widthsHost({ type: 'tableWidthsWrite', widths: out });
+  here.widthsHost({ type: 'tableWidthsWrite', widths: out });
 }
 
 // ---- Tables shown as boards -------------------------------------------------
@@ -2160,22 +2254,21 @@ function saveWidths(): void {
 // A table whose header row changed while it was closed no longer matches its key,
 // and is simply drawn as a grid again.
 
-/** The tables shown as boards in this document: by table key, the header text of the column each is grouped by. */
-const boardTables = new Map<string, string>();
-
-/** Every live grid's way to look again at whether it is a board when the stored boards arrive. */
+/**
+ * Every live grid's way to look again at whether it is a board when the stored boards arrive.
+ *
+ * Shared on purpose, for the reason `pinListeners` above carries.
+ */
 const boardListeners = new Set<() => void>();
-
-let boardsHost: ((message: FromWebview) => void) | null = null;
-let boardsSeq = 0;
 
 /**
  * Where the stored boards come from and go to. Setting a host asks it for this
  * document's boards straight away, ahead of the document, as widths are asked for.
  */
-export function setTableBoardsHost(send: ((message: FromWebview) => void) | null): void {
-  boardsHost = send;
-  send?.({ type: 'tableBoardsRead', id: `boards-${++boardsSeq}` });
+export function setTableBoardsHost(send: ((message: FromWebview) => void) | null, scope?: MountScope): void {
+  const here = scope ? arrangement.of(scope) : arrangement.at(null);
+  here.boardsHost = send;
+  send?.({ type: 'tableBoardsRead', id: `boards-${++here.boardsSeq}` });
 }
 
 /** One stored board's grouping column, or null for anything that cannot be one. */
@@ -2189,22 +2282,23 @@ function readBoard(value: unknown): string | null {
  * The host's answer: this document's boards, by table key. A key given as null or
  * holding nothing usable is dropped. Every table on the page looks again.
  */
-export function handleTableBoards(_id: string, boards: unknown): void {
+export function handleTableBoards(_id: string, boards: unknown, scope?: MountScope): void {
+  const here = scope ? arrangement.of(scope) : arrangement.at(null);
   if (boards && typeof boards === 'object') {
     for (const [key, value] of Object.entries(boards as Record<string, unknown>)) {
       const group = readBoard(value);
-      if (group !== null) boardTables.set(key, group);
-      else boardTables.delete(key);
+      if (group !== null) here.boardTables.set(key, group);
+      else here.boardTables.delete(key);
     }
   }
   for (const look of boardListeners) look();
 }
 
-/** Hand the host every board in this document, for it to keep. */
-function saveBoards(): void {
-  boardsHost?.({
+/** Hand this editor's host every board in its document, for it to keep. */
+function saveBoards(here: Arrangement): void {
+  here.boardsHost?.({
     type: 'tableBoardsWrite',
-    boards: Object.fromEntries(Array.from(boardTables, ([key, group]) => [key, { group }])),
+    boards: Object.fromEntries(Array.from(here.boardTables, ([key, group]) => [key, { group }])),
   });
 }
 
@@ -2896,7 +2990,15 @@ class TableWidget extends WidgetType {
     /** The name a data block's info string gives it, which views read it by. */
     readonly name: TableName | null = null,
     /** How many list items the table sits inside, for the indent its frame draws at. */
-    readonly listDepth: number = 0
+    readonly listDepth: number = 0,
+    /**
+     * Which mounted editor this table is in.
+     *
+     * Carried on the widget because `estimatedHeight` is a property with no view and no element
+     * behind it, and it reads the widths set by hand for this table. The decoration builder has the
+     * editor's state, which is where the mount comes from.
+     */
+    readonly mount: MountScope | null = null
   ) {
     super();
   }
@@ -2964,7 +3066,7 @@ class TableWidget extends WidgetType {
     if (seen) return seen;
     this.estimate ??= estimateTableHeight(this.data.headers, this.data.rows, laidWidths.get(key) ?? null, {
       pane: textColumn(),
-      pinned: pinnedWidths.get(key) ?? null,
+      pinned: (this.mount ? arrangement.of(this.mount) : arrangement.at(null)).pinnedWidths.get(key) ?? null,
       wrapToFit,
     });
     remember(estimatedHeights, shape, this.estimate);
@@ -3199,22 +3301,22 @@ class TableWidget extends WidgetType {
     const pins = (): Map<number, number> | null => {
       const key = tableWidthKey(data.headers);
       if (key !== pinKey) {
-        const held = pinnedWidths.get(pinKey);
-        if (held && pinCols === data.headers.length && !pinnedWidths.has(key)) {
-          pinnedWidths.delete(pinKey);
-          pinnedWidths.set(key, held);
-          saveWidths();
+        const held = arrangement.at(view).pinnedWidths.get(pinKey);
+        if (held && pinCols === data.headers.length && !arrangement.at(view).pinnedWidths.has(key)) {
+          arrangement.at(view).pinnedWidths.delete(pinKey);
+          arrangement.at(view).pinnedWidths.set(key, held);
+          saveWidths(arrangement.at(view));
         }
         pinKey = key;
         pinCols = data.headers.length;
       }
-      return pinnedWidths.get(key) ?? null;
+      return arrangement.at(view).pinnedWidths.get(key) ?? null;
     };
     const setPins = (next: Map<number, number> | null, save: boolean): void => {
       pins();
-      if (next && next.size) pinnedWidths.set(pinKey, next);
-      else pinnedWidths.delete(pinKey);
-      if (save) saveWidths();
+      if (next && next.size) arrangement.at(view).pinnedWidths.set(pinKey, next);
+      else arrangement.at(view).pinnedWidths.delete(pinKey);
+      if (save) saveWidths(arrangement.at(view));
       columns.refresh();
       syncControls();
     };
@@ -4520,10 +4622,10 @@ class TableWidget extends WidgetType {
         aligned: !!data.aligns[c],
         measured: !!columns.measured(),
         pinned: !!pins()?.size,
-        fenced: kind === 'csv' && !!moveToFile,
-        movable: kind === 'csv' && !!moveToFile && !view.state.readOnly,
+        fenced: kind === 'csv' && !!arrangement.at(view).moveToFile,
+        movable: kind === 'csv' && !!arrangement.at(view).moveToFile && !view.state.readOnly,
         // Writing a view needs no file host, so it does not borrow the mover's fact.
-        viewable: kind === 'csv' && !!createView && !view.state.readOnly,
+        viewable: kind === 'csv' && !!arrangement.at(view).createView && !view.state.readOnly,
       };
     };
     /**
@@ -4562,7 +4664,7 @@ class TableWidget extends WidgetType {
           // Whatever the grid holds reaches the document first, so the file gets it too.
           commitCell();
           flush();
-          moveToFile?.(view, pos.from);
+          arrangement.at(view).moveToFile?.(view, pos.from);
         },
         'table.createView': () => {
           commitCell();
@@ -4571,7 +4673,7 @@ class TableWidget extends WidgetType {
           // in the field the caption already offers. Escape there writes nothing and
           // no view is made.
           if (dataBlocks(view.state).find((b) => b.from === pos.from)?.id) {
-            createView?.(view, pos.from);
+            arrangement.at(view).createView?.(view, pos.from);
             return;
           }
           openRename(
@@ -4581,7 +4683,7 @@ class TableWidget extends WidgetType {
               const why = renameDataBlock(view, pos.from, to);
               // Named: the block is at the same place, one character longer on its
               // first line, and the view goes below it.
-              if (!why) createView?.(view, pos.from);
+              if (!why) arrangement.at(view).createView?.(view, pos.from);
               return why;
             },
             freeBlockName(view.state, 'table'),
@@ -4994,7 +5096,7 @@ class TableWidget extends WidgetType {
         e.stopPropagation();
         // A link under the press: followed now with a modifier, held for the release without.
         const onLink = pressOnLink(e, !!activeInput);
-        if (onLink.open) return openLink(onLink.open.dataset.href ?? '');
+        if (onLink.open) return openLink(onLink.open.dataset.href ?? '', onLink.open);
         pressedLink = onLink.hold;
         if (keepForMenu(e, r, c)) return;
         if (press?.(e)) return;
@@ -5229,7 +5331,7 @@ class TableWidget extends WidgetType {
           // No pointer to capture, as when the event was not made by one.
         }
         g.classList.add('is-dragging');
-        wrap.classList.add('is-resizing');
+        beginResize(wrap);
       });
       g.addEventListener('pointermove', (e) => {
         if (drag) stop(e);
@@ -5240,13 +5342,13 @@ class TableWidget extends WidgetType {
         if (!cancelled) follow(e.clientX);
         drag = null;
         g.classList.remove('is-dragging', 'is-at-floor');
-        wrap.classList.remove('is-resizing');
+        endResize(wrap);
         try {
           g.releasePointerCapture?.(e.pointerId);
         } catch {
           // Already released.
         }
-        saveWidths();
+        saveWidths(arrangement.at(view));
         // Removing `is-resizing` ends the pane-wide freeze; this recomputes what was frozen.
         columns.remeasure();
         syncControls();
@@ -5565,7 +5667,7 @@ class TableWidget extends WidgetType {
       if (dragging && dragMoved) reachTo(cellUnder(e));
       const followed = releaseOnLink(pressedLink, e, dragMoved);
       pressedLink = null;
-      if (followed) openLink(followed.dataset.href ?? '');
+      if (followed) openLink(followed.dataset.href ?? '', followed);
       dragging = false;
       dragMoved = false;
       axisDrag = null;
@@ -5707,18 +5809,18 @@ class TableWidget extends WidgetType {
       if (key !== boardKey && boardGroup !== null) {
         // A header changed under a board on this page. It is the same table, so the
         // board moves to its new key, unless the column it is grouped by is gone.
-        boardTables.delete(boardKey);
-        if (groupAt(boardGroup) >= 0) boardTables.set(key, boardGroup);
+        arrangement.at(view).boardTables.delete(boardKey);
+        if (groupAt(boardGroup) >= 0) arrangement.at(view).boardTables.set(key, boardGroup);
         else lostGroup(boardGroup);
-        saveBoards();
+        saveBoards(arrangement.at(view));
       }
       boardKey = key;
-      const stored = boardTables.get(key);
+      const stored = arrangement.at(view).boardTables.get(key);
       if (stored === undefined) boardGroup = null;
       else if (groupAt(stored) >= 0) boardGroup = stored;
       else {
-        boardTables.delete(key);
-        saveBoards();
+        arrangement.at(view).boardTables.delete(key);
+        saveBoards(arrangement.at(view));
         lostGroup(stored);
       }
       showBoard();
@@ -5730,8 +5832,8 @@ class TableWidget extends WidgetType {
       flush();
       const name = (data.headers[c] ?? '').trim();
       boardKey = tableWidthKey(data.headers);
-      boardTables.set(boardKey, name);
-      saveBoards();
+      arrangement.at(view).boardTables.set(boardKey, name);
+      saveBoards(arrangement.at(view));
       say(null);
       boardGroup = name;
       boardState = null;
@@ -5739,8 +5841,8 @@ class TableWidget extends WidgetType {
       focusBoard();
     };
     const showAsTable = (): void => {
-      boardTables.delete(tableWidthKey(data.headers));
-      saveBoards();
+      arrangement.at(view).boardTables.delete(tableWidthKey(data.headers));
+      saveBoards(arrangement.at(view));
       boardGroup = null;
       showBoard();
       columns.refresh();
@@ -6384,7 +6486,7 @@ function buildTableDecorations(state: EditorState, prev: DecorationSet | null): 
     const sig = JSON.stringify({ data, lang, prefix, name, listDepth });
     decos.push(
       Decoration.replace({
-        widget: new TableWidget(kind, from, to, data, sig, lang, prefix, name, listDepth),
+        widget: new TableWidget(kind, from, to, data, sig, lang, prefix, name, listDepth, scopeOf(state)),
         block: true,
       }).range(from, to)
     );

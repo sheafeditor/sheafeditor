@@ -24,7 +24,45 @@ import { blockMathRanges } from '../src/webview/maths';
  * editor shares. `TAGS`, `HANDLERS` and `PROFILE_TABLE` are exported mutable so a case can remove
  * one and watch the result move, which is the only way to show a rule is what produces an answer.
  */
-export { renderMarkdown, scopeOf, unimplemented, PROFILE_TABLE, TAGS, HANDLERS } from '../src/render/markdown';
+export { renderMarkdown, scopeOf, unimplemented, PROFILE_TABLE, TAGS, HANDLERS, PROFILES } from '../src/render/markdown';
+
+/*
+ * Front matter, which is the other fact about the bytes that has no node to ask.
+ *
+ * It belongs in this suite rather than a webview one for the reason the module itself gives: a
+ * caller holding a plain string is a first-class caller, so the rule can be asked a question with
+ * no editor anywhere near it. `frontMatterOf` wraps the string in the line reader the module takes,
+ * which is the same adapter the render path builds, so a case here exercises the interface a
+ * consumer actually holds rather than a `Text` the suite happens to have.
+ */
+import { frontMatterEnd, frontMatterFields } from '../src/dialect/frontMatter';
+import type { FrontMatterFields } from '../src/dialect/frontMatter';
+
+/** The line reader over a plain string, built the way a caller outside the editor builds one. */
+function linesOf(text: string): { lines: number; line(n: number): { text: string } } {
+  const lines = text.split('\n');
+  return { lines: lines.length, line: (n) => ({ text: lines[n - 1] ?? '' }) };
+}
+
+/** Where a document's front matter ends, read from a string. */
+export function frontMatterEndOf(text: string): number {
+  return frontMatterEnd(linesOf(text));
+}
+
+/**
+ * A document's front-matter fields, with the map flattened to a plain object so a case can print
+ * what it got. A `Map` stringifies as `{}`, which would turn every failure into a silent one.
+ */
+export function frontMatterOf(text: string): {
+  end: number;
+  fields: Record<string, { kind: string; text?: string; items?: readonly string[] }>;
+  notUnderstood: FrontMatterFields['notUnderstood'];
+} {
+  const read = frontMatterFields(linesOf(text));
+  const fields: Record<string, { kind: string; text?: string; items?: readonly string[] }> = {};
+  for (const [key, value] of read.fields) fields[key] = { ...value };
+  return { end: read.end, fields, notUnderstood: read.notUnderstood };
+}
 
 export interface Found {
   name: string;

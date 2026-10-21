@@ -46,30 +46,36 @@ import type { SyntaxNode, Tree } from '@lezer/common';
 import type { Text } from '@codemirror/state';
 import { markdownDialect } from '../dialect/markdown';
 /*
- * Reaching into `src/webview/` for one rule, which is the wrong direction and is deliberate.
+ * Where front matter ends, which constructs each profile carries, and where a `$$` block is: three
+ * facts about the bytes, all from `src/dialect/`, which is where `../dialect/markdown` above already
+ * goes. The dialect is the layer below both this path and the editor, so none of these widens a
+ * boundary and none of them needs excusing.
  *
- * `frontMatter.ts` is a leaf that imports nothing of Sheaf's and only a type from CodeMirror, so it
- * costs this path nothing, and it is the single definition of where a document's front matter ends.
- * Writing those six lines again here is what the module's own comment exists to prevent. The file
- * arguably belongs beside the dialect rather than in the editor, and moving it is dependency
- * direction, which is the CTO's.
+ * They are leaves rather than part of `dialect/markdown.ts` because the drawing layer asks each of
+ * these questions too, and two answers to any of them is a surface that renders one thing before it
+ * is focused and draws another after. `frontMatter.ts` and `blockMaths.ts` import only a type and
+ * `profileConstructs.ts` nothing at all, so none of them costs this path an editor.
  */
-import { frontMatterEnd } from '../webview/frontMatter';
-/*
- * The editor's own rule for which inline HTML pairs are drawn, rather than a second one here.
- *
- * `inlineHtml.ts` imports only types, so it costs this path no editor, and it is where "a matched
- * pair of a short list of tags, no attributes but an abbreviation's title, on one line" is defined.
- * A copy of that rule would drift the first time the list changed.
- */
-import { inlineHtmlPairAt } from '../webview/inlineHtml';
-import type { InlineHtmlPair } from '../webview/inlineHtml';
+import { frontMatterEnd } from '../dialect/frontMatter';
+import { PROFILE_TABLE, carries as profileCarries } from '../dialect/profileConstructs';
+import type { ConstructProfile, SurfaceProfile } from '../dialect/profileConstructs';
+import { blockMathsIn, linesOf } from '../dialect/blockMaths';
+import type { BlockMathRange } from '../dialect/blockMaths';
+import { inlineHtmlPairAt } from '../dialect/inlineHtml';
+import type { InlineHtmlPair } from '../dialect/inlineHtml';
 
 /** The two profiles a mounted surface can be. */
-export type Profile = 'field' | 'notes';
+export type Profile = SurfaceProfile;
 
 /** Every profile the render path serves. `document` is the one the editor extension runs. */
-export type RenderProfile = Profile | 'document';
+export type RenderProfile = ConstructProfile;
+
+/**
+ * The profiles themselves, re-exported so a check driving this path takes its population from the
+ * dialect rather than writing a list of its own. A type cannot be iterated at runtime, which is how
+ * both render checks came to carry `['notes', 'document']` by hand and leave `field` undriven.
+ */
+export { PROFILES } from '../dialect/profileConstructs';
 
 /** Why a construct came back as source: a decision about the profile, or a gap in this renderer. */
 export type Reason = 'profile' | 'unimplemented';
@@ -101,85 +107,15 @@ export interface RenderResult {
  */
 export const dialectParser = parser.configure(markdownDialect);
 
-const ALL: readonly RenderProfile[] = ['field', 'notes', 'document'];
-const NOTES_UP: readonly RenderProfile[] = ['notes', 'document'];
-const DOCUMENT: readonly RenderProfile[] = ['document'];
-const NEVER: readonly RenderProfile[] = [];
-
-/**
- * Which profiles carry each construct, transcribed from the specification's "What each profile
- * carries" table.
+/*
+ * Which profiles carry each construct, re-exported from the leaf that now holds it.
  *
- * **This is the only statement in this file of what a profile carries.** It is not derived from
- * `TAGS` or from `HANDLERS`, because those say what this renderer can draw and the question here is
- * what it owes. Reading one off the other made an omission look like a decision: a construct with no
- * tag read as outside every profile, so a gap and a choice were the same answer.
- *
- * Keys are the dialect's node names, with two exceptions that are not nodes: `Callout`, which the
- * editor recognises in its drawing layer, and `InlineMathMark`, listed because the table lists it.
- * A construct absent from this table is carried by no profile. That is the default direction the
- * specification takes for anything undecided: adding to a profile later breaks no consumer, and
- * removing from one breaks them silently.
- *
- * Exported mutable so a check can add or remove a row and watch the result move, which is the only
- * way to show the property that matters here: a change to this table is the whole change.
+ * It was defined here until the drawing layer needed the same answer, and a second list beside the
+ * editor would have let a surface refuse a table before it was focused and draw a grid after. The
+ * table is `src/dialect/profileConstructs.ts`, which imports nothing; this path reads it and
+ * re-exports it so a reader who comes looking here still finds it.
  */
-export const PROFILE_TABLE: Record<string, readonly RenderProfile[]> = {
-  Paragraph: ALL,
-  Emphasis: ALL,
-  StrongEmphasis: ALL,
-  EmphasisMark: ALL,
-  Strikethrough: ALL,
-  StrikethroughMark: ALL,
-  Highlight: ALL,
-  HighlightMark: ALL,
-  InlineCode: ALL,
-  CodeMark: ALL,
-  Link: ALL,
-  LinkMark: ALL,
-  URL: ALL,
-  Autolink: ALL,
-  Entity: ALL,
-  Emoji: ALL,
-  Escape: ALL,
-
-  HardBreak: NOTES_UP,
-  SetextHeading1: NOTES_UP,
-  SetextHeading2: NOTES_UP,
-  LinkLabel: NOTES_UP,
-  LinkReference: NOTES_UP,
-  LinkTitle: NOTES_UP,
-  HTMLTag: NOTES_UP,
-  BulletList: NOTES_UP,
-  OrderedList: NOTES_UP,
-  ListItem: NOTES_UP,
-  ListMark: NOTES_UP,
-  Task: NOTES_UP,
-  TaskMarker: NOTES_UP,
-  Blockquote: NOTES_UP,
-  QuoteMark: NOTES_UP,
-  ATXHeading1: NOTES_UP,
-  ATXHeading2: NOTES_UP,
-  ATXHeading3: NOTES_UP,
-  ATXHeading4: NOTES_UP,
-  ATXHeading5: NOTES_UP,
-  ATXHeading6: NOTES_UP,
-  HeaderMark: NOTES_UP,
-  FencedCode: NOTES_UP,
-  CodeBlock: NOTES_UP,
-  FootnoteReference: NOTES_UP,
-  FootnoteDefinition: NOTES_UP,
-  HorizontalRule: NOTES_UP,
-
-  Table: DOCUMENT,
-  Image: DOCUMENT,
-  Callout: DOCUMENT,
-  InlineMath: DOCUMENT,
-  InlineMathMark: DOCUMENT,
-
-  // Drawn as written in every profile, which is the specification's answer for raw HTML blocks.
-  HTMLBlock: NEVER,
-};
+export { PROFILE_TABLE };
 
 /**
  * Markers the editor hides, which here means emitting nothing for them.
@@ -533,6 +469,18 @@ interface Ctx {
    * looked at one instance and found it outside the profile says so itself.
    */
   refuse(construct: string, node: SyntaxNode, reason?: Reason): string;
+  /**
+   * The `$$…$$` blocks this document holds, in order, and the paragraph renderer is the only caller.
+   *
+   * They are not nodes, so nothing in the walk below meets one: the specification says a block is
+   * found by reading lines and asking the tree only whether the line sits in a top-level paragraph.
+   * Without this a display equation reached the output as the paragraph text it parses as, with the
+   * delimiters and the formula as running prose and `outOfScope` reporting that everything had been
+   * understood, which is the one answer a consumer cannot act on.
+   */
+  mathBlocks: readonly BlockMathRange[];
+  /** A node's children and text, with any block in `spans` emitted as its own source instead. */
+  innerAround(node: SyntaxNode, spans: readonly BlockMathRange[]): string;
 }
 
 /** An anchor for `dest`, or only the words when the destination may not be one. */
@@ -746,9 +694,21 @@ export const HANDLERS: Record<string, Handler> = {
    * A paragraph inside a list item draws as the item's own line rather than as a block of its
    * own, which is both what the editor shows and what a tight list means. Wrapping it would put
    * a `<p>` in the output that the comparison against `drawMap` has nothing to match.
+   *
+   * A paragraph is also where a `$$…$$` block is found, because a block is not a node and the
+   * paragraph is what the specification's rule requires one to sit in. A profile that does not carry
+   * display maths gets the delimiters and the formula inside a wrapper that names the construct,
+   * which is the same answer a table gets, rather than as prose.
+   *
+   * **The block wins over anything the parser found inside it**, which is what the editor does with
+   * the same bytes: its decoration replaces the range whatever nodes are in it. So a construct that
+   * overlaps a block at all is not drawn, and its uncovered bytes come out as source. `$$` wrapped
+   * in emphasis is the only shape that reaches that rule and both layers now answer it the same way.
    */
   Paragraph(node, c) {
-    return node.parent?.name === 'ListItem' ? c.inner(node) : `<p>${c.inner(node)}</p>`;
+    const blocks = c.mathBlocks.filter((b) => b.from < node.to && b.to > node.from);
+    const body = blocks.length > 0 ? c.innerAround(node, blocks) : c.inner(node);
+    return node.parent?.name === 'ListItem' ? body : `<p>${body}</p>`;
   },
 
   /*
@@ -981,7 +941,7 @@ export function renderMarkdown(markdown: string, profile: RenderProfile = 'notes
    * What a profile carries decides whether a pass over the tree is worth making, and what a
    * construct does. Asked here because the definitions below are the first thing that needs it.
    */
-  const carries = (name: string): boolean => PROFILE_TABLE[name]?.includes(profile) ?? false;
+  const carries = (name: string): boolean => profileCarries(name, profile);
 
   /*
    * The labels this document defines, so a reference link can be told from a bracketed phrase.
@@ -1052,11 +1012,22 @@ export function renderMarkdown(markdown: string, profile: RenderProfile = 'notes
    * before it reaches an element at all.
    */
   const unrendered = (construct: string, node: SyntaxNode, reason: Reason): string => {
-    outOfScope.push({ construct, from: node.from, to: node.to, reason });
     let inline = profile === 'field';
     for (let p = node.parent; p; p = p.parent) if (INLINE_HOSTS.has(p.name)) inline = true;
+    return unrenderedSpan(construct, node.from, node.to, reason, inline);
+  };
+
+  /**
+   * The same, for a construct that is not a node and so has a span rather than one.
+   *
+   * `node.parent` is what decides the wrapper's element above, and a construct found by reading
+   * lines has no parent to ask, so the caller says which it is. Everything else is one answer: the
+   * source, escaped, inside an element carrying the name `outOfScope` reports.
+   */
+  const unrenderedSpan = (construct: string, from: number, to: number, reason: Reason, inline: boolean): string => {
+    outOfScope.push({ construct, from, to, reason });
     const el = inline ? 'span' : 'div';
-    return `<${el} class="sheaf-unrendered" data-construct="${escape(construct)}">${escape(markdown.slice(node.from, node.to))}</${el}>`;
+    return `<${el} class="sheaf-unrendered" data-construct="${escape(construct)}">${escape(markdown.slice(from, to))}</${el}>`;
   };
 
   /** A node's children rendered in order, with the text between them escaped. */
@@ -1072,6 +1043,46 @@ export function renderMarkdown(markdown: string, profile: RenderProfile = 'notes
       if (BLOCK_MARKS.has(c.name)) while (pos < node.to && (markdown[pos] === ' ' || markdown[pos] === '\t')) pos++;
     }
     return out + escape(markdown.slice(pos, node.to));
+  };
+
+  /**
+   * `inner`, with a set of spans whose bytes are emitted as their own source instead of rendered.
+   *
+   * It exists for the one construct that is not a node, so there is nothing in the walk to refuse.
+   * The spans are whole lines and the only thing that produces them today is `$$…$$`.
+   *
+   * It is a second walk rather than a flag on `inner` because the two differ in what they do with a
+   * child, and `inner` runs over every node in the document while this runs over the paragraphs that
+   * hold a block. The two pieces `inner` has that this does not are an indented code block's own
+   * indentation and the space after a block marker, and neither can be inside a paragraph.
+   */
+  const innerAround = (node: SyntaxNode, spans: readonly BlockMathRange[]): string => {
+    const overlaps = (from: number, to: number): boolean => spans.some((s) => from < s.to && to > s.from);
+    let out = '';
+    let pos = node.from;
+    let next = 0;
+    /* The source from `pos` to `to`, with any span starting inside it emitted as its wrapper. */
+    const plain = (to: number): void => {
+      while (next < spans.length && spans[next].from < to) {
+        const span = spans[next];
+        if (span.from > pos) out += escape(markdown.slice(pos, span.from));
+        out += unrenderedSpan('BlockMath', span.from, span.to, blockMathReason, true);
+        pos = span.to;
+        next++;
+      }
+      if (pos < to) out += escape(markdown.slice(pos, to));
+    };
+    for (let c = node.firstChild; c; c = c.nextSibling) {
+      if (c.to <= pos) continue;
+      if (c.from > pos) plain(c.from);
+      // Swallowed by a block, or overlapping one: the block wins and these bytes are source, which
+      // `plain` emits on its next call rather than this loop skipping them.
+      if (c.from < pos || overlaps(c.from, c.to)) continue;
+      out += render(c);
+      pos = c.to;
+    }
+    plain(node.to);
+    return out;
   };
 
   /*
@@ -1102,12 +1113,30 @@ export function renderMarkdown(markdown: string, profile: RenderProfile = 'notes
     });
   }
 
+  /*
+   * The display-maths blocks, and the reason they come back as source.
+   *
+   * Found for every profile, because no profile draws one: `field` and `notes` do not carry display
+   * maths and this path has no drawing for it in `document` either, so the answer is the same bytes
+   * and a different `reason`. `scopeOf` is what splits the two, exactly as it does for a callout,
+   * which is the other construct in the table with no node behind it.
+   *
+   * A block inside the front matter is not one. Everything that starts in there is metadata and
+   * comes back as its own bytes already, so refusing it as well would report a construct twice.
+   */
+  const blockMathScope = scopeOf('BlockMath', profile);
+  const blockMathReason: Reason = blockMathScope === 'profile' ? 'profile' : 'unimplemented';
+  const mathBlocks =
+    blockMathScope === 'rendered' ? [] : blockMathsIn(linesOf(markdown), tree).filter((b) => b.from >= matterTo);
+
   const ctx: Ctx = {
     md: markdown,
     profile,
     defined,
     notes,
     pairs,
+    mathBlocks,
+    innerAround,
     render: (n) => render(n),
     inner,
     refuse: (construct, node, reason) =>

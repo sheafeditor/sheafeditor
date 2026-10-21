@@ -1,12 +1,11 @@
 /*
  * What the sync suite is run against: the host's own sync code, plus a stand-in
  * for the webview's document built on the CodeMirror state the webview really
- * uses. `src/webview/main.ts` cannot be imported here — it boots a view against
- * the DOM as soon as it loads — so `setContent` below mirrors its, down to the
+ * uses. `src/webview/mount.ts` holds the real one, and `setContent` below mirrors it, down to the
  * line endings it converts the text to, the prefix/suffix diff and the dispatch of
  * the replacement as a string. That dispatch is where the line endings in the text
  * matter: CodeMirror splits an inserted string into lines on `\r\n`, a lone `\r`,
- * or `\n` alike. The checks that need `main.ts` itself boot it in a page of its
+ * or `\n` alike. The checks that need the real editor boot it in a page of its
  * own, through `test/webview.mjs`.
  */
 
@@ -32,13 +31,13 @@ export {
 } from '../src/webview/viewQuery';
 export { leadingNumber, wholeNumber } from '../src/webview/cellNumbers';
 
-/** The single changed region between two strings, as `main.ts` computes it. */
+/** The single changed region between two strings, as `mount.ts` computes it. */
 function diff(oldText: string, newText: string): { from: number; to: number; insert: string } {
   const { start, end, replacement } = minimalEdit(oldText, newText);
   return { from: start, to: end, insert: replacement };
 }
 
-/** Where `main.ts` puts the caret when a document from the host inserts text on it. */
+/** Where `mount.ts` puts the caret when a document from the host inserts text on it. */
 function caretAfterRemoteText(
   state: EditorState,
   change: { from: number; to: number; insert: string }

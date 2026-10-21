@@ -200,7 +200,25 @@ const module = { exports: {} };
 new Function('module', 'exports', 'require', outputFiles[0].text)(module, module.exports, () => {
   throw new Error('check-render-safety: the render path asked for a runtime dependency, which it should not have');
 });
-const { renderMarkdown, TAGS } = module.exports;
+const { renderMarkdown, TAGS, PROFILES } = module.exports;
+/*
+ * This catches an **empty** population and not an incomplete one, deliberately, and the limit is
+ * worth stating because the summary below is thin rather than false if it is ever reached:
+ * `PROFILES = ['notes']` passes this guard and the run truthfully reports "every profile the
+ * dialect declares and none skipped" over one of three.
+ *
+ * What makes that safe today is not this guard. It is that `ALL` in `src/dialect/profileConstructs.ts`
+ * aliases `PROFILES`, so the same constant drives `PROFILE_TABLE`, and a profile dropped from it
+ * fails loudly over there long before the thinness here could matter. **So the guard is adequate
+ * because the constant is load-bearing elsewhere**, which is a property of that file rather than of
+ * this one. Anyone making `PROFILES` a check-only list would remove the thing holding this up
+ * without touching this line, and should put a completeness assertion here in the same change.
+ */
+if (!Array.isArray(PROFILES) || PROFILES.length === 0) {
+  console.error('check-render-safety: the render path exports no PROFILES, so there is no population to drive.');
+  console.error('  Driving a hard-coded list instead is what left `field` unread by both render checks.');
+  process.exit(1);
+}
 
 /*
  * What the renderer is entitled to emit: every tag in its own `TAGS` map, plus the four it writes
@@ -318,12 +336,17 @@ if (anchors === 0) {
 const { JSDOM } = await import('jsdom');
 let elements = 0;
 /*
- * Every case under the smallest profile that draws blocks and under the one that draws the most.
- * Running the document profile over the same inputs is what exercises the table and image drawings
- * with hostile text in them; running notes as well is what shows those inputs still come back as a
- * named wrapper where the profile does not carry the construct.
+ * Every case under every profile, taken from the dialect's own `PROFILES` rather than listed here.
+ *
+ * Running `document` is what exercises the table and image drawings with hostile text in them;
+ * running `notes` is what shows those same inputs coming back as a named wrapper where the profile
+ * does not carry the construct. **`field` was missing until 2026-10-17 and nothing said so**, which
+ * is the reason the list is now derived: it is the narrowest profile, it wraps every construct it
+ * does not carry in a `span` rather than a `div`, and a `span` is a different escape surface from a
+ * `div`. It is also the profile whose rendering changed for 62 of 65 corpus documents on
+ * 2026-10-13, so it was the one the hostile corpus had least recently been read against.
  */
-for (const profile of ['notes', 'document']) {
+for (const profile of PROFILES) {
   const cases = [...ELEMENT_CASES.map(([n, m, extra]) => [n, m, extra ?? []]), ...ORDINARY.map((m, i) => [`ordinary document ${i + 1}`, m, []])];
   for (const [name, markdown, extra] of cases) {
     const { html } = renderMarkdown(markdown, profile);
@@ -377,7 +400,8 @@ console.log(
 );
 console.log(
   `  Nothing a document supplied became an element: ${elements} elements read as a tree across ` +
-    `${ELEMENT_CASES.length} hostile and ${ORDINARY.length} ordinary documents under notes and under document, ` +
+    `${ELEMENT_CASES.length} hostile and ${ORDINARY.length} ordinary documents under ${PROFILES.join(', ')}, ` +
+    `which is every profile the dialect declares and none skipped, ` +
     `all within the ${EMITTABLE.size} the renderer may emit (and, per case, the image or table it was asked for), ` +
     `none carrying an event handler.`
 );

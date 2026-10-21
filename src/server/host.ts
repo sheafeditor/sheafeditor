@@ -209,7 +209,7 @@ export const BROWSER_HOST: Record<FromWebviewType, Decision> = {
 
   /*
    * Never sent here. The only message of this type the editor posts is Send to terminal, and
-   * `main.ts` removes that menu item outright when a host declares `capabilities.terminal` false,
+   * the mount removes that menu item outright when a host declares `capabilities.terminal` false,
    * which this host always does. So there is no control to press and no message to answer.
    */
   runCommand: 'capability-off',

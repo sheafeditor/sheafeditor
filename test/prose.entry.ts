@@ -62,6 +62,18 @@ import { scenarios as revealOnLine } from './prose/revealOnLine';
 import { scenarios as linkTyping } from './prose/linkTyping';
 import { scenarios as mountFocus } from './prose/mountFocus';
 import { scenarios as mountRoundTrip } from './prose/mountRoundTrip';
+import { scenarios as surfaceProfiles } from './prose/surfaceProfiles';
+import { scenarios as fieldNewline } from './prose/fieldNewline';
+import { scenarios as mountSetValue } from './prose/mountSetValue';
+import { scenarios as mountTeardown } from './prose/mountTeardown';
+import { scenarios as mountReadOnly } from './prose/mountReadOnly';
+import { scenarios as assetBase } from './prose/assetBase';
+import { scenarios as twoMounts } from './prose/twoMounts';
+import { scenarios as mountEscape } from './prose/mountEscape';
+import { scenarios as mountOnChange } from './prose/mountOnChange';
+import { scenarios as mountUnrendered } from './prose/mountUnrendered';
+import { scenarios as mountClickText } from './prose/mountClickText';
+import { scenarios as mountFence } from './prose/mountFence';
 
 interface Result {
   name: string;
@@ -128,6 +140,18 @@ export async function runAll(): Promise<Result[]> {
     ...linkTyping,
     ...mountFocus,
     ...mountRoundTrip,
+    ...surfaceProfiles,
+    ...fieldNewline,
+    ...mountSetValue,
+    ...mountTeardown,
+    ...mountReadOnly,
+    ...assetBase,
+    ...twoMounts,
+    ...mountEscape,
+    ...mountOnChange,
+    ...mountUnrendered,
+    ...mountClickText,
+    ...mountFence,
   ] as Scenario[]) {
     /*
      * The live-preview config is a module-level variable, so a scenario that changes it and

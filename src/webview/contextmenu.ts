@@ -196,7 +196,7 @@ export function mountContextMenu(root: HTMLElement, deps: ContextMenuDeps): void
    * and a hint for a key that does nothing is worse than no hint.
    *
    * A host with no terminal is a host that is not VS Code, which is what makes the terminal
-   * capability a usable stand-in for "these keys exist". `setBlockRefHost` in `main.ts`
+   * capability a usable stand-in for "these keys exist". `setBlockRefHost` in `mount.ts`
    * answers `hasEditorKeys` the same way and says so, and the toolbar's Copy ref reads that,
    * so the two agree by construction. If a third host ever has one and not the other, this
    * needs a capability of its own rather than a better guess.
@@ -453,7 +453,7 @@ export function mountContextMenu(root: HTMLElement, deps: ContextMenuDeps): void
      * hidden block is not on the page to be right-clicked, and a control that can take
      * itself away has to leave a way back that does not depend on it.
      */
-    const mode = frontMatterMode();
+    const mode = frontMatterMode(view);
     const hiddenHere = !inCell && mode === 'hidden' && inFrontMatter(state, 0);
     if (frontMatter || hiddenHere) {
       context.push(
@@ -463,7 +463,7 @@ export function mountContextMenu(root: HTMLElement, deps: ContextMenuDeps): void
         // The two that say how far the choice reaches, which is otherwise invisible: one
         // makes it every document, the other gives this one back to the setting.
         { kind: 'item', label: 'Use this everywhere', icon: 'everywhere', run: cmd(frontMatterEverywhere) },
-        { kind: 'item', label: 'Reset to default', icon: 'resetWidths', disabled: !frontMatterIsOwn(), run: cmd(resetFrontMatter) }
+        { kind: 'item', label: 'Reset to default', icon: 'resetWidths', disabled: !frontMatterIsOwn(view), run: cmd(resetFrontMatter) }
       );
     }
     // Bold, italic and strikethrough are off the menu but not off the document:

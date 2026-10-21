@@ -36,10 +36,20 @@ import { EditorState, Extension, Range, RangeSet, StateField, Text } from '@code
 import { syntaxTree } from '@codemirror/language';
 import { SyntaxNode, Tree } from '@lezer/common';
 import { alertLabel, alertLine, alertMarkerAt } from './alerts';
+/*
+ * Which constructs the surface this is drawing carries.
+ *
+ * Absence means everything, so every branch below that asks is live in the extension's own editor
+ * and in a table cell, and only a surface the library mounted answers anything else. What a surface
+ * does with a construct it does not carry is leave it alone: the bytes were always the document, so
+ * applying no decoration is already the decided answer, which is why nothing here hides or removes
+ * anything on a refusal.
+ */
+import { draws } from './drawnConstructs';
 import { emojiFor, emojiLoaded, emojiReady, loadEmoji, requestEmoji } from './emoji';
 import { editableProps, matchHtmlImage } from './imageMarkup';
 import { imageSelection, imageWidgetFor } from './images';
-import { inlineHtmlPairAt } from './inlineHtml';
+import { inlineHtmlPairAt } from '../dialect/inlineHtml';
 import { BlockRange, blockRangeAt } from './blockModel';
 import {
   blockMath,
@@ -740,6 +750,10 @@ function buildDecorations(view: EditorView): BuiltDecorations {
 
         // --- Inline maths -------------------------------------------------
         if (name === 'InlineMath') {
+          // A surface that does not carry maths shows the dollars and the TeX between them, which
+          // is what the file holds. Returning before `requestMaths` is also what keeps KaTeX
+          // unfetched: a profile with no equations in it must make no request for one.
+          if (!draws(state, 'InlineMath')) return;
           const source = doc.sliceString(node.from + 1, node.to - 1);
           // KaTeX arrives on demand, so until it does there is no answer about this source and
           // the raw `$…$` stays, which is what a person sees while typing one anyway. Asking
@@ -762,8 +776,10 @@ function buildDecorations(view: EditorView): BuiltDecorations {
         }
         if (name === 'InlineMathMark') {
           // Off the caret's line the whole span is replaced above; on it the
-          // dollars stay visible and dim, as every other marker does.
-          if (lineActive(node.from)) b.mark(dimMark, node.from, node.to);
+          // dollars stay visible and dim, as every other marker does. On a surface that does not
+          // carry maths they are neither, because a dimmed delimiter is a claim that something
+          // around it was drawn.
+          if (lineActive(node.from) && draws(state, 'InlineMath')) b.mark(dimMark, node.from, node.to);
           return;
         }
 
@@ -855,6 +871,19 @@ function buildDecorations(view: EditorView): BuiltDecorations {
 
         // --- Links & images ----------------------------------------------
         if (name === 'Image') {
+          /*
+           * `![alt](src)` as its own characters on a surface that does not carry images, which is
+           * what a person can then edit. A picture there would also bring the resize handles and
+           * the caption controls with it, and those write inline HTML into somebody's field.
+           *
+           * **`false` rather than nothing, because the children have to be skipped with it.** An
+           * image's `![`, `]` and address are a `LinkMark` and a `URL`, and the branches for those
+           * hide them inside an image's range the same way they do inside a link's. Returning
+           * without saying so left the widget undrawn and the markers hidden anyway, so
+           * `![dot](dot.png)` read as the single word `dot`: not the picture, and not the source
+           * either, which is the one answer worse than the defect. Measured, not reasoned about.
+           */
+          if (!draws(state, 'Image')) return false;
           if (!lineActive(node.from)) {
             // The same parse a toolbar action makes. Where it succeeds the
             // image can be rewritten where it stands; where it does not, the
@@ -885,7 +914,9 @@ function buildDecorations(view: EditorView): BuiltDecorations {
         // Both block-level (HTMLBlock) and inline (HTMLTag) forms are handled.
         if (name === 'HTMLBlock' || name === 'HTMLTag') {
           const raw = doc.sliceString(node.from, node.to);
-          const mm = /<img\b/i.test(raw) ? matchHtmlImage(raw) : null;
+          // The HTML spelling of an image is the same construct as the Markdown one, which is how
+          // the specification's table lists it, so one answer covers both.
+          const mm = /<img\b/i.test(raw) && draws(state, 'Image') ? matchHtmlImage(raw) : null;
           if (mm) {
             const from = node.from + mm.start;
             const to = node.from + mm.end;
@@ -980,9 +1011,12 @@ function buildDecorations(view: EditorView): BuiltDecorations {
           // ordinary text on GitHub, and drawing it as a callout here would put
           // two types on the same lines, leaving the rule's colour to whichever
           // the stylesheet happens to declare last.
+          //
+          // A surface that does not carry callouts draws an ordinary quote, with `> [!NOTE]` as the
+          // line it is. Nothing is lost: the marker is the only part a panel would have replaced.
           let quoted = node.node.parent;
           while (quoted && quoted.name !== 'Blockquote') quoted = quoted.parent;
-          const alert = quoted ? null : alertMarkerAt(doc, node.from);
+          const alert = quoted || !draws(state, 'Callout') ? null : alertMarkerAt(doc, node.from);
           // The quote's own line class and its depth come from the rhythm pass above, which
           // is the only place that can count the depth: this branch is entered once per
           // nesting level and would apply the same class to the same line each time.
@@ -1037,9 +1071,12 @@ function buildDecorations(view: EditorView): BuiltDecorations {
            * Only the marker that opens the line, so a nested quote holding something that looks
            * like a marker is not treated as one: an alert is top-level only, and `alertMarkerAt`
            * reads from whatever position it is given.
+           *
+           * And not on a surface with no callouts, where there is no marker line to make an
+           * exception for: the quote is a quote and its `>` is hidden like any other.
            */
           const line = doc.lineAt(node.from);
-          if (lineActive(node.from) && node.from === line.from && alertMarkerAt(doc, node.from)) {
+          if (lineActive(node.from) && node.from === line.from && draws(state, 'Callout') && alertMarkerAt(doc, node.from)) {
             b.mark(dimMark, node.from, node.to);
             return;
           }
@@ -1321,6 +1358,8 @@ function buildHtmlImageDecorations(state: EditorState): DecorationSet {
   // In source mode the markup is what the reader asked to see, so no figure is
   // drawn over it, the same as on any other line showing its Markdown.
   if (sourceModeOn(state)) return Decoration.none;
+  // The several-line spelling of the same construct the plugin refuses on a surface with no images.
+  if (!draws(state, 'Image')) return Decoration.none;
   const decos: Range<Decoration>[] = [];
   const doc = state.doc;
   const active = activeLines(state);
@@ -1397,6 +1436,10 @@ function buildBlockMathDecorations(state: EditorState): DecorationSet {
   const doc = state.doc;
   const active = activeLines(state);
 
+  // A surface that does not carry display maths shows the `$$` lines as the bytes they are. The
+  // render path gives the same bytes a wrapper naming the construct, because it has no caret to
+  // offer and raw Markdown in rendered output is a rendering that failed without saying so.
+  if (!draws(state, 'BlockMath')) return Decoration.none;
   for (const math of blockMathRanges(state)) {
     const first = doc.lineAt(math.from).number;
     const last = doc.lineAt(math.to).number;
@@ -1488,6 +1531,13 @@ function buildMermaidDecorations(state: EditorState): DecorationSet {
   const decos: Range<Decoration>[] = [];
   const doc = state.doc;
   const active = activeLines(state);
+  /*
+   * Diagrams are the construct the specification's table has not placed, so both layers read them
+   * as carried by no profile and a `notes` surface shows a ```mermaid fence as a fence. That is the
+   * table's own default for anything undecided, and it is the whole of why this returns here:
+   * neither this file nor the render path decided it.
+   */
+  if (!draws(state, 'Diagram')) return Decoration.none;
   for (const block of mermaidRanges(state)) {
     const first = doc.lineAt(block.from).number;
     const last = doc.lineAt(block.to).number;
@@ -1521,6 +1571,17 @@ const mermaidField = StateField.define<BlockMathDecorations>({
 
 // ---- Plugin ---------------------------------------------------------------
 
+/**
+ * Whether either form of maths is drawn here, which is what decides whether KaTeX is asked for.
+ *
+ * Both forms, because one request serves both and a surface carrying only one of them still needs
+ * the library. The specification's table puts them in one row and this repository splits them into
+ * two, so the question has to name both rather than stand on whichever was asked about first.
+ */
+function drawsMaths(state: EditorState): boolean {
+  return draws(state, 'InlineMath') || draws(state, 'BlockMath');
+}
+
 const livePreviewPlugin = ViewPlugin.fromClass(
   class {
     decorations: DecorationSet;
@@ -1533,7 +1594,12 @@ const livePreviewPlugin = ViewPlugin.fromClass(
       // Built first, so the builders have had their chance to say the document holds maths or a
       // shortcode. This is the view half of that: a `StateField` may not dispatch, and a load
       // resolving does.
-      loadMaths(view);
+      //
+      // A surface carrying neither form of maths asks for none, and that is the whole of what
+      // "refuse to draw it" has to mean to a consumer: a field holding `$x^2$` made a request for
+      // a KaTeX chunk, over a construct it was never going to draw, on a page that may have a
+      // content policy about where a script comes from.
+      if (drawsMaths(view.state)) loadMaths(view);
       loadEmoji(view);
     }
     update(update: ViewUpdate): void {
@@ -1562,7 +1628,7 @@ const livePreviewPlugin = ViewPlugin.fromClass(
         this.decorations = built.decorations;
         this.atomicRanges = built.atomicRanges;
       }
-      loadMaths(update.view);
+      if (drawsMaths(update.state)) loadMaths(update.view);
       loadEmoji(update.view);
     }
   },

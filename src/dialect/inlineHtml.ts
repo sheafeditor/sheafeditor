@@ -16,8 +16,33 @@
  * tag in backticks or a code block is never seen here.
  */
 
-import { Text } from '@codemirror/state';
-import { SyntaxNode } from '@lezer/common';
+/*
+ * Both of these are `import type` rather than value imports, and that is a rule rather than tidiness.
+ *
+ * A value import of `@codemirror/state` here would put 45 KB of runtime dependency into a path that
+ * wants only the type. **`import type` is what stands there**, at compile time, in this file,
+ * whatever else changes around it. While the file lived in `src/webview/`, the thing holding that
+ * line was a sentence in the importer saying it "imports only types", which somebody had to
+ * re-verify by reading.
+ *
+ * Which checks would also catch it, measured rather than assumed, because the first version of this
+ * comment named the wrong one and a correction to it named none:
+ *
+ *   `check-dialect-imports`  **no.** Its `FORBIDDEN` is `['@codemirror/view']` and nothing else, so
+ *                            `state` passes it. `view` depends on `state` rather than the reverse,
+ *                            so there is no transitive route either.
+ *   `check-package`          **yes, indirectly.** Its `FORBIDDEN` does list `@codemirror/state`, and
+ *                            this module is in `lib/index.js`'s and `lib/render.js`'s eager closures,
+ *                            so the bytes would show up there. That is a check over a built metafile
+ *                            reached through closure membership, which is a longer way round and one
+ *                            a change to the bundling could move.
+ *
+ * So the compiler is the direct guarantee and the package check is a backstop that happens to cover
+ * it today. That is the honest ordering and it is the argument for `import type` rather than against:
+ * the claim is enforced here, where it is made.
+ */
+import type { Text } from '@codemirror/state';
+import type { SyntaxNode } from '@lezer/common';
 
 /** The class each formatting tag's content is drawn with, by tag name. */
 const TAG_CLASSES: Record<string, string> = {

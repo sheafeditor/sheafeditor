@@ -3,7 +3,7 @@
  * line it spans, without a list marker, quote marker, heading marks or the line
  * break after it. A real click needs layout to become a document position, which
  * jsdom has none of, so these call the selection with the position a click on the
- * named word would produce. The mousedown that calls it lives in `main.ts`.
+ * named word would produce. The mousedown that calls it lives in `mount.ts`.
  */
 
 import { Scenario, mountProse, Prose } from '../harness';
